@@ -5,7 +5,7 @@ Windows command line or from the ipakill iPhone app over Wi-Fi.
 
 - `pc/` – `ipakill-core.exe` (Go): runs plumesign, tracks the 7-day expiry,
   serves the iPhone app on port 7777.
-- `ios/` – the ipakill iPhone app (SwiftUI, terminal look). Built unsigned by
+- `ios/` – the ipakill iPhone app (SwiftUI, ESign-style tabs: Sources, Library, Activity, Settings). Built unsigned by
   GitHub Actions; download the `ipakill-ipa` artifact and run `ipakill ipakill.ipa`.
 - The `ipakill` command itself is `~/.local/bin/ipakill.cmd` + `ipakill.ps1`.
 

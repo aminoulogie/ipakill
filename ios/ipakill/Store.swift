@@ -12,13 +12,21 @@ struct StoreApp: Identifiable, Hashable {
     var id: String { source + "|" + name }
 }
 
+/// A source's own name and icon, shown on the Sources tab.
+struct SourceInfo {
+    var name: String
+    var icon: String? = nil
+}
+
 /// Loads a source. Two kinds are understood:
 ///  - a GitHub repo link (github.com/owner/repo): newest release with an .ipa asset
 ///  - an AltStore / SideStore / ESign source JSON (https://.../apps.json)
 enum SourceLoader {
-    static func load(_ source: String) async throws -> [StoreApp] {
+    static func load(_ source: String) async throws -> (SourceInfo, [StoreApp]) {
         if let repo = githubRepo(source) {
-            return try await loadGitHub(repo, source: source)
+            let owner = repo.split(separator: "/").first.map(String.init) ?? repo
+            let info = SourceInfo(name: repo, icon: "https://github.com/\(owner).png")
+            return (info, try await loadGitHub(repo, source: source))
         }
         return try await loadAltStore(source)
     }
@@ -71,7 +79,7 @@ enum SourceLoader {
 
     /// Reads AltStore-style JSON loosely: sources disagree on field names and
     /// types (ESign uses "down"/"icon", sizes are numbers or strings...).
-    private static func loadAltStore(_ source: String) async throws -> [StoreApp] {
+    private static func loadAltStore(_ source: String) async throws -> (SourceInfo, [StoreApp]) {
         guard let url = URL(string: source.hasPrefix("http") ? source : "https://" + source) else {
             throw SourceError.badLink
         }
@@ -90,7 +98,9 @@ enum SourceLoader {
             }
             return nil
         }
-        return apps.compactMap { a in
+        let info = SourceInfo(name: str(root, "name") ?? label(source),
+                              icon: str(root, "iconURL", "iconUrl", "icon"))
+        let list: [StoreApp] = apps.compactMap { a in
             guard let name = str(a, "name") else { return nil }
             let latest = (a["versions"] as? [[String: Any]])?.first ?? [:]
             guard let link = str(latest, "downloadURL", "down") ?? str(a, "downloadURL", "downloadUrl", "down")
@@ -101,6 +111,7 @@ enum SourceLoader {
                             subtitle: str(a, "subtitle", "localizedDescription", "versionDescription"),
                             developer: str(a, "developerName", "developer"))
         }
+        return (info, list)
     }
 }
 

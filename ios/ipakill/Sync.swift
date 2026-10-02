@@ -39,6 +39,7 @@ final class Sync: ObservableObject {
     @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
     @Published var store: [StoreApp] = []
     @Published var storeErrors: [String: String] = [:]   // source -> error
+    @Published var sourceInfo: [String: SourceInfo] = [:]
     @Published var loadingStore = false
 
     static let defaultSources = [
@@ -138,7 +139,8 @@ final class Sync: ObservableObject {
         defer { loadingStore = false }
         var all: [StoreApp] = []
         var errors: [String: String] = [:]
-        await withTaskGroup(of: (String, Result<[StoreApp], Error>).self) { group in
+        var infos: [String: SourceInfo] = [:]
+        await withTaskGroup(of: (String, Result<(SourceInfo, [StoreApp]), Error>).self) { group in
             for src in sources {
                 group.addTask {
                     do { return (src, .success(try await SourceLoader.load(src))) }
@@ -147,13 +149,25 @@ final class Sync: ObservableObject {
             }
             for await (src, result) in group {
                 switch result {
-                case .success(let apps): all += apps
+                case .success(let (info, apps)):
+                    infos[src] = info
+                    all += apps
                 case .failure(let e): errors[src] = e.localizedDescription
                 }
             }
         }
-        store = all.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        store = all
         storeErrors = errors
+        sourceInfo = infos
+    }
+
+    /// The apps one source offers, in the order the source lists them.
+    func apps(in source: String) -> [StoreApp] {
+        store.filter { $0.source == source }
+    }
+
+    func sourceName(_ source: String) -> String {
+        sourceInfo[source]?.name ?? SourceLoader.label(source)
     }
 
     func addSource(_ s: String) {
@@ -168,6 +182,7 @@ final class Sync: ObservableObject {
         sources.removeAll { $0 == s }
         store.removeAll { $0.source == s }
         storeErrors[s] = nil
+        sourceInfo[s] = nil
     }
 
     /// The store entry for an installed app (matched by name).
@@ -192,6 +207,8 @@ final class Sync: ObservableObject {
         if let i = s.icon, let u = URL(string: i) { return u }
         return installed(s).flatMap { icon(for: $0) }
     }
+
+    var updateCount: Int { apps.filter { update(for: $0) != nil }.count }
 
     func update(for app: SignedApp) -> StoreApp? {
         guard let s = storeEntry(for: app), let v = app.version, !v.isEmpty else { return nil }
