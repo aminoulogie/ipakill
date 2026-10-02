@@ -180,6 +180,19 @@ final class Sync: ObservableObject {
         apps.first { $0.name.lowercased() == s.name.lowercased() }
     }
 
+    /// Icon for an installed app: the source's icon, else the one the PC pulls out of the .ipa.
+    func icon(for app: SignedApp) -> URL? {
+        if let s = storeEntry(for: app)?.icon, let u = URL(string: s) { return u }
+        var q = URLComponents()
+        q.queryItems = [URLQueryItem(name: "app", value: app.id), URLQueryItem(name: "code", value: code)]
+        return configured ? url("/icon?" + (q.percentEncodedQuery ?? "")) : nil
+    }
+
+    func icon(for s: StoreApp) -> URL? {
+        if let i = s.icon, let u = URL(string: i) { return u }
+        return installed(s).flatMap { icon(for: $0) }
+    }
+
     func update(for app: SignedApp) -> StoreApp? {
         guard let s = storeEntry(for: app), let v = app.version, !v.isEmpty else { return nil }
         return Version.isNewer(s.version, than: v) ? s : nil

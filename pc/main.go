@@ -407,7 +407,8 @@ func serve() error {
 
 	auth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get("X-Ipakill-Code") != cfg.Code {
+			// Images can't carry headers, so the code may also come as ?code=.
+			if r.Header.Get("X-Ipakill-Code") != cfg.Code && r.URL.Query().Get("code") != cfg.Code {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "wrong pairing code"})
 				return
 			}
@@ -450,6 +451,26 @@ func serve() error {
 		}
 		fmt.Printf("[ipakill] Received %s from iPhone\n", name)
 		installAndReply(w, dst, Meta{})
+	}))
+
+	// The icon of an installed app, read straight out of its .ipa.
+	http.HandleFunc("/icon", auth(func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("app")
+		for _, a := range loadApps() {
+			if keyFor(a) != key {
+				continue
+			}
+			png, err := ipaIcon(a.IPA)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Cache-Control", "max-age=86400")
+			w.Write(png)
+			return
+		}
+		http.NotFound(w, r)
 	}))
 
 	// Store installs: the PC downloads the .ipa itself, so nothing big goes over the phone.

@@ -25,6 +25,30 @@ private struct Cmd: View {
     }
 }
 
+/// An app's real icon; until it loads (or if there is none) a code-style box
+/// with the app's first letter.
+private struct AppIcon: View {
+    let url: URL?
+    let name: String
+    var size: CGFloat = 44
+
+    var body: some View {
+        AsyncImage(url: url) { phase in
+            if case .success(let img) = phase {
+                img.resizable().scaledToFill()
+            } else {
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: size * 0.45, weight: .bold, design: .monospaced))
+                    .foregroundColor(green)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(RoundedRectangle(cornerRadius: size * 0.22).stroke(green.opacity(0.5)))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.22))
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
@@ -148,24 +172,27 @@ struct ContentView: View {
             Text("  no apps yet. use [+ ipa] or the store.").foregroundColor(dim)
         }
         ForEach(sync.apps) { app in
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(app.name).bold().lineLimit(1)
-                    Text(app.version ?? "").font(small).foregroundColor(dim)
-                    Spacer()
-                    Text(daysText(app.daysLeft)).foregroundColor(color(app.daysLeft))
-                }
-                Text("expires \(expiry(app.expires))").font(small).foregroundColor(dim)
-                HStack(spacing: 12) {
-                    if let up = sync.update(for: app) {
-                        Cmd(label: "update -> \(up.version)", color: amber) { get(up) }
+            HStack(alignment: .top, spacing: 12) {
+                AppIcon(url: sync.icon(for: app), name: app.name)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text(app.name).bold().lineLimit(1)
+                        Text(app.version ?? "").font(small).foregroundColor(dim)
+                        Spacer()
+                        Text(daysText(app.daysLeft)).foregroundColor(color(app.daysLeft))
                     }
-                    if app.daysLeft < 7, let entry = sync.storeEntry(for: app), sync.update(for: app) == nil {
-                        Cmd(label: "re-sign", color: dim) { get(entry) }
+                    Text("expires \(expiry(app.expires))").font(small).foregroundColor(dim)
+                    HStack(spacing: 12) {
+                        if let up = sync.update(for: app) {
+                            Cmd(label: "update -> \(up.version)", color: amber) { get(up) }
+                        }
+                        if app.daysLeft < 7, let entry = sync.storeEntry(for: app), sync.update(for: app) == nil {
+                            Cmd(label: "re-sign", color: dim) { get(entry) }
+                        }
                     }
+                    .font(small)
+                    .disabled(sync.busy || !sync.online)
                 }
-                .font(small)
-                .disabled(sync.busy || !sync.online)
             }
             .padding(.vertical, 4)
         }
@@ -186,10 +213,15 @@ struct ContentView: View {
             Text("  nothing here. add a source below.").foregroundColor(dim)
         }
         ForEach(sync.store) { s in
-            HStack {
+            HStack(spacing: 12) {
+                AppIcon(url: sync.icon(for: s), name: s.name)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.name).bold().lineLimit(1)
-                    Text("\(s.version)  \(SourceLoader.label(s.source))").font(small).foregroundColor(dim).lineLimit(1)
+                    Text("\(s.version)  \(s.developer ?? SourceLoader.label(s.source))")
+                        .font(small).foregroundColor(dim).lineLimit(1)
+                    if let sub = s.subtitle {
+                        Text(sub).font(small).foregroundColor(dim.opacity(0.8)).lineLimit(1)
+                    }
                 }
                 Spacer()
                 storeButton(s).font(small).disabled(sync.busy || !sync.online)
@@ -213,7 +245,7 @@ struct ContentView: View {
         }
         HStack {
             Text(">").foregroundColor(dim)
-            TextField("github.com/user/repo or source url", text: $newSource)
+            TextField("github repo, sidestore/altstore/esign source url", text: $newSource)
                 .font(small)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)

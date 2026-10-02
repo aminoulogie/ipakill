@@ -6,12 +6,15 @@ struct StoreApp: Identifiable, Hashable {
     let version: String
     let url: String       // direct https link to the .ipa
     let source: String
+    var icon: String? = nil
+    var subtitle: String? = nil
+    var developer: String? = nil
     var id: String { source + "|" + name }
 }
 
 /// Loads a source. Two kinds are understood:
 ///  - a GitHub repo link (github.com/owner/repo): newest release with an .ipa asset
-///  - an AltStore-style source JSON (https://.../apps.json)
+///  - an AltStore / SideStore / ESign source JSON (https://.../apps.json)
 enum SourceLoader {
     static func load(_ source: String) async throws -> [StoreApp] {
         if let repo = githubRepo(source) {
@@ -66,44 +69,50 @@ enum SourceLoader {
         return []
     }
 
-    private struct ASSource: Decodable {
-        let apps: [ASApp]
-    }
-    private struct ASApp: Decodable {
-        let name: String
-        let version: String?
-        let downloadURL: String?
-        let versions: [ASVersion]?
-    }
-    private struct ASVersion: Decodable {
-        let version: String
-        let downloadURL: String
-    }
-
+    /// Reads AltStore-style JSON loosely: sources disagree on field names and
+    /// types (ESign uses "down"/"icon", sizes are numbers or strings...).
     private static func loadAltStore(_ source: String) async throws -> [StoreApp] {
         guard let url = URL(string: source.hasPrefix("http") ? source : "https://" + source) else {
             throw SourceError.badLink
         }
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let src = try JSONDecoder().decode(ASSource.self, from: data)
-        return src.apps.compactMap { a in
-            if let v = a.versions?.first {
-                return StoreApp(name: a.name, version: v.version, url: v.downloadURL, source: source)
+        let (data, resp) = try await URLSession.shared.data(from: url)
+        if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
+            throw SourceError.http(h.statusCode)
+        }
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let apps = root["apps"] as? [[String: Any]]
+        else { throw SourceError.notASource }
+
+        func str(_ d: [String: Any], _ keys: String...) -> String? {
+            for k in keys {
+                if let v = d[k] as? String, !v.isEmpty { return v }
+                if let v = d[k] as? NSNumber { return v.stringValue }
             }
-            guard let v = a.version, let u = a.downloadURL else { return nil }
-            return StoreApp(name: a.name, version: v, url: u, source: source)
+            return nil
+        }
+        return apps.compactMap { a in
+            guard let name = str(a, "name") else { return nil }
+            let latest = (a["versions"] as? [[String: Any]])?.first ?? [:]
+            guard let link = str(latest, "downloadURL", "down") ?? str(a, "downloadURL", "downloadUrl", "down")
+            else { return nil }
+            let version = str(latest, "version") ?? str(a, "version") ?? "?"
+            return StoreApp(name: name, version: version, url: link, source: source,
+                            icon: str(a, "iconURL", "iconUrl", "icon"),
+                            subtitle: str(a, "subtitle", "localizedDescription", "versionDescription"),
+                            developer: str(a, "developerName", "developer"))
         }
     }
 }
 
 enum SourceError: LocalizedError {
-    case http(Int), badLink
+    case http(Int), badLink, notASource
     var errorDescription: String? {
         switch self {
         case .http(403): return "GitHub rate limit hit, try again later"
         case .http(404): return "repo not found"
         case .http(let c): return "server said \(c)"
         case .badLink: return "not a valid link"
+        case .notASource: return "not an app source (no \"apps\" list)"
         }
     }
 }
