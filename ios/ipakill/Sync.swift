@@ -258,10 +258,15 @@ final class Sync: ObservableObject {
         defer { busy = false }
         do {
             let data: Data
+            let resp: URLResponse
             if let file {
-                (data, _) = try await URLSession.shared.upload(for: req, fromFile: file)
+                (data, resp) = try await URLSession.shared.upload(for: req, fromFile: file)
             } else {
-                (data, _) = try await URLSession.shared.data(for: req)
+                (data, resp) = try await URLSession.shared.data(for: req)
+            }
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                say("! the pc is running an older ipakill - restart 'ipakill serve' on the pc")
+                return
             }
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
             for line in (r.log ?? "").split(separator: "\n") {
