@@ -37,20 +37,32 @@ func readPairRecord(udid string) (pairRecord, error) {
 	if err != nil {
 		return pairRecord{}, fmt.Errorf("no pairing record for this iPhone - plug it in and tap Trust")
 	}
-	rec := string(raw)
-	if strings.HasPrefix(rec, "bplist") {
-		return pairRecord{}, fmt.Errorf("pairing record is in binary format, which ipakill can't read")
+	var certPEM, keyPEM []byte
+	var hostID, buid string
+	if strings.HasPrefix(string(raw), "bplist") {
+		obj, err := parseBplist(raw)
+		d, ok := obj.(map[string]any)
+		if err != nil || !ok {
+			return pairRecord{}, fmt.Errorf("could not read the pairing record")
+		}
+		certPEM, _ = d["HostCertificate"].([]byte)
+		keyPEM, _ = d["HostPrivateKey"].([]byte)
+		hostID, _ = d["HostID"].(string)
+		buid, _ = d["SystemBUID"].(string)
+	} else {
+		rec := string(raw)
+		certPEM, _ = plistData(rec, "HostCertificate")
+		keyPEM, _ = plistData(rec, "HostPrivateKey")
+		hostID, buid = plistString(rec, "HostID"), plistString(rec, "SystemBUID")
 	}
-	certPEM, err1 := plistData(rec, "HostCertificate")
-	keyPEM, err2 := plistData(rec, "HostPrivateKey")
-	if err1 != nil || err2 != nil {
+	if certPEM == nil || keyPEM == nil || hostID == "" {
 		return pairRecord{}, fmt.Errorf("pairing record is missing the host certificate")
 	}
 	cert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
 		return pairRecord{}, fmt.Errorf("bad pairing certificate: %v", err)
 	}
-	return pairRecord{HostID: plistString(rec, "HostID"), SystemBUID: plistString(rec, "SystemBUID"), Cert: cert}, nil
+	return pairRecord{HostID: hostID, SystemBUID: buid, Cert: cert}, nil
 }
 
 func plistData(s, key string) ([]byte, error) {
@@ -117,7 +129,7 @@ func setWifiSync(on *bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !strings.Contains(resp, "<key>Number</key><integer>0</integer>") {
+	if !regexp.MustCompile(`<key>Number</key>\s*<integer>0</integer>`).MatchString(resp) {
 		return false, fmt.Errorf("could not reach the iPhone's lockdown service")
 	}
 
@@ -131,7 +143,7 @@ func setWifiSync(on *bool) (bool, error) {
 		return false, err
 	}
 	var conn net.Conn = c
-	if strings.Contains(resp, "<key>EnableSessionSSL</key><true/>") {
+	if regexp.MustCompile(`<key>EnableSessionSSL</key>\s*<true/>`).MatchString(resp) {
 		t := tls.Client(c, &tls.Config{
 			Certificates:       []tls.Certificate{pr.Cert},
 			InsecureSkipVerify: true, // the phone uses a self-signed cert from pairing
@@ -158,5 +170,5 @@ func setWifiSync(on *bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(resp, "<key>Value</key><true/>"), nil
+	return regexp.MustCompile(`<key>Value</key>\s*<true/>`).MatchString(resp), nil
 }
