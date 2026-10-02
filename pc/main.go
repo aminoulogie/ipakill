@@ -87,6 +87,20 @@ func main() {
 				fmt.Printf("  %-8s %s  (#%d)\n", map[string]string{"USB": "USB", "Network": "Wi-Fi"}[d.Conn], d.UDID, d.ID)
 			}
 		}
+	case "wifi":
+		var want *bool
+		if len(os.Args) > 2 {
+			v := os.Args[2] == "on"
+			want = &v
+		}
+		var on bool
+		if on, err = setWifiSync(want); err == nil {
+			if on {
+				fmt.Println("[ipakill] Wi-Fi sync is ON - you can unplug, installs work over Wi-Fi.")
+			} else {
+				fmt.Println("[ipakill] Wi-Fi sync is OFF. Turn it on with: ipakill wifi on")
+			}
+		}
 	case "serve":
 		err = serve()
 	default:
@@ -100,38 +114,56 @@ func main() {
 
 // ---------------------------------------------------------------- devices
 
-// listDevices asks Apple's usbmuxd which iPhones it can reach, over USB or Wi-Fi.
-func listDevices() ([]Device, error) {
+func dialMux() (net.Conn, error) {
 	c, err := net.DialTimeout("tcp", usbmuxAddr, 3*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("Apple Mobile Device Service not reachable (is iTunes installed?)")
 	}
-	defer c.Close()
-	c.SetDeadline(time.Now().Add(5 * time.Second))
+	return c, nil
+}
 
+// muxRequest sends one plist message to usbmuxd and returns its plist reply.
+// fields is the inner XML of the request dict.
+func muxRequest(c net.Conn, messageType, fields string) (string, error) {
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	defer c.SetDeadline(time.Time{})
 	body := []byte(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>` +
-		`<key>MessageType</key><string>ListDevices</string>` +
+		`<key>MessageType</key><string>` + messageType + `</string>` +
 		`<key>ClientVersionString</key><string>ipakill</string>` +
-		`<key>ProgName</key><string>ipakill</string></dict></plist>`)
+		`<key>ProgName</key><string>ipakill</string>` + fields + `</dict></plist>`)
 	hdr := make([]byte, 16)
 	binary.LittleEndian.PutUint32(hdr[0:], uint32(16+len(body)))
 	binary.LittleEndian.PutUint32(hdr[4:], 1) // version: plist
 	binary.LittleEndian.PutUint32(hdr[8:], 8) // message: plist
 	binary.LittleEndian.PutUint32(hdr[12:], 1)
 	if _, err := c.Write(append(hdr, body...)); err != nil {
-		return nil, err
+		return "", err
 	}
 	if _, err := io.ReadFull(c, hdr); err != nil {
-		return nil, err
+		return "", err
 	}
 	resp := make([]byte, binary.LittleEndian.Uint32(hdr[0:])-16)
 	if _, err := io.ReadFull(c, resp); err != nil {
+		return "", err
+	}
+	return string(resp), nil
+}
+
+// listDevices asks Apple's usbmuxd which iPhones it can reach, over USB or Wi-Fi.
+func listDevices() ([]Device, error) {
+	c, err := dialMux()
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	resp, err := muxRequest(c, "ListDevices", "")
+	if err != nil {
 		return nil, err
 	}
 
 	var devs []Device
 	// Each attached device has exactly one Properties dict holding everything we need.
-	for _, chunk := range strings.Split(string(resp), "<key>Properties</key>")[1:] {
+	for _, chunk := range strings.Split(resp, "<key>Properties</key>")[1:] {
 		d := Device{
 			UDID: plistString(chunk, "SerialNumber"),
 			Conn: plistString(chunk, "ConnectionType"),
