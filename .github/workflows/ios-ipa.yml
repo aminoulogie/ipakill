@@ -1,0 +1,57 @@
+name: Build iOS ipa
+
+# Produces an UNSIGNED ipakill.ipa. Signing happens on install with
+# `ipakill <file>.ipa` on the PC, so this repo never holds Apple credentials.
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios-ipa.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios && xcodegen generate
+
+      - name: Archive (unsigned)
+        run: |
+          set -eo pipefail
+          cd ios
+          xcodebuild \
+            -project ipakill.xcodeproj \
+            -scheme ipakill \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath "$RUNNER_TEMP/ipakill.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+
+      # An .ipa is just a zip with the .app inside Payload/.
+      - name: Package as .ipa
+        run: |
+          set -eo pipefail
+          APP_PATH="$RUNNER_TEMP/ipakill.xcarchive/Products/Applications/ipakill.app"
+          test -d "$APP_PATH" || { echo "No .app in archive"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          cd "$RUNNER_TEMP"
+          zip -qry ipakill.ipa Payload
+          ls -lh ipakill.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipakill-ipa
+          path: ${{ runner.temp }}/ipakill.ipa
+          if-no-files-found: error
+          retention-days: 30
