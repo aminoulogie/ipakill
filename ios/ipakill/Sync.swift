@@ -6,6 +6,7 @@ struct SignedApp: Codable, Identifiable {
     let bundle: String
     let signed: Date
     let expires: Date
+    let version: String?
 
     var id: String { bundle.isEmpty ? name : bundle }
     var daysLeft: Double { expires.timeIntervalSinceNow / 86_400 }
@@ -35,6 +36,16 @@ final class Sync: ObservableObject {
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
 
+    @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
+    @Published var store: [StoreApp] = []
+    @Published var storeErrors: [String: String] = [:]   // source -> error
+    @Published var loadingStore = false
+
+    static let defaultSources = [
+        "https://github.com/aminoulogie/kite-bay-otter-topaz",   // SOMA
+        "https://github.com/aminoulogie/ipakill",
+    ]
+
     @Published var host: String { didSet { defaults.set(host, forKey: "host") } }
     @Published var code: String { didSet { defaults.set(code, forKey: "code") } }
 
@@ -53,6 +64,7 @@ final class Sync: ObservableObject {
     init() {
         host = defaults.string(forKey: "host") ?? ""
         code = defaults.string(forKey: "code") ?? ""
+        sources = defaults.stringArray(forKey: "sources") ?? Sync.defaultSources
         // Show the last known list even before the PC answers.
         if let data = defaults.data(forKey: "apps"),
            let cached = try? Sync.decoder.decode([SignedApp].self, from: data) {
@@ -119,6 +131,81 @@ final class Sync: ObservableObject {
         }
     }
 
+    // MARK: store
+
+    func refreshStore() async {
+        loadingStore = true
+        defer { loadingStore = false }
+        var all: [StoreApp] = []
+        var errors: [String: String] = [:]
+        await withTaskGroup(of: (String, Result<[StoreApp], Error>).self) { group in
+            for src in sources {
+                group.addTask {
+                    do { return (src, .success(try await SourceLoader.load(src))) }
+                    catch { return (src, .failure(error)) }
+                }
+            }
+            for await (src, result) in group {
+                switch result {
+                case .success(let apps): all += apps
+                case .failure(let e): errors[src] = e.localizedDescription
+                }
+            }
+        }
+        store = all.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        storeErrors = errors
+    }
+
+    func addSource(_ s: String) {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !sources.contains(t) else { return }
+        sources.append(t)
+        say("source added: \(SourceLoader.label(t))")
+        Task { await refreshStore() }
+    }
+
+    func removeSource(_ s: String) {
+        sources.removeAll { $0 == s }
+        store.removeAll { $0.source == s }
+        storeErrors[s] = nil
+    }
+
+    /// The store entry for an installed app (matched by name).
+    func storeEntry(for app: SignedApp) -> StoreApp? {
+        store.first { $0.name.lowercased() == app.name.lowercased() }
+    }
+
+    /// The installed app for a store entry, if any.
+    func installed(_ s: StoreApp) -> SignedApp? {
+        apps.first { $0.name.lowercased() == s.name.lowercased() }
+    }
+
+    func update(for app: SignedApp) -> StoreApp? {
+        guard let s = storeEntry(for: app), let v = app.version, !v.isEmpty else { return nil }
+        return Version.isNewer(s.version, than: v) ? s : nil
+    }
+
+    /// Asks the PC to download the .ipa from the source, sign it and install it.
+    func install(_ app: StoreApp) async {
+        guard online else {
+            say("! not synced - start 'ipakill serve' on the PC")
+            return
+        }
+        var q = URLComponents()
+        q.queryItems = [
+            URLQueryItem(name: "url", value: app.url),
+            URLQueryItem(name: "name", value: app.name),
+            URLQueryItem(name: "version", value: app.version),
+        ]
+        guard var req = request("/install-url?" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
+        req.httpMethod = "POST"
+        say("$ ipakill get \(app.name) \(app.version)")
+        say("pc is downloading + signing... ~1 min")
+        await send(req, upload: nil)
+    }
+
+    // MARK: install from Files
+
     /// Uploads an .ipa to the PC, which signs it and installs it back onto this iPhone.
     func install(_ file: URL) async {
         guard file.pathExtension.lowercased() == "ipa" else {
@@ -148,12 +235,21 @@ final class Sync: ObservableObject {
         guard var req = request("/install?name=\(encoded)", timeout: 600) else { return }
         req.httpMethod = "POST"
 
-        busy = true
-        defer { busy = false }
         say("$ ipakill \(name)")
         say("uploading to \(pcName.isEmpty ? "PC" : pcName)... signing takes ~30s")
+        await send(req, upload: tmp)
+    }
+
+    private func send(_ req: URLRequest, upload file: URL?) async {
+        busy = true
+        defer { busy = false }
         do {
-            let (data, _) = try await URLSession.shared.upload(for: req, fromFile: tmp)
+            let data: Data
+            if let file {
+                (data, _) = try await URLSession.shared.upload(for: req, fromFile: file)
+            } else {
+                (data, _) = try await URLSession.shared.data(for: req)
+            }
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
             for line in (r.log ?? "").split(separator: "\n") {
                 say(line.trimmingCharacters(in: .whitespaces))

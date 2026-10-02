@@ -1,42 +1,77 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
+// Everything on screen is monospaced text: no icons, buttons look like [this].
 private let green = Color(red: 0.2, green: 1.0, blue: 0.4)
 private let dim = Color(white: 0.55)
+private let amber = Color(red: 1.0, green: 0.8, blue: 0.2)
 private let mono = Font.system(.body, design: .monospaced)
+private let small = Font.system(.caption, design: .monospaced)
+
+private enum Tab: String, CaseIterable {
+    case apps, store, log
+}
+
+/// A text button: `[ label ]`.
+private struct Cmd: View {
+    let label: String
+    var color: Color = green
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text("[\(label)]").foregroundColor(color)
+        }
+        .buttonStyle(.plain)
+    }
+}
 
 struct ContentView: View {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
+    @State private var tab: Tab = .apps
     @State private var picking = false
     @State private var settings = false
+    @State private var newSource = ""
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack {
             Color.black.ignoresSafeArea()
-
             VStack(alignment: .leading, spacing: 10) {
                 header
+                tabs
                 rule
-                appList
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        switch tab {
+                        case .apps: appsTab
+                        case .store: storeTab
+                        case .log: logTab
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .refreshable {
+                    await sync.poll()
+                    await sync.refreshStore()
+                }
                 rule
-                logView
+                bottomBar
             }
             .font(mono)
             .foregroundColor(green)
             .padding(.horizontal, 16)
-            .padding(.top, 8)
-
-            plusButton
+            .padding(.vertical, 8)
         }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.data]) { result in
             if case .success(let url) = result {
+                tab = .log
                 Task { await sync.install(url) }
             }
         }
         .sheet(isPresented: $settings) { SettingsView().environmentObject(sync) }
         .onAppear {
             if !sync.configured { settings = true }
+            Task { await sync.refreshStore() }
         }
         .onChange(of: phase) { p in
             p == .active ? sync.start() : sync.stop()
@@ -47,100 +82,202 @@ struct ContentView: View {
     }
 
     private var rule: some View {
-        Rectangle().fill(green.opacity(0.3)).frame(height: 1)
+        Text(String(repeating: "-", count: 60)).lineLimit(1).foregroundColor(green.opacity(0.35))
     }
 
+    // MARK: header
+
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text("ipakill").font(.system(.title2, design: .monospaced).bold())
+                Text("v\(appVersion)").font(small).foregroundColor(dim)
                 Spacer()
-                Circle()
-                    .fill(sync.online ? green : Color.red)
-                    .frame(width: 12, height: 12)
-                    .shadow(color: sync.online ? green : .red, radius: 6)
-                Text(sync.online ? "SYNCED" : "OFFLINE")
-                    .font(.system(.caption, design: .monospaced).bold())
+                Text(sync.online ? "● SYNCED" : "● OFFLINE")
+                    .font(small.bold())
                     .foregroundColor(sync.online ? green : .red)
-                Button { settings = true } label: {
-                    Image(systemName: "gearshape").foregroundColor(dim)
-                }
-                .padding(.leading, 6)
+                    .shadow(color: sync.online ? green : .red, radius: 4)
+                Cmd(label: "cfg", color: dim) { settings = true }.font(small)
             }
-            Text("> pc: \(sync.online ? sync.pcName : "-") \(sync.host.isEmpty ? "" : "[\(sync.host)]")")
-                .font(.system(.caption, design: .monospaced)).foregroundColor(dim)
-            Text("> iphone link: \(linkText)")
-                .font(.system(.caption, design: .monospaced)).foregroundColor(dim)
+            Text("> pc     \(sync.online ? sync.pcName : "-")  \(sync.host)").font(small).foregroundColor(dim)
+            Text("> link   \(linkText)").font(small).foregroundColor(dim)
             if let exp = sync.selfExpires {
-                Text("> ipakill itself: \(daysText(exp.timeIntervalSinceNow / 86_400))")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(color(exp.timeIntervalSinceNow / 86_400))
+                let d = exp.timeIntervalSinceNow / 86_400
+                Text("> self   \(daysText(d))").font(small).foregroundColor(color(d))
             }
         }
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
     }
 
     private var linkText: String {
         guard sync.online else { return "-" }
         switch sync.phoneLink {
-        case "wifi": return "wi-fi (installs without usb)"
+        case "wifi": return "wi-fi"
         case "usb": return "usb"
-        default: return "not seen - turn on Wi-Fi sync in iTunes"
+        default: return "iphone not seen by pc"
         }
     }
 
-    private var appList: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("$ ipakill list").foregroundColor(dim)
-            if sync.apps.isEmpty {
-                Text("  no apps yet - tap + to install").foregroundColor(dim)
+    private var tabs: some View {
+        HStack(spacing: 14) {
+            ForEach(Tab.allCases, id: \.self) { t in
+                Button { tab = t } label: {
+                    Text(tab == t ? "[\(t.rawValue)]" : " \(t.rawValue) ")
+                        .foregroundColor(tab == t ? .black : green)
+                        .padding(.horizontal, 2)
+                        .background(tab == t ? green : Color.clear)
+                }
+                .buttonStyle(.plain)
             }
-            ForEach(sync.apps) { app in
+            if updateCount > 0 {
+                Text("\(updateCount) update\(updateCount == 1 ? "" : "s")").font(small).foregroundColor(amber)
+            }
+        }
+    }
+
+    private var updateCount: Int { sync.apps.filter { sync.update(for: $0) != nil }.count }
+
+    // MARK: apps
+
+    @ViewBuilder private var appsTab: some View {
+        Text("$ ipakill list").foregroundColor(dim)
+        if sync.apps.isEmpty {
+            Text("  no apps yet. use [+ ipa] or the store.").foregroundColor(dim)
+        }
+        ForEach(sync.apps) { app in
+            VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text(app.name).lineLimit(1)
+                    Text(app.name).bold().lineLimit(1)
+                    Text(app.version ?? "").font(small).foregroundColor(dim)
                     Spacer()
                     Text(daysText(app.daysLeft)).foregroundColor(color(app.daysLeft))
                 }
-                ProgressView(value: max(0, min(7, app.daysLeft)), total: 7)
-                    .tint(color(app.daysLeft))
+                Text(bar(app.daysLeft)).font(small).foregroundColor(color(app.daysLeft))
+                HStack(spacing: 12) {
+                    if let up = sync.update(for: app) {
+                        Cmd(label: "update -> \(up.version)", color: amber) { get(up) }
+                    }
+                    if app.daysLeft < 7, let entry = sync.storeEntry(for: app), sync.update(for: app) == nil {
+                        Cmd(label: "re-sign", color: dim) { get(entry) }
+                    }
+                }
+                .font(small)
+                .disabled(sync.busy || !sync.online)
             }
+            .padding(.vertical, 4)
         }
     }
 
-    private var logView: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(sync.log.enumerated()), id: \.offset) { i, line in
-                        Text(line)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundColor(line.hasPrefix("!") ? .red : green.opacity(0.85))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(i)
-                    }
-                    if sync.busy {
-                        Text("working…").font(.system(.caption, design: .monospaced)).foregroundColor(dim)
-                    }
-                    Color.clear.frame(height: 80) // room under the + button
+    // MARK: store
+
+    @ViewBuilder private var storeTab: some View {
+        HStack {
+            Text("$ ipakill store").foregroundColor(dim)
+            Spacer()
+            Cmd(label: sync.loadingStore ? "loading.." : "refresh", color: dim) {
+                Task { await sync.refreshStore() }
+            }
+            .font(small)
+        }
+        if sync.store.isEmpty && !sync.loadingStore {
+            Text("  nothing here. add a source below.").foregroundColor(dim)
+        }
+        ForEach(sync.store) { s in
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(s.name).bold().lineLimit(1)
+                    Text("\(s.version)  \(SourceLoader.label(s.source))").font(small).foregroundColor(dim).lineLimit(1)
+                }
+                Spacer()
+                storeButton(s).font(small).disabled(sync.busy || !sync.online)
+            }
+            .padding(.vertical, 3)
+        }
+
+        Text(" ").font(small)
+        Text("$ ipakill sources").foregroundColor(dim)
+        ForEach(sync.sources, id: \.self) { src in
+            VStack(alignment: .leading, spacing: 1) {
+                HStack {
+                    Text("> " + SourceLoader.label(src)).font(small).lineLimit(1)
+                    Spacer()
+                    Cmd(label: "rm", color: .red) { sync.removeSource(src) }.font(small)
+                }
+                if let err = sync.storeErrors[src] {
+                    Text("  ! \(err)").font(small).foregroundColor(.red)
                 }
             }
-            .onChange(of: sync.log.count) { n in
-                withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) }
-            }
+        }
+        HStack {
+            Text(">").foregroundColor(dim)
+            TextField("github.com/user/repo or source url", text: $newSource)
+                .font(small)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .keyboardType(.URL)
+                .onSubmit(addSource)
+            Cmd(label: "add") { addSource() }.font(small)
         }
     }
 
-    private var plusButton: some View {
-        Button { picking = true } label: {
-            Image(systemName: sync.busy ? "hourglass" : "plus")
-                .font(.system(size: 30, weight: .bold))
-                .foregroundColor(.black)
-                .frame(width: 66, height: 66)
-                .background(Circle().fill(sync.online && !sync.busy ? green : dim))
-                .shadow(color: green.opacity(sync.online ? 0.6 : 0), radius: 10)
+    @ViewBuilder private func storeButton(_ s: StoreApp) -> some View {
+        if let have = sync.installed(s) {
+            if let v = have.version, !v.isEmpty, Version.isNewer(s.version, than: v) {
+                Cmd(label: "update", color: amber) { get(s) }
+            } else {
+                Cmd(label: "installed", color: dim) { get(s) }
+            }
+        } else {
+            Cmd(label: "get") { get(s) }
         }
-        .disabled(sync.busy)
-        .padding(24)
     }
+
+    private func addSource() {
+        sync.addSource(newSource)
+        newSource = ""
+    }
+
+    private func get(_ s: StoreApp) {
+        tab = .log
+        Task { await sync.install(s) }
+    }
+
+    // MARK: log
+
+    @ViewBuilder private var logTab: some View {
+        ForEach(Array(sync.log.enumerated()), id: \.offset) { _, line in
+            Text(line)
+                .font(small)
+                .foregroundColor(line.hasPrefix("!") ? .red : green.opacity(0.85))
+        }
+        if sync.busy {
+            Text("working...").font(small).foregroundColor(dim)
+        }
+    }
+
+    // MARK: bottom bar
+
+    private var bottomBar: some View {
+        HStack {
+            Text(sync.busy ? "$ _ working" : "$ _").foregroundColor(dim).font(small)
+            Spacer()
+            Button { picking = true } label: {
+                Text(sync.busy ? "[ ... ]" : "[ + ipa ]")
+                    .bold()
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(sync.online && !sync.busy ? green : dim)
+            }
+            .buttonStyle(.plain)
+            .disabled(sync.busy)
+        }
+    }
+
+    // MARK: helpers
 
     private func daysText(_ days: Double) -> String {
         if days <= 0 { return "EXPIRED" }
@@ -148,8 +285,14 @@ struct ContentView: View {
         return String(format: "%.1fd left", days)
     }
 
+    /// `[#####--]` - one block per day of the 7-day signature.
+    private func bar(_ days: Double) -> String {
+        let full = max(0, min(7, Int(days.rounded(.up))))
+        return "[" + String(repeating: "#", count: full) + String(repeating: "-", count: 7 - full) + "]"
+    }
+
     private func color(_ days: Double) -> Color {
-        days > 3 ? green : days > 1 ? .yellow : .red
+        days > 3 ? green : days > 1 ? amber : .red
     }
 }
 
@@ -162,16 +305,15 @@ struct SettingsView: View {
             Color.black.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 16) {
                 Text("$ ipakill pair").font(.system(.title3, design: .monospaced).bold())
-                Text("On the PC run:  ipakill serve\nthen type what it prints.")
+                Text("on the pc run:  ipakill serve\nthen type what it prints.")
                     .foregroundColor(dim)
-                field("PC address", "192.168.1.20", $sync.host, .decimalPad)
+                field("pc address", "192.168.1.20", $sync.host, .decimalPad)
                 field("pairing code", "123456", $sync.code, .numberPad)
-                Button {
-                    dismiss()
-                } label: {
+                Button { dismiss() } label: {
                     Text("[ save ]").bold().frame(maxWidth: .infinity).padding(12)
-                        .background(RoundedRectangle(cornerRadius: 6).stroke(green))
+                        .overlay(Rectangle().stroke(green))
                 }
+                .buttonStyle(.plain)
                 Spacer()
             }
             .font(mono)
@@ -189,7 +331,7 @@ struct SettingsView: View {
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 6).stroke(green.opacity(0.5)))
+                .overlay(Rectangle().stroke(green.opacity(0.5)))
         }
     }
 }

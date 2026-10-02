@@ -45,6 +45,7 @@ var (
 
 	bundleRe  = regexp.MustCompile(`binary identifier to (\S+) \(derived`)
 	versionRe = regexp.MustCompile(`(?i)[-_ ]v?\d[\w.\-() ]*$`)
+	semverRe  = regexp.MustCompile(`\d+(\.\d+)+(-[0-9A-Za-z.]+)?`)
 	installMu sync.Mutex
 )
 
@@ -54,6 +55,12 @@ type App struct {
 	Signed  time.Time `json:"signed"`
 	Expires time.Time `json:"expires"`
 	IPA     string    `json:"ipa"`
+	Version string    `json:"version,omitempty"`
+}
+
+// Meta names an install; empty fields are guessed from the .ipa file name.
+type Meta struct {
+	Name, Version string
 }
 
 type Device struct {
@@ -74,7 +81,7 @@ func main() {
 			err = fmt.Errorf("missing .ipa path")
 			break
 		}
-		_, err = install(os.Args[2], os.Stdout, os.Args[3:]...)
+		_, err = install(os.Args[2], os.Stdout, Meta{}, os.Args[3:]...)
 	case "list":
 		printList()
 	case "devices":
@@ -201,7 +208,7 @@ func pickDevice() (Device, error) {
 
 // install signs and installs ipa, streaming the useful log lines to out.
 // extra is passed straight to plumesign (e.g. --custom-identifier).
-func install(ipa string, out io.Writer, extra ...string) (App, error) {
+func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error) {
 	installMu.Lock()
 	defer installMu.Unlock()
 
@@ -251,12 +258,19 @@ func install(ipa string, out io.Writer, extra ...string) (App, error) {
 		return App{}, fmt.Errorf("install failed - full log: %s", logFile)
 	}
 
-	name := strings.TrimSuffix(filepath.Base(ipa), filepath.Ext(ipa))
-	if n := versionRe.ReplaceAllString(name, ""); n != "" {
-		name = n
+	base := strings.TrimSuffix(filepath.Base(ipa), filepath.Ext(ipa))
+	name, version := meta.Name, meta.Version
+	if name == "" {
+		name = base
+		if n := versionRe.ReplaceAllString(base, ""); n != "" {
+			name = n
+		}
+	}
+	if version == "" {
+		version = semverRe.FindString(base)
 	}
 	now := time.Now().Truncate(time.Second) // whole seconds keep the JSON dates easy for iOS to parse
-	app := App{Name: name, Bundle: bundle, Signed: now, Expires: now.Add(signedFor), IPA: ipa}
+	app := App{Name: name, Bundle: bundle, Signed: now, Expires: now.Add(signedFor), IPA: ipa, Version: version}
 	apps := loadApps()
 	apps[keyFor(app)] = app
 	saveApps(apps)
@@ -306,7 +320,7 @@ func printList() {
 		if left <= 0 {
 			status = "EXPIRED - run ipakill again"
 		}
-		fmt.Printf("  %-20s %-16s %s\n", a.Name, status, a.Bundle)
+		fmt.Printf("  %-16s %-10s %-16s %s\n", a.Name, a.Version, status, a.Bundle)
 	}
 }
 
@@ -353,6 +367,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
+	var log bytes.Buffer
+	app, err := install(ipa, io.MultiWriter(os.Stdout, &log), meta)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "log": log.String()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": app, "log": log.String()})
+}
+
+func download(src, dst string) error {
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(src)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server said %s", resp.Status)
+	}
+	f, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, io.LimitReader(resp.Body, 4<<30))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 func serve() error {
@@ -404,14 +449,28 @@ func serve() error {
 			return
 		}
 		fmt.Printf("[ipakill] Received %s from iPhone\n", name)
+		installAndReply(w, dst, Meta{})
+	}))
 
-		var log bytes.Buffer
-		app, err := install(dst, io.MultiWriter(os.Stdout, &log))
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "log": log.String()})
+	// Store installs: the PC downloads the .ipa itself, so nothing big goes over the phone.
+	http.HandleFunc("/install-url", auth(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		src := q.Get("url")
+		if !strings.HasPrefix(src, "https://") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "source link must be https"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": app, "log": log.String()})
+		name := filepath.Base(strings.SplitN(src, "?", 2)[0])
+		if !strings.HasSuffix(strings.ToLower(name), ".ipa") {
+			name = "download.ipa"
+		}
+		fmt.Printf("[ipakill] Downloading %s\n", src)
+		dst := filepath.Join(ipaDir, name)
+		if err := download(src, dst); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "download failed: " + err.Error()})
+			return
+		}
+		installAndReply(w, dst, Meta{Name: q.Get("name"), Version: q.Get("version")})
 	}))
 
 	fmt.Println("[ipakill] Wi-Fi sync is running. In the ipakill iPhone app, enter:")

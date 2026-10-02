@@ -1,13 +1,17 @@
 name: Build iOS ipa
 
-# Produces an UNSIGNED ipakill.ipa. Signing happens on install with
-# `ipakill <file>.ipa` on the PC, so this repo never holds Apple credentials.
+# Produces an UNSIGNED ipakill-<version>.ipa and publishes it as a GitHub
+# release, which is what the ipakill store reads to offer updates. Signing
+# happens on install, so this repo never holds Apple credentials.
 
 on:
   push:
     branches: [main]
     paths: ['ios/**', '.github/workflows/ios-ipa.yml']
   workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the release
 
 jobs:
   build:
@@ -16,6 +20,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: echo "v=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Generate Xcode project
         run: |
@@ -35,6 +43,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="${{ steps.ver.outputs.v }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
             archive
 
       # An .ipa is just a zip with the .app inside Payload/.
@@ -46,12 +56,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
-          zip -qry ipakill.ipa Payload
-          ls -lh ipakill.ipa
+          zip -qry "ipakill-${{ steps.ver.outputs.v }}.ipa" Payload
+          ls -lh ipakill-*.ipa
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.v }}
+        run: |
+          gh release create "v$V" "$RUNNER_TEMP/ipakill-$V.ipa" \
+            --repo "$GITHUB_REPOSITORY" --title "ipakill $V" \
+            --notes "Unsigned. Install from the ipakill store, or run: ipakill ipakill-$V.ipa"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ipakill-ipa
-          path: ${{ runner.temp }}/ipakill.ipa
+          path: ${{ runner.temp }}/ipakill-*.ipa
           if-no-files-found: error
           retention-days: 30
