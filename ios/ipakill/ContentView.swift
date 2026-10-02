@@ -155,7 +155,7 @@ struct ContentView: View {
                     Spacer()
                     Text(daysText(app.daysLeft)).foregroundColor(color(app.daysLeft))
                 }
-                Text(bar(app.daysLeft)).font(small).foregroundColor(color(app.daysLeft))
+                Text("expires \(expiry(app.expires))").font(small).foregroundColor(dim)
                 HStack(spacing: 12) {
                     if let up = sync.update(for: app) {
                         Cmd(label: "update -> \(up.version)", color: amber) { get(up) }
@@ -285,10 +285,11 @@ struct ContentView: View {
         return String(format: "%.1fd left", days)
     }
 
-    /// `[#####--]` - one block per day of the 7-day signature.
-    private func bar(_ days: Double) -> String {
-        let full = max(0, min(7, Int(days.rounded(.up))))
-        return "[" + String(repeating: "#", count: full) + String(repeating: "-", count: 7 - full) + "]"
+    /// "fri 9 oct 21:04"
+    private func expiry(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "EEE d MMM HH:mm"
+        return f.string(from: date).lowercased()
     }
 
     private func color(_ days: Double) -> Color {
