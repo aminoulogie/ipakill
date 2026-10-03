@@ -2,21 +2,35 @@ package main
 
 // wifiScript is installed into Alpine as /usr/local/bin/wifi. Android's Wi-Fi service is
 // stopped in takeover mode, so we drive the Broadcom bcmdhd driver (already loaded by the
-// kernel at boot) with plain Linux tools: wpa_supplicant joins the network, busybox udhcpc
-// gets an address. The driver loads its firmware from /system when wlan0 goes up; /system is
-// bound into the Alpine root so those paths resolve the same here (see alpineMounts).
+// kernel at boot) ourselves. /system is bound into the Alpine root (see alpineMounts), so the
+// driver finds its firmware and Android's own binaries run here.
+//
+// Verified on the tablet (2026-10-03): Alpine's wpa_supplicant 2.11 can't use this 3.4
+// kernel's nl80211 ("Could not allocate genl cache"), and wext scans fail. Condor's
+// /system/bin/wpa_supplicant works, but it runs as Android's wifi user (uid 1010): its config
+// and control-socket directory must belong to that uid, and wpa_cli must create its reply
+// socket with umask 0 so the supplicant can answer. busybox udhcpc then gets the address.
 const wifiScript = `#!/bin/sh
 # wifi: Wi-Fi for condor (Broadcom bcmdhd on the Condor TRA-901G)
 #   wifi scan                     list networks
 #   wifi connect SSID [password]  join (saved: reconnects at every boot)
 #   wifi status | off | forget | debug
 CONF=/etc/condor/wpa.conf
+RUNCONF=/etc/condor/wpa-android.conf
+SOCK=/run/wpa_supplicant
+WIFI_UID=1010
 IF=wlan0
 P=/sys/module/bcmdhd/parameters
 LOG=/var/log/wifi.log
 
+# Condor's supplicant speaks this kernel's nl80211; Alpine's can't (see wifi.go).
+SUP=/system/bin/wpa_supplicant
+[ -x $SUP ] || SUP=wpa_supplicant
+
+cli() { (umask 0; wpa_cli -p $SOCK -i $IF "$@"); }
+
 need() {
-	for c in wpa_supplicant wpa_cli iw; do
+	for c in wpa_cli iw; do
 		command -v $c >/dev/null 2>&1 && continue
 		echo "missing tools: run  apk add wpa_supplicant iw  (with 'condor net' running on the PC)"
 		exit 1
@@ -32,7 +46,7 @@ firmware() {
 		[ -n "$fw" ] && echo "$fw" > $P/firmware_path
 	fi
 	cur=$(cat $P/nvram_path 2>/dev/null)
-	if [ -z "$cur" ] || [ ! -f "$cur" ]; then
+	if [ -e $P/nvram_path ] && { [ -z "$cur" ] || [ ! -f "$cur" ]; }; then
 		nv=$(ls /system/etc/wifi/*.cal /system/etc/wifi/*nvram*.txt /system/etc/wifi/bcmdhd*.txt /system/etc/firmware/*nvram*.txt /system/etc/firmware/*.cal 2>/dev/null | head -n1)
 		[ -n "$nv" ] && echo "$nv" > $P/nvram_path
 	fi
@@ -47,21 +61,25 @@ up() {
 
 join() {
 	pkill wpa_supplicant 2>/dev/null; pkill -f "udhcpc -i $IF" 2>/dev/null; sleep 1
-	mkdir -p /run/wpa_supplicant
-	wpa_supplicant -B -i $IF -D nl80211,wext -c $CONF >>$LOG 2>&1 || {
+	# The supplicant runs as the wifi user: give it its config and socket directory.
+	rm -rf $SOCK; mkdir -p $SOCK
+	chown $WIFI_UID:$WIFI_UID $SOCK; chmod 770 $SOCK
+	sed "s#^ctrl_interface=.*#ctrl_interface=$SOCK#" $CONF > $RUNCONF
+	chown $WIFI_UID:$WIFI_UID $RUNCONF; chmod 600 $RUNCONF
+	$SUP -B -i $IF -Dnl80211 -c $RUNCONF >>$LOG 2>&1 || {
 		echo "wpa_supplicant failed (wifi debug)"; return 1; }
 	echo "joining..."
 	i=0
 	while [ $i -lt 25 ]; do
-		wpa_cli -i $IF status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && break
+		cli status 2>/dev/null | grep -q '^wpa_state=COMPLETED' && break
 		sleep 1; i=$((i+1))
 	done
-	if ! wpa_cli -i $IF status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
-		echo "couldn't join: wrong password, or the network is out of range"; return 1
+	if ! cli status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+		echo "couldn't join: wrong password, or the network is out of range (wifi debug)"; return 1
 	fi
 	echo "getting an address..."
 	udhcpc -i $IF -n -q -t 8 >>$LOG 2>&1 || { echo "no address from DHCP"; return 1; }
-	echo "online: $(ip -4 addr show $IF | awk '/inet /{print $2}')  ssid: $(wpa_cli -i $IF status | sed -n 's/^ssid=//p')"
+	echo "online: $(ip -4 addr show $IF | awk '/inet /{print $2}')  ssid: $(cli status | sed -n 's/^ssid=//p')"
 }
 
 case "$1" in
@@ -92,12 +110,12 @@ connect)
 	;;
 boot)  # run by condor-init at startup: reconnect to the saved network, quietly
 	[ -f $CONF ] || exit 0
-	command -v wpa_supplicant >/dev/null 2>&1 || exit 0
+	command -v wpa_cli >/dev/null 2>&1 || exit 0
 	{ up && join; } >>$LOG 2>&1
 	;;
 status)
 	if pgrep wpa_supplicant >/dev/null; then
-		wpa_cli -i $IF status 2>/dev/null | grep -e '^ssid=' -e '^wpa_state=' -e '^ip_address='
+		cli status 2>/dev/null | grep -e '^ssid=' -e '^wpa_state=' -e '^ip_address='
 	else
 		echo "not connected"
 	fi
@@ -114,6 +132,7 @@ debug)
 	echo "== firmware files"; ls -l /system/etc/firmware /system/etc/wifi 2>/dev/null | grep -i -e bcm -e nvram -e cal -e '^/'
 	echo "== interface"; ip link show $IF
 	echo "== log"; tail -n 15 $LOG 2>/dev/null
+	echo "== supplicant (Android log)"; /system/bin/logcat -d -s wpa_supplicant 2>/dev/null | tail -n 15
 	echo "== kernel"; dmesg | grep -i -e dhd -e wl_ -e wlan -e sdio | tail -n 25
 	;;
 *)

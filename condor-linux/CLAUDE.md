@@ -42,6 +42,12 @@ anything about OS options, firmware or flashing).
 - Cameras: ov5645 (rear), ov2675 (front) via atomisp.
 - Storage: ~11 GB /data (internal storage shares /data). No `/dev/block/by-name`.
 - Windows adb returns `\r\r\n` from this tablet; the CLI strips every `\r`.
+- **Wi-Fi works in takeover mode (2026-10-03)**: `iw` scans fine, but Alpine's
+  wpa_supplicant 2.11 fails on this kernel's nl80211 ("Could not allocate genl cache") and
+  wext scans fail. Condor's `/system/bin/wpa_supplicant -Dnl80211` works from inside Alpine
+  (/system is bind-mounted); it runs as uid 1010 (wifi), so its config + socket dir must be
+  owned by 1010 and `wpa_cli` needs `umask 0`. busybox `udhcpc` gets the lease. All of this is
+  the `wifi` command (`os/condor-init/wifi.go`); the saved network reconnects at boot.
 
 ## Boot chain findings (2026-10-03, verified)
 - GPT on mmcblk0: reserved(p1, sector 40) panic factory misc config cache logs system data.
