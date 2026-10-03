@@ -27,14 +27,22 @@ if (-not $admin) {
     return
 }
 
+# Windows' DNS service can hold the hosts file for a moment; retry the write.
+function Write-Hosts([string[]]$lines) {
+    for ($i = 0; $i -lt 10; $i++) {
+        try { [IO.File]::WriteAllLines($hostsFile, $lines); return } catch { Start-Sleep -Milliseconds 300 }
+    }
+    Write-Host "Could not write $hostsFile (locked). Close other programs and run this again." -ForegroundColor Red
+}
+
 function Test-Port443($ip) {
     $c = New-Object Net.Sockets.TcpClient
     try { return $c.ConnectAsync($ip, 443).Wait(3000) -and $c.Connected } catch { return $false } finally { $c.Close() }
 }
 
 # Start from a hosts file without our old pins, so we test what the network gives.
-$kept = Get-Content $hostsFile | Where-Object { $_ -notmatch [regex]::Escape($tag) }
-Set-Content -Path $hostsFile -Value $kept -Encoding ASCII
+$kept = @([IO.File]::ReadAllLines($hostsFile) | Where-Object { $_ -notmatch [regex]::Escape($tag) })
+Write-Hosts $kept
 ipconfig /flushdns | Out-Null
 if ($undo) { Write-Host 'Removed the ipakill Apple pins.' -ForegroundColor Green; return }
 
@@ -79,7 +87,7 @@ foreach ($name in $servers) {
 }
 
 if ($pins) {
-    Add-Content -Path $hostsFile -Value $pins -Encoding ASCII
+    Write-Hosts ($kept + $pins)
     ipconfig /flushdns | Out-Null
 }
 Write-Host 'Done. Try the install again.' -ForegroundColor Green
