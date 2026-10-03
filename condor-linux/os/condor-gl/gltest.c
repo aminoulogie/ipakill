@@ -102,6 +102,7 @@ static void diagnose(void) {
 int main(int argc, char **argv) {
 	(void)argc; (void)argv;
 	say("gltest: OpenGL ES on the framebuffer through Android's own drivers\n");
+	say("step: loading libui, libEGL, libGLESv2\n");
 	void *ui = lib("libui.so"), *egl = lib("libEGL.so"), *gl = lib("libGLESv2.so");
 
 	EGLNativeWindowType (*createDisplaySurface)(void) = sym(ui, "android_createDisplaySurface");
@@ -141,8 +142,10 @@ int main(int argc, char **argv) {
 	void (*glTexImage2D)(u32, int, int, int, int, int, u32, u32, const void *) = sym(gl, "glTexImage2D");
 	void (*glGetShaderiv)(u32, u32, int *) = sym(gl, "glGetShaderiv");
 
+	say("step: opening the framebuffer window\n");
 	EGLNativeWindowType win = createDisplaySurface();
 	if (!win) { say("FAIL: android_createDisplaySurface returned nothing (is SurfaceFlinger still running? stop surfaceflinger)\n"); unpan(); return 1; }
+	say("step: starting the GPU driver (eglGetDisplay, eglInitialize)\n");
 	EGLDisplay dpy = eglGetDisplay(0);
 	EGLint maj = 0, min = 0;
 	if (!dpy || !eglInitialize(dpy, &maj, &min)) {
@@ -153,6 +156,7 @@ int main(int argc, char **argv) {
 	}
 	const EGLint cfgAttr[] = {0x3033 /*SURFACE_TYPE*/, 4 /*WINDOW*/, 0x3040 /*RENDERABLE*/, 4 /*ES2*/,
 		0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3038};
+	say("step: config, surface, context\n");
 	EGLConfig cfg; EGLint n = 0;
 	if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &n) || n < 1) { say("FAIL: no EGL config 0x%x\n", eglGetError()); unpan(); return 1; }
 	EGLSurface surf = eglCreateWindowSurface(dpy, cfg, win, 0);

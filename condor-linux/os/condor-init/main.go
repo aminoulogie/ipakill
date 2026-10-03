@@ -201,6 +201,14 @@ func handle(c net.Conn) {
 	fmt.Fprintf(c, "condor-init shell (pid %d). No Android running. Type 'exit' to close.\n", os.Getpid())
 	cmd := exec.Command(shellPath, "-i")
 	cmd.Env = []string{"PATH=" + shellPATH, "HOME=" + condorHome, "PS1=condor# "}
+	// Android's own environment, so Android programs started from this shell work as they
+	// do under init: the system-properties area (its fd is inherited from init, open in
+	// this process) and the library path. The GPU driver reads properties as it starts.
+	for _, k := range []string{"ANDROID_PROPERTY_WORKSPACE", "ANDROID_ROOT", "ANDROID_DATA", "LD_LIBRARY_PATH"} {
+		if v := os.Getenv(k); v != "" {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c, c, c
 	if err := cmd.Run(); err != nil && err != io.EOF {
 		log.Printf("shell ended: %v", err)

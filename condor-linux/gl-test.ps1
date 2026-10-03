@@ -12,6 +12,7 @@ $bin = Join-Path $PSScriptRoot 'os\condor-gl\gltest'
 $ErrorActionPreference = 'Continue'
 & scp @ssh $bin "root@${Ip}:/tmp/gltest"
 if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at ${Ip}?" -ForegroundColor Red; exit 1 }
-# Run it in Android's own filesystem (init's root, /proc/1/root), not in Alpine: the GPU
-# driver loads its libraries from /vendor, which only exists there.
-& ssh @ssh "root@$Ip" "cp /tmp/gltest /proc/1/root/data/local/tmp/gltest; chmod 755 /proc/1/root/data/local/tmp/gltest; /system/bin/stop surfaceflinger; sleep 1; chroot /proc/1/root /data/local/tmp/gltest 2>&1; echo exit code `$?"
+# Run it as Android runs its own programs: through condor-init's root shell (port 2324 on
+# the tablet), which is in Android's filesystem (/vendor holds the GPU driver) and passes on
+# Android's environment, including the system-properties area the driver reads.
+& ssh @ssh "root@$Ip" "cp /tmp/gltest /proc/1/root/data/local/tmp/gltest; chmod 755 /proc/1/root/data/local/tmp/gltest; /system/bin/stop surfaceflinger; sleep 1; printf 'echo props=`$ANDROID_PROPERTY_WORKSPACE; /data/local/tmp/gltest 2>&1; echo exit code `$?; exit\n' | nc 127.0.0.1 2324"
