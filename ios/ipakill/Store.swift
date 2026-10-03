@@ -15,6 +15,8 @@ struct StoreApp: Identifiable, Hashable {
     var size: Int64? = nil            // bytes
     var date: String? = nil
     var bundleID: String? = nil
+    var category: String? = nil       // AltStore categories: games, utilities, ...
+    var downloads: Int? = nil         // only GitHub releases report this
     var id: String { source + "|" + name }
 
     /// Lowercased text the search matches against.
@@ -71,6 +73,7 @@ enum SourceLoader {
     private struct GHAsset: Decodable {
         let name: String
         let size: Int64?
+        let download_count: Int?
         let browser_download_url: String
     }
 
@@ -90,7 +93,8 @@ enum SourceLoader {
                              url: ipa.browser_download_url, source: source,
                              developer: repo.split(separator: "/").first.map(String.init),
                              notes: r.body, size: ipa.size,
-                             date: r.published_at.map { String($0.prefix(10)) })]
+                             date: r.published_at.map { String($0.prefix(10)) },
+                             downloads: ipa.download_count)]
         }
         return []
     }
@@ -134,7 +138,9 @@ enum SourceLoader {
                             screenshots: screenshots(a),
                             size: size.flatMap { Int64($0) ?? Double($0).map { Int64($0) } },
                             date: (str(latest, "date") ?? str(a, "versionDate")).map { String($0.prefix(10)) },
-                            bundleID: str(a, "bundleIdentifier", "bundleID"))
+                            bundleID: str(a, "bundleIdentifier", "bundleID"),
+                            category: str(a, "category")?.lowercased(),
+                            downloads: str(a, "downloads", "downloadCount", "download_count").flatMap { Int($0) })
         }
         return (info, list)
     }

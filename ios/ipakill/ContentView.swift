@@ -463,28 +463,56 @@ private struct SourceRow: View {
     }
 }
 
-/// The apps of one source (or of all sources), searchable.
+private enum StoreSort: String, CaseIterable, Hashable {
+    case newest = "Newest"
+    case downloads = "Most Downloaded"
+    case name = "Name"
+}
+
+/// "photo-video" -> "Photo & Video"
+private func categoryName(_ c: String) -> String {
+    c.replacingOccurrences(of: "-", with: " & ").capitalized
+}
+
+/// The apps of one source (or of all sources): newest first, sortable,
+/// filterable by category, searchable. Only a page of rows is built at a
+/// time, so long lists stay quick.
 private struct StoreAppsView: View {
     @EnvironmentObject var sync: Sync
     let title: String
     let apps: [StoreApp]
     @Binding var picked: StoreApp?
     @State private var query = ""
-    @State private var results: [StoreApp]?   // nil: not searching
-    @State private var keys: [String] = []
+    @State private var sort: StoreSort = .newest
+    @State private var category: String?
+    @State private var shown: [StoreApp] = []
+    @State private var categories: [String] = []
+    @State private var keys: [String: String] = [:]
+    @State private var limit = 60
+
+    private struct Filter: Hashable {
+        let query: String, sort: StoreSort, category: String?, count: Int
+    }
 
     var body: some View {
-        let shown = results ?? apps
+        let page = shown.prefix(limit)
         List {
             if shown.isEmpty {
-                Text(sync.loadingStore ? "Loading…" : results == nil ? "No apps" : "No results")
+                Text(sync.loadingStore ? "Loading…" : query.isEmpty ? "No apps" : "No results")
                     .foregroundColor(.secondary)
+            } else if category != nil || !query.isEmpty {
+                Text("\(shown.count) apps")
+                    .font(.footnote).foregroundColor(.secondary)
             }
-            ForEach(shown) { s in
+            ForEach(page) { s in
                 NavigationLink {
                     AppDetailView(app: s, picked: $picked)
                 } label: {
-                    StoreAppRow(app: s, picked: $picked)
+                    StoreAppRow(app: s, picked: $picked, showDownloads: sort == .downloads)
+                }
+                .onAppear {
+                    // Reaching the end of the page builds the next one.
+                    if s.id == page.last?.id, limit < shown.count { limit += 60 }
                 }
             }
         }
@@ -494,19 +522,54 @@ private struct StoreAppsView: View {
         .searchable(text: $query, prompt: "Search apps")
         .disableAutocorrection(true)
         .refreshable { await sync.refreshStore() }
-        // Search after typing pauses, over text lowercased once per list.
-        .task(id: query) {
-            let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-            guard !q.isEmpty else {
-                results = nil
-                return
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Picker("Sort", selection: $sort) {
+                        ForEach(StoreSort.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    if !categories.isEmpty {
+                        Picker("Category", selection: $category) {
+                            Text("All Categories").tag(String?.none)
+                            ForEach(categories, id: \.self) { Text(categoryName($0)).tag(String?.some($0)) }
+                        }
+                    }
+                } label: {
+                    Image(systemName: category == nil && sort == .newest
+                          ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+                }
             }
-            try? await Task.sleep(nanoseconds: 180_000_000)
-            guard !Task.isCancelled else { return }
-            if keys.count != apps.count { keys = apps.map(\.searchKey) }
-            results = zip(apps, keys).filter { $0.1.contains(q) }.map(\.0)
         }
-        .onChange(of: apps.count) { _ in keys = [] }
+        .task(id: Filter(query: query, sort: sort, category: category, count: apps.count)) {
+            let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+            if !q.isEmpty {
+                try? await Task.sleep(nanoseconds: 150_000_000)  // wait for typing to pause
+                guard !Task.isCancelled else { return }
+            }
+            if keys.count != apps.count {
+                keys = Dictionary(apps.map { ($0.id, $0.searchKey) }, uniquingKeysWith: { a, _ in a })
+                categories = Array(Set(apps.compactMap(\.category))).sorted()
+            }
+            var list = apps
+            if let category { list = list.filter { $0.category == category } }
+            if !q.isEmpty { list = list.filter { keys[$0.id]?.contains(q) ?? false } }
+            list.sort(by: order)
+            shown = list
+            limit = 60
+        }
+    }
+
+    private func order(_ a: StoreApp, _ b: StoreApp) -> Bool {
+        switch sort {
+        case .name:
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        case .downloads where a.downloads != b.downloads:
+            return (a.downloads ?? -1) > (b.downloads ?? -1)
+        default:
+            // Newest first; undated apps last, by name.
+            if a.date != b.date { return (a.date ?? "") > (b.date ?? "") }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
     }
 }
 
@@ -658,15 +721,19 @@ private struct StoreAppRow: View {
     @EnvironmentObject var sync: Sync
     let app: StoreApp
     @Binding var picked: StoreApp?
+    var showDownloads = false
 
     var body: some View {
         HStack(spacing: 14) {
             AppIcon(url: sync.icon(for: app), name: app.name)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(.body.weight(.semibold)).lineLimit(1)
-                Text([app.version, app.developer].compactMap { $0 }.joined(separator: " · "))
+                Text([app.version, app.developer, app.date].compactMap { $0 }.joined(separator: " · "))
                     .font(.footnote).foregroundColor(.secondary).lineLimit(1)
-                if let sub = app.subtitle {
+                if showDownloads, let n = app.downloads {
+                    Label("\(n.formatted(.number.notation(.compactName))) downloads", systemImage: "arrow.down.circle")
+                        .font(.caption).foregroundColor(.secondary)
+                } else if let sub = app.subtitle {
                     Text(sub).font(.footnote).foregroundColor(.secondary).lineLimit(1)
                 }
             }
