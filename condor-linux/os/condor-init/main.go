@@ -33,6 +33,7 @@ func main() {
 	log.Printf("condor-init starting, pid %d", os.Getpid())
 	// Survive the end of the adb/shell session that may have started us by hand.
 	signal.Ignore(syscall.SIGHUP)
+	fixClock()
 	setBacklight(80)
 	s, err := openScreen(rotation)
 	if err != nil {
@@ -51,8 +52,7 @@ func main() {
 			log.Printf("got %v: screen cleared, exiting", sig)
 			os.Exit(0)
 		}()
-		drawTouchScreen(s)
-		go touchLoop(s)
+		go runHome(s)
 	}
 	serveShell()
 }
