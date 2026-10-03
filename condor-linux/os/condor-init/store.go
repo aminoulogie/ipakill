@@ -403,7 +403,7 @@ func capsules(p *page, x, y, right int, ids, labels []string, on string) int {
 		r := image.Rect(px, y, px+w, y+66)
 		bg, fg := apCard2, apLabel
 		if id == on {
-			bg, fg = apBlue, apBG
+			bg, fg = apBlue, apOnBlue
 		}
 		ui.RoundRect(p.img, r, 33, bg)
 		apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
@@ -501,7 +501,7 @@ func (c *console) storePage() *page {
 		}
 		r := image.Rect(mx, y+40, mx+300, y+136)
 		ui.RoundRect(img, r, 48, apBlue)
-		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Try Again")
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apOnBlue, "Try Again")
 		p.buttons = append(p.buttons, button{"s:retry", r})
 	}
 
@@ -605,7 +605,7 @@ func (c *console) storeBookPage() *page {
 		half := (c.s.W - 2*mx - 24) / 2
 		gr := image.Rect(mx, y, mx+half, y+100)
 		ui.RoundRect(img, gr, 50, apBlue)
-		apTextCenter(img, f.headline, (gr.Min.X+gr.Max.X)/2, (gr.Min.Y+gr.Max.Y)/2, apBG, get)
+		apTextCenter(img, f.headline, (gr.Min.X+gr.Max.X)/2, (gr.Min.Y+gr.Max.Y)/2, apOnBlue, get)
 		p.buttons = append(p.buttons, button{"s:dl", gr})
 		sr := image.Rect(mx+half+24, y, c.s.W-mx, y+100)
 		ui.RoundRect(img, sr, 50, apCard2)

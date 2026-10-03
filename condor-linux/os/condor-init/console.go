@@ -106,11 +106,19 @@ func newConsole(s *Screen) (*console, error) {
 		ch: (m.Ascent + m.Descent).Ceil() + 2, asc: m.Ascent.Ceil() + 1, clients: map[net.Conn]bool{}}
 	c.glyphs = map[glyphKey]*image.RGBA{}
 	c.barH = c.ch + 8
-	c.screenOn, c.mode, c.cfg, c.lastInput = true, modeLauncher, loadSettings(), time.Now()
+	c.screenOn, c.mode, c.cfg, c.lastInput = true, modeBooksHome, loadSettings(), time.Now()
 	if c.pf, err = loadPageFonts(); err != nil {
 		return nil, err
 	}
 	c.lib = loadLibrary()
+	setPalette(!c.cfg.Light)
+	if c.lib.Prefs.ThemeSet < 3 { // the system went dark (Kindle style): books open dark too
+		if !c.cfg.Light {
+			c.lib.Prefs.Theme = themeNight
+		}
+		c.lib.Prefs.ThemeSet = 3
+		c.lib.save()
+	}
 	c.rf = c.readerFontsNow()
 	c.words = loadWords()
 	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
@@ -173,10 +181,11 @@ func (c *console) touchLoop() {
 				return // only the power button wakes the screen
 			}
 			for _, p := range pts {
-				// The "≡ condor" corner of the status bar goes home from any screen.
+				// The left of the status bar ("‹ Books" in Terminal and Settings) goes back to
+				// the Books app from any screen.
 				if p.Up && p.Y < c.barH && p.X < c.s.W/3 {
-					if c.mode != modeLauncher {
-						c.transition("pop", image.Rectangle{}, func() { c.setMode(modeLauncher) })
+					if c.mode != modeBooksHome {
+						c.transition("pop", image.Rectangle{}, func() { c.setMode(modeBooksHome) })
 					}
 					continue
 				}

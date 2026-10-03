@@ -123,7 +123,7 @@ func (c *console) shelfPage() *page {
 			mx, 460, c.s.W-2*mx, 48, 700, apSecondary)
 		r := image.Rect(mx, y+30, mx+420, y+130)
 		ui.RoundRect(img, r, 50, apBlue)
-		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Book Store")
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apOnBlue, "Book Store")
 		p.buttons = append(p.buttons, button{"store", r})
 		return p
 	}
@@ -142,7 +142,7 @@ func (c *console) shelfPage() *page {
 	if last >= 0 {
 		b := c.shelf[last]
 		card := image.Rect(mx, y, c.s.W-mx, y+460)
-		ui.RoundRect(img, card, 30, apGrouped)
+		ui.RoundRect(img, card, 30, apBand)
 		cr := image.Rect(card.Min.X+30, card.Min.Y+30, card.Min.X+30+267, card.Min.Y+30+400)
 		shadowRect(img, cr)
 		c.drawCover(img, cr, item(b))
@@ -169,7 +169,7 @@ func (c *console) shelfPage() *page {
 		// Reading goal ring.
 		mins, goal := c.lib.readingToday(), c.lib.Prefs.GoalMinutes
 		gy := card.Max.Y - 90
-		ring(img, x+44, gy, 38, 12, float64(mins)/float64(max(goal, 1)), rgb(0xd7eef8), apRingBlue)
+		ring(img, x+44, gy, 38, 12, float64(mins)/float64(max(goal, 1)), apRingTrack, apRingBlue)
 		apText(img, f.captionBold, x+110, gy-8, apLabel, "Reading Goal")
 		apText(img, f.caption, x+110, gy+30, apSecondary,
 			fmt.Sprintf("%d of %d min today · %d of %d books this year", mins, goal, c.lib.booksThisYear(), c.lib.Prefs.BooksPerYear))

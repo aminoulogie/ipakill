@@ -39,23 +39,26 @@ func tapButton(t *testing.T, c *console, id string) {
 	t.Fatalf("no button %q on this page", id)
 }
 
-func TestLauncherAndSettings(t *testing.T) {
+func TestBooksIsTheSystem(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	c := testConsole(t)
 	c.cfg = savedSettings{Brightness: 80, ScreenOff: 5}
 	c.redrawAll()
-	if c.mode != modeLauncher || c.page == nil {
-		t.Fatal("should start on the launcher")
+	if c.mode != modeBooksHome || c.page == nil {
+		t.Fatal("should start in the Books app")
+	}
+	if !apDark {
+		t.Fatal("dark mode should be the default")
 	}
 	shot(t, c, "system-home")
-	tapButton(t, c, "terminal")
+	tapButton(t, c, "tab:terminal")
 	if c.mode != modeTerminal {
-		t.Fatal("terminal icon should open the terminal")
+		t.Fatal("the Terminal tab should open the terminal")
 	}
-	c.setMode(modeLauncher)
-	tapButton(t, c, "settings")
+	c.setMode(modeBooksHome)
+	tapButton(t, c, "tab:settings")
 	if c.mode != modeSettings {
-		t.Fatal("settings icon should open settings")
+		t.Fatal("the Settings tab should open settings")
 	}
 	shot(t, c, "system-settings-wifi")
 	tapButton(t, c, "set:pane:display")
@@ -65,6 +68,15 @@ func TestLauncherAndSettings(t *testing.T) {
 		t.Fatalf("settings: %+v", c.cfg)
 	}
 	shot(t, c, "system-settings-display")
+	tapButton(t, c, "dark")
+	if apDark || !c.cfg.Light || apBG != rgb(0xffffff) {
+		t.Fatal("Dark Mode off should give the light look")
+	}
+	shot(t, c, "system-settings-display-light")
+	tapButton(t, c, "dark")
+	if !apDark || c.cfg.Light || c.lib.Prefs.Theme != themeNight {
+		t.Fatal("Dark Mode on should make everything dark, books too")
+	}
 	tapButton(t, c, "set:pane:general")
 	shot(t, c, "system-settings-general")
 	tapButton(t, c, "set:pane:battery")
@@ -76,7 +88,7 @@ func TestLauncherAndSettings(t *testing.T) {
 	}
 	shot(t, c, "system-settings-power")
 	tapButton(t, c, "home")
-	if c.mode != modeLauncher || c.confirm != "" {
-		t.Fatalf("home: mode %v confirm %q", c.mode, c.confirm)
+	if c.mode != modeBooksHome || c.confirm != "" {
+		t.Fatalf("back to Books: mode %v confirm %q", c.mode, c.confirm)
 	}
 }

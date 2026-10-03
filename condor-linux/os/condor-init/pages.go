@@ -23,14 +23,13 @@ import (
 type mode int
 
 const (
-	modeLauncher mode = iota
+	modeBooksHome mode = iota // where condor starts: the Books app is the whole system
 	modeTerminal
 	modeSettings
 	modeBooks  // the shelf
 	modeReader // a book open
 	modeStore  // free books to download
 	modeWords  // the word book
-	modeBooksHome
 )
 
 type button struct {
@@ -169,6 +168,9 @@ type savedSettings struct {
 	// drivers) every frame is pushed by the CPU, so instant changes, as on e-readers, feel
 	// fastest. Settings > Display & Brightness turns them on.
 	Animations bool `json:"animations"`
+	// Light: the light look (Apple Books' white). Dark, like a Kindle's dark mode, is the
+	// default.
+	Light bool `json:"light"`
 }
 
 const settingsPath = condorHome + "/settings.json"

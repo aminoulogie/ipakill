@@ -630,7 +630,7 @@ func TestWordBookReview(t *testing.T) {
 		t.Fatalf("due %+v", due)
 	}
 	c.showPage()
-	tapButton(t, c, "words")
+	tapButton(t, c, "tab:words")
 	shot(t, c, "words-list")
 	tapButton(t, c, "w:review")
 	shot(t, c, "words-review")

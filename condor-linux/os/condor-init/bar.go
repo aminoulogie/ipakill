@@ -34,8 +34,6 @@ func (c *console) barColours() (bg, fg color.RGBA) {
 	switch {
 	case c.mode == modeTerminal:
 		return rgb(0x000000), rgb(0xffffff)
-	case c.mode == modeLauncher:
-		return wallpaperTop, rgb(0xffffff)
 	case c.mode == modeReader && c.book != nil:
 		th := c.theme()
 		return th.bg, th.fg
@@ -56,8 +54,13 @@ func (c *console) drawBar() {
 	now := time.Now().In(displayZone)
 	cy := c.barH/2 + 9
 	t := now.Format("15:04")
-	ui.DrawText(img, f.captionBold, 30, cy, fg, t)
-	ui.DrawText(img, f.caption, 30+ui.TextWidth(f.captionBold, t)+14, cy, fg, now.Format("Mon 2 Jan"))
+	x0 := 30
+	if c.mode == modeTerminal { // the way back to the Books app (a tap on the bar's left)
+		ui.DrawText(img, f.captionBold, x0, cy, rgb(0x0a84ff), "‹ Books")
+		x0 += ui.TextWidth(f.captionBold, "‹ Books") + 30
+	}
+	ui.DrawText(img, f.captionBold, x0, cy, fg, t)
+	ui.DrawText(img, f.caption, x0+ui.TextWidth(f.captionBold, t)+14, cy, fg, now.Format("Mon 2 Jan"))
 
 	// The battery: an outline, filled to the charge (green while charging, red when low).
 	x := c.s.W - 30

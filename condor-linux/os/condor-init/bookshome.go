@@ -162,7 +162,7 @@ func (c *console) booksHomePage() *page {
 
 	// Want to Read: the library, on the grouped band.
 	band := image.Rect(0, y, c.s.W, y+500)
-	ui.Fill(img, band, apGrouped)
+	ui.Fill(img, band, apBand)
 	apText(img, f.serifTitle, mx, y+78, apLabel, "Want to Read")
 	iconChevronRight(img, mx+ui.TextWidth(f.serifTitle, "Want to Read")+18, y+62, apSecondary)
 	p.buttons = append(p.buttons, button{"tab:library", image.Rect(0, y, c.s.W/2, y+100)})

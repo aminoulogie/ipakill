@@ -18,23 +18,65 @@ import (
 // same metrics as Helvetica), a floating tab bar, the reading-goal ring in the corner,
 // covers with soft shadows, sheets and popovers with rounded corners. DejaVu covers Arabic.
 
-// Light-mode system colours.
+// The system colours, set by setAppearance: dark (the default, like a Kindle's dark mode)
+// or light (Apple Books' white).
 var (
-	apBG        = rgb(0xffffff)
-	apGrouped   = rgb(0xf2f2f7) // grouped background, the "Want to Read" band
-	apCard      = rgb(0xffffff)
-	apCard2     = rgb(0xefeff0) // fills: search field, capsules
-	apSeparator = rgb(0xd1d1d6)
-	apLabel     = rgb(0x000000)
-	apSecondary = rgb(0x8a8a8e)
-	apBlue      = rgb(0x007aff)
-	apRingBlue  = rgb(0x32ade6) // the reading goal
-	apNewBadge  = rgb(0x0b3d91)
-	apTabBG     = rgb(0xf0f0f2)
-	apTabOn     = rgb(0xdcdce0)
-	apMenuBG    = rgb(0xf9f9f9)
-	apRed       = rgb(0xff3b30)
+	apBG        color.RGBA // the page
+	apGrouped   color.RGBA // behind grouped rows (Settings)
+	apBand      color.RGBA // a raised band or card on the page: "Want to Read", Words
+	apCard      color.RGBA // cards and grouped rows
+	apCard2     color.RGBA // fills: search field, capsules
+	apSeparator color.RGBA
+	apLabel     color.RGBA
+	apSecondary color.RGBA
+	apBlue      color.RGBA
+	apRingBlue  color.RGBA // the reading goal
+	apRingTrack color.RGBA
+	apNewBadge  color.RGBA
+	apTabBG     color.RGBA
+	apTabOn     color.RGBA
+	apMenuBG    color.RGBA
+	apRed       color.RGBA
+	apDark      bool
 )
+
+// apOnBlue is text on a blue button, in both looks.
+var apOnBlue = rgb(0xffffff)
+
+func init() { setPalette(true) }
+
+// setPalette picks iOS's dark or light system colours.
+func setPalette(dark bool) {
+	apDark = dark
+	if dark {
+		apBG, apGrouped, apBand, apCard, apCard2 = rgb(0x000000), rgb(0x000000), rgb(0x1c1c1e), rgb(0x1c1c1e), rgb(0x2c2c2e)
+		apSeparator, apLabel, apSecondary = rgb(0x38383a), rgb(0xffffff), rgb(0x8d8d93)
+		apBlue, apRingBlue, apRingTrack, apNewBadge = rgb(0x0a84ff), rgb(0x64d2ff), rgb(0x1f3a47), rgb(0x0a84ff)
+		apTabBG, apTabOn, apMenuBG, apRed = rgb(0x1c1c1e), rgb(0x3a3a3c), rgb(0x2c2c2e), rgb(0xff453a)
+		return
+	}
+	apBG, apGrouped, apBand, apCard, apCard2 = rgb(0xffffff), rgb(0xf2f2f7), rgb(0xf2f2f7), rgb(0xffffff), rgb(0xefeff0)
+	apSeparator, apLabel, apSecondary = rgb(0xd1d1d6), rgb(0x000000), rgb(0x8a8a8e)
+	apBlue, apRingBlue, apRingTrack, apNewBadge = rgb(0x007aff), rgb(0x32ade6), rgb(0xd7eef8), rgb(0x0b3d91)
+	apTabBG, apTabOn, apMenuBG, apRed = rgb(0xf0f0f2), rgb(0xdcdce0), rgb(0xf9f9f9), rgb(0xff3b30)
+}
+
+// setAppearance switches the whole system, books included, to dark or light. Caller holds
+// drawMu and redraws.
+func (c *console) setAppearance(dark bool) {
+	c.cfg.Light = !dark
+	setPalette(dark)
+	if dark {
+		c.lib.Prefs.Theme = themeNight
+	} else if c.lib.Prefs.Theme == themeNight {
+		c.lib.Prefs.Theme = 0 // Original
+	}
+	c.lib.save()
+	if c.book != nil {
+		c.invalidatePage()
+		c.relayout()
+	}
+}
 
 type appleFonts struct {
 	largeTitle, title, headline, body, callout, caption, captionBold font.Face
@@ -258,11 +300,12 @@ func ring(img *image.RGBA, cx, cy, rad, width int, frac float64, track, c color.
 func (c *console) booksTabs(p *page, on string) {
 	f := apple()
 	img := p.img
-	tabs := []struct{ id, label string }{{"tab:home", "Home"}, {"tab:library", "Library"}, {"tab:store", "Book Store"}, {"tab:words", "Words"}}
+	tabs := []struct{ id, label string }{{"tab:home", "Home"}, {"tab:library", "Library"}, {"tab:store", "Store"},
+		{"tab:words", "Words"}, {"tab:terminal", "Terminal"}, {"tab:settings", "Settings"}}
 	widths := make([]int, len(tabs))
 	total := 80 // the magnifier
 	for i, t := range tabs {
-		widths[i] = ui.TextWidth(f.callout, t.label) + 52
+		widths[i] = ui.TextWidth(f.callout, t.label) + 40
 		total += widths[i]
 	}
 	x := (c.s.W - total) / 2
@@ -284,7 +327,7 @@ func (c *console) booksTabs(p *page, on string) {
 	// The reading goal, top right: minutes today in a ring, the goal under it.
 	mins, goal := c.lib.readingToday(), c.lib.Prefs.GoalMinutes
 	cx, cy := c.s.W-70, 66
-	ring(img, cx, cy, 30, 7, float64(mins)/float64(max(goal, 1)), rgb(0xd7eef8), apRingBlue)
+	ring(img, cx, cy, 30, 7, float64(mins)/float64(max(goal, 1)), apRingTrack, apRingBlue)
 	apTextCenter(img, f.captionBold, cx, cy-4, apRingBlue, fmt.Sprint(mins))
 	apTextCenter(img, textFace("inter", fonts.InterRegular, false, 15), cx, cy+16, apSecondary, fmt.Sprint(goal))
 	p.buttons = append(p.buttons, button{"r:goal", image.Rect(cx-50, 10, cx+60, 120)})
@@ -310,6 +353,10 @@ func (c *console) booksTap(id string) bool {
 	case "tab:words":
 		c.wui = wordsUI{}
 		c.setMode(modeWords)
+	case "tab:terminal":
+		c.setMode(modeTerminal)
+	case "tab:settings":
+		c.setMode(modeSettings)
 	default:
 		return false
 	}

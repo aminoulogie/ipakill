@@ -256,7 +256,7 @@ func (c *console) wordsPage() *page {
 		apText(img, f.caption, mx, 280, apSecondary, fmt.Sprintf("%d to go  ·  review %d of 3", len(queue), w.stage()+1))
 		card := image.Rect(mx, 320, c.s.W-mx, h-250)
 		shadow(img, card, 30, 0.10)
-		ui.RoundRect(img, card, 30, apGrouped)
+		ui.RoundRect(img, card, 30, apBand)
 		y := card.Min.Y + 70
 		for _, l := range layoutWords(f.serifTitle, strings.Fields(w.Word), 0, card.Dx()-80, false) {
 			y += 40
@@ -302,7 +302,7 @@ func (c *console) wordsPage() *page {
 	per := wordsPerPage
 	st.from = min(st.from, (len(list)-1)/per*per)
 	grp := image.Rect(mx, y, c.s.W-mx, y+min(per, len(list)-st.from)*170)
-	ui.RoundRect(img, grp, 26, apGrouped)
+	ui.RoundRect(img, grp, 26, apBand)
 	for i := st.from; i < len(list) && i < st.from+per; i++ {
 		w := list[i]
 		r := image.Rect(mx, y, c.s.W-mx, y+170)

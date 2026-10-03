@@ -14,7 +14,7 @@ func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 	for _, tc := range []struct {
 		kind string
 		to   mode
-	}{{"push", modeSettings}, {"pop", modeLauncher}, {"rise", modeSettings}, {"fall", modeLauncher}} {
+	}{{"push", modeSettings}, {"pop", modeBooksHome}, {"rise", modeSettings}, {"fall", modeBooksHome}} {
 		before := animFrames
 		c.transition(tc.kind, c.fullSheet(), func() { c.setMode(tc.to) })
 		if animFrames == before {
@@ -51,7 +51,7 @@ func TestAnimationsAreTimeBoxed(t *testing.T) {
 	animScale = 0
 	defer func() { animScale = 1 }()
 	before := animFrames
-	c.transition("pop", c.fullSheet(), func() { c.setMode(modeLauncher) })
+	c.transition("pop", c.fullSheet(), func() { c.setMode(modeBooksHome) })
 	if animFrames != before {
 		t.Error("with animations off there should be no frames")
 	}

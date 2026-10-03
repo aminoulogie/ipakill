@@ -185,8 +185,7 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	f := newFakeLibraries(t, false)
 	c := testConsole(t)
 	drawMu.Lock()
-	c.showPage() // the launcher
-	tapButton(t, c, "store")
+	c.booksTap("tab:store") // straight in: Home would ask Gutenberg for its own list
 	drawMu.Unlock()
 
 	// Browsing: Gutenberg's popular books, with covers.

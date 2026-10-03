@@ -76,10 +76,8 @@ func (c *console) showPage() {
 		c.page = c.storePage()
 	case c.mode == modeWords:
 		c.page = c.wordsPage()
-	case c.mode == modeBooksHome:
-		c.page = c.booksHomePage()
 	default:
-		c.page = c.launcherPage()
+		c.page = c.booksHomePage()
 	}
 	c.s.blitRGBA(c.page.img, 0, c.barH)
 	if (c.mode == modeStore && c.store.typing) || (c.mode == modeWords && c.wui.edit) {
@@ -127,7 +125,12 @@ func (c *console) pageTap(x, y int) {
 		c.transition("push", image.Rectangle{}, func() { c.setMode(modeSettings) })
 		return
 	case "home":
-		c.transition("pop", image.Rectangle{}, func() { c.setMode(modeLauncher) })
+		c.transition("pop", image.Rectangle{}, func() { c.setMode(modeBooksHome) })
+		return
+	case "dark":
+		c.setAppearance(c.cfg.Light) // switches: light becomes dark and back
+		c.cfg.save()
+		c.redrawAll()
 		return
 	case "bright-", "bright+":
 		step := 10

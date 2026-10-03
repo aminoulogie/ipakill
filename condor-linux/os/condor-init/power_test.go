@@ -12,6 +12,9 @@ func testConsole(t *testing.T) *console {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Defaults, whatever a settings file on this machine says.
+	c.cfg = savedSettings{Brightness: 80, ScreenOff: 5}
+	setPalette(true)
 	return c
 }
 

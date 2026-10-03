@@ -788,7 +788,7 @@ func (c *console) readerTap(id string) bool {
 		back := c.readerFrom
 		if c.fromStore {
 			back = modeStore
-		} else if back != modeBooksHome && back != modeLauncher && back != modeStore {
+		} else if back != modeBooksHome && back != modeStore {
 			back = modeBooks
 		}
 		c.transition("pop", image.Rectangle{}, func() { c.setMode(back) })
@@ -906,11 +906,15 @@ func (c *console) applySetting(s string) bool {
 	switch what {
 	case "theme", "appearance":
 		wasBold := c.theme().bold
-		if what == "appearance" { // the half moon: Original's dark version and back
-			if c.theme().dark {
-				pr.Theme = 0
-			} else {
+		if what == "appearance" { // the half moon: the whole system dark or light, like a Kindle
+			dark := !c.theme().dark
+			setPalette(dark)
+			c.cfg.Light = !dark
+			c.cfg.save()
+			if dark {
 				pr.Theme = themeNight
+			} else {
+				pr.Theme = 0
 			}
 		} else {
 			fmt.Sscan(arg, &pr.Theme)

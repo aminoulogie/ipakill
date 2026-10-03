@@ -124,8 +124,9 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
 - ~~Our Linux image goes in the recovery slot~~: impossible, the firmware rejects any
   modified boot/recovery image. Route in use: keep the signed kernel + ramdisk, hook early
   boot from **/system**, stop Android's zygote, run condor-init + Alpine (chroot).
-- The user wants a **Linux-style system** (console, terminal-first, Arch-like "build it
-  yourself" with apk), not an iPad-style UI. Exception they asked for later (2026-10-03):
+- The user first wanted a **Linux-style system** (console, terminal-first); now (2026-10-03)
+  the tablet is a Kindle-like **Books app that is the whole system**, dark by default, with
+  Terminal and Settings as its tabs. Exception they asked for later (2026-10-03):
   the **Books app looks like Apple Books on iPad (iPadOS 18), light mode** — the user sent
   screenshots and said "exactly like this"; no orange (they disliked it): system blue
   #007aff, white pages, serif titles (Liberation Serif Bold for New York), Liberation Sans
@@ -309,6 +310,14 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       which only SurfaceFlinger drives. Readback + write() would cost what the CPU path costs.
       The GPU path now only starts if /data/condor/gpu exists (experiments). Animations stay
       on the CPU (off by default).
+- [x] **Books is the whole system, dark by default** (2026-10-03, user: "boot to kindle directly
+      with dark mode, no launcher; terminal and settings as tabs"). No home screen (launcher,
+      wallpaper and app icons deleted). condor starts on Books Home; tab bar: Home · Library ·
+      Store · Words · Terminal · Settings · search. Settings' "‹ Books" and the left of the
+      status bar ("‹ Books" in Terminal) go back. Dark Mode (Settings > Display & Brightness,
+      or the reader's half moon; cfg "light", default dark) switches every screen
+      (setPalette: iOS dark colours, apBand/apCard/apGrouped) and books (Night theme;
+      ThemeSet 3 migration puts books in Night once).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.
