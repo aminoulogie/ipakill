@@ -61,6 +61,7 @@ func main() {
 	fixClock()
 	setHostname()
 	setBacklight(80)
+	go markBootGood()
 	s, err := openScreen(rotation)
 	if err != nil {
 		log.Printf("framebuffer: %v", err)

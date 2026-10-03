@@ -20,24 +20,42 @@ import (
 const (
 	hookPath      = "/system/etc/install-recovery.sh"
 	condorDir     = "/data/condor"
-	triggerPath   = condorDir + "/takeover"
+	triggerPath   = condorDir + "/takeover"  // one-shot: next boot only
+	autostartPath = condorDir + "/autostart" // persistent: every boot
+	bootfailPath  = condorDir + "/bootfail"  // crash-loop counter
 	initPath      = condorDir + "/condor-init"
 	systemDev     = "/dev/block/mmcblk0p8"
 	shellTmp      = "/data/local/tmp"
-	takeoverUsage = "usage: condor takeover status | arm [condor-init binary] | disarm | push <binary> | restart | hook"
+	takeoverUsage = "usage: condor takeover status | arm [binary] | auto on|off [binary] | disarm | push <binary> | restart | hook"
 )
 
 const takeoverHook = `#!/system/bin/sh
 # condor-linux takeover hook. init runs this as root at boot (service flash_recovery).
-# Without the trigger file it does nothing and Android boots normally.
-T=/data/condor/takeover
-[ -f $T ] || exit 0
-rm $T
+# It starts condor-init instead of Android when EITHER:
+#   /data/condor/autostart exists  (persistent: every boot), or
+#   /data/condor/takeover  exists  (one-shot: deleted here, so only the next boot).
+# Neither present -> normal Android.
+#
+# Crash-loop guard: a counter is bumped before condor-init starts and cleared by condor-init
+# once it has run a while. If condor-init keeps dying early, the counter reaches the limit and
+# this hook boots Android and turns autostart off, so the tablet is never trapped: at worst it
+# returns to Android on its own after a few reboots.
+C=/data/condor
+[ -f $C/autostart ] || [ -f $C/takeover ] || exit 0
+rm -f $C/takeover
+N=$(cat $C/bootfail 2>/dev/null)
+N=$((N+0+1))
+echo $N > $C/bootfail
 sync
-echo "takeover $(date)" >> /data/condor/hook.log
+if [ $N -ge 3 ]; then
+  rm -f $C/bootfail $C/autostart
+  echo "fallback to android after $N tries $(date)" >> $C/hook.log
+  exit 0
+fi
+echo "takeover try $N $(date)" >> $C/hook.log
 stop bootanim
 stop zygote
-exec /data/condor/condor-init >> /data/condor/init.log 2>&1
+exec $C/condor-init >> $C/init.log 2>&1
 `
 
 func takeover(args []string) error {
@@ -76,9 +94,11 @@ func takeover(args []string) error {
 		fmt.Println("armed: the next boot stops Android and starts condor-init (once).")
 		fmt.Println("reboot with:  condor reboot")
 		return nil
+	case "auto":
+		return takeoverAuto(args[1:])
 	case "disarm":
-		sh("su -c 'rm " + triggerPath + "'")
-		fmt.Println("disarmed: next boot is normal Android.")
+		sh("su -c 'rm -f " + triggerPath + " " + autostartPath + " " + bootfailPath + "'")
+		fmt.Println("disarmed: autostart off, next boot is normal Android.")
 		return nil
 	case "push": // install a new condor-init without arming
 		if len(args) < 2 {
@@ -89,6 +109,40 @@ func takeover(args []string) error {
 		return takeoverRestart()
 	}
 	return fmt.Errorf(takeoverUsage)
+}
+
+// takeoverAuto turns persistent boot-into-condor on or off. "on" installs condor-init (if a
+// binary is given), checks the hook is present, and creates /data/condor/autostart so every
+// boot starts condor-init. "off" removes it so the next boot is Android.
+func takeoverAuto(args []string) error {
+	if len(args) == 0 || (args[0] != "on" && args[0] != "off") {
+		return fmt.Errorf("usage: condor takeover auto on|off [condor-init binary]")
+	}
+	if args[0] == "off" {
+		sh("su -c 'rm -f " + autostartPath + " " + bootfailPath + "'")
+		fmt.Println("autostart off: the next boot is normal Android (condor takeover auto on to re-enable).")
+		return nil
+	}
+	if len(args) > 1 {
+		if err := pushRoot(args[1], initPath, "755"); err != nil {
+			return err
+		}
+	}
+	if strings.Contains(sh("ls "+hookPath), "No such") {
+		return fmt.Errorf("the /system hook isn't installed; set up takeover first")
+	}
+	if strings.Contains(sh("su -c 'ls "+initPath+"'"), "No such") {
+		return fmt.Errorf("%s is missing: run 'condor takeover auto on <condor-init binary>'", initPath)
+	}
+	sh("su -c 'mkdir " + condorDir + "; rm -f " + bootfailPath + "; touch " + autostartPath + "'")
+	if strings.Contains(sh("su -c 'ls "+autostartPath+"'"), "No such") {
+		return fmt.Errorf("couldn't create %s", autostartPath)
+	}
+	fmt.Println("autostart ON: every boot now goes straight into condor.")
+	fmt.Println("to go back to Android:  condor takeover auto off   (then condor reboot)")
+	fmt.Println("safety net: if condor-init ever fails to start 3 boots running, the tablet")
+	fmt.Println("falls back to Android and turns autostart off by itself.")
+	return nil
 }
 
 // pushRoot copies a PC file to a root-owned path on the tablet via /data/local/tmp,
@@ -179,9 +233,14 @@ func takeoverStatus() error {
 		ci = "missing"
 	}
 	fmt.Println("condor-init: " + ci)
+	auto := "off (next boot is Android unless armed)"
+	if !strings.Contains(sh("su -c 'ls "+autostartPath+"'"), "No such") {
+		auto = "ON (every boot goes into condor)"
+	}
+	fmt.Println("autostart:   " + auto)
 	armed := "no"
 	if !strings.Contains(sh("su -c 'ls "+triggerPath+"'"), "No such") {
-		armed = "YES (next boot takes over)"
+		armed = "YES (next boot takes over, one-shot)"
 	}
 	fmt.Println("armed:       " + armed)
 	running := "no"
