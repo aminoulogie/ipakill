@@ -24,6 +24,7 @@ private struct InstallResponse: Decodable {
     let ok: Bool
     let error: String?
     let log: String?
+    let started: Bool?     // the PC is installing in the background
 }
 
 private struct ProgressResponse: Decodable {
@@ -339,7 +340,7 @@ final class Sync: ObservableObject {
             URLQueryItem(name: "name", value: app.name),
             URLQueryItem(name: "version", value: app.version),
         ]
-        guard var req = request("/install-url?" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
+        guard var req = request("/install-url?async=1&" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
         req.httpMethod = "POST"
         beginInstall(app.name, icon: icon(for: app))
         say("$ ipakill get \(app.name) \(app.version)")
@@ -375,7 +376,7 @@ final class Sync: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        guard var req = request("/install?name=\(encoded)", timeout: 600) else { return }
+        guard var req = request("/install?async=1&name=\(encoded)", timeout: 600) else { return }
         req.httpMethod = "POST"
 
         beginInstall((name as NSString).deletingPathExtension, icon: nil)
@@ -429,7 +430,13 @@ final class Sync: ObservableObject {
                 say("! the pc is running an older ipakill - restart 'ipakill serve' on the pc")
                 return
             }
-            let r = try Sync.decoder.decode(InstallResponse.self, from: data)
+            var r = try Sync.decoder.decode(InstallResponse.self, from: data)
+            if r.ok && r.started == true {
+                // The PC installs on its own; follow it. Losing the connection
+                // for a while (Wi-Fi blip, locked screen) only pauses this.
+                poller.cancel()
+                r = await followBackgroundInstall()
+            }
             poller.cancel()
             await drainProgress()
             if progressLines == 0 {  // an older PC without /progress: show its summary
@@ -451,6 +458,24 @@ final class Sync: ObservableObject {
 
     private var progressFrom = 0
     private var progressStarted: Int64?
+    private var progressRunning = true
+
+    /// Polls /progress until the PC's background install finishes.
+    private func followBackgroundInstall() async -> InstallResponse {
+        let deadline = Date().addingTimeInterval(30 * 60)
+        progressRunning = true
+        while Date() < deadline {
+            await pollProgress()
+            if !progressRunning, let stage = progress?.stage, stage == "done" || stage == "failed" {
+                let error = log.last(where: { $0.contains("! ") })?
+                    .trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "! ", with: "")
+                return InstallResponse(ok: stage == "done", error: stage == "done" ? nil : error,
+                                       log: nil, started: true)
+            }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+        }
+        return InstallResponse(ok: false, error: "lost track of the install on the PC", log: nil, started: true)
+    }
 
     /// Takes the PC's new log lines and progress for the current install.
     private func pollProgress() async {
@@ -462,6 +487,7 @@ final class Sync: ObservableObject {
             progressLines += 1
         }
         progressFrom = p.next ?? progressFrom
+        progressRunning = p.running
         progress = InstallProgress(name: p.name ?? "", stage: p.stage ?? "", done: p.done ?? 0,
                                    total: p.total ?? 0, percent: p.percent ?? 0)
     }

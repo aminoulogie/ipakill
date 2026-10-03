@@ -412,6 +412,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// installInBackground answers at once and signs + installs on its own; the
+// phone follows along through /progress, so a dropped Wi-Fi connection or a
+// locked screen on the phone can't cut the install short.
+func installInBackground(w http.ResponseWriter, prepare func() error, ipa string, meta Meta) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	go func() {
+		if prepare != nil {
+			if err := prepare(); err != nil {
+				progEnd(err)
+				return
+			}
+		}
+		_, err := install(ipa, os.Stdout, meta)
+		progEnd(err)
+	}()
+}
+
+func installBusy(w http.ResponseWriter) bool {
+	prog.mu.Lock()
+	busy := prog.Running
+	prog.mu.Unlock()
+	if busy {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "another install is still running on the PC"})
+	}
+	return busy
+}
+
 func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	var log bytes.Buffer
 	app, err := install(ipa, io.MultiWriter(os.Stdout, &log), meta)
@@ -545,6 +572,10 @@ func serve() error {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "not an .ipa file"})
 			return
 		}
+		async := r.URL.Query().Get("async") == "1"
+		if async && installBusy(w) {
+			return
+		}
 		dst := filepath.Join(ipaDir, name)
 		progStart(strings.TrimSuffix(name, filepath.Ext(name)), "upload")
 		f, err := os.Create(dst)
@@ -558,6 +589,10 @@ func serve() error {
 			return
 		}
 		fmt.Printf("[ipakill] Received %s from iPhone\n", name)
+		if async {
+			installInBackground(w, nil, dst, Meta{})
+			return
+		}
 		installAndReply(w, dst, Meta{})
 	}))
 
@@ -593,6 +628,10 @@ func serve() error {
 		if !strings.HasSuffix(strings.ToLower(name), ".ipa") {
 			name = "download.ipa"
 		}
+		async := q.Get("async") == "1"
+		if async && installBusy(w) {
+			return
+		}
 		fmt.Printf("[ipakill] Downloading %s\n", src)
 		display := q.Get("name")
 		if display == "" {
@@ -601,12 +640,22 @@ func serve() error {
 		progStart(display, "download")
 		progLine("Downloading " + src)
 		dst := filepath.Join(ipaDir, name)
+		meta := Meta{Name: q.Get("name"), Version: q.Get("version")}
+		if async {
+			installInBackground(w, func() error {
+				if err := download(src, dst); err != nil {
+					return fmt.Errorf("download failed: %v", err)
+				}
+				return nil
+			}, dst, meta)
+			return
+		}
 		if err := download(src, dst); err != nil {
 			progEnd(fmt.Errorf("download failed: %v", err))
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "download failed: " + err.Error()})
 			return
 		}
-		installAndReply(w, dst, Meta{Name: q.Get("name"), Version: q.Get("version")})
+		installAndReply(w, dst, meta)
 	}))
 
 	// The signing certificate, for running apps inside ipakill (see cert.go).
