@@ -33,3 +33,20 @@ On the tablet: Settings → About tablet → tap *Build number* 7× → Develope
 USB debugging ON, then accept the prompt when you plug in.
 
 Output: `condor-recon-<date>/SUMMARY.txt` (send this) and a `.tar.gz` backup to keep.
+
+## `condor.exe`: command-line tool (Windows)
+
+Build: `cd cli && go build -o condor.exe .` (on Linux: `GOOS=windows go build -o condor.exe .`).
+On first run it downloads Google's platform-tools (adb/fastboot) into `%USERPROFILE%\.condor`.
+
+```
+condor doctor                  check adb, cable, and authorization
+condor info                    model, Android, kernel, battery, storage
+condor books <file|dir>...     copy .epub/.pdf/... to /sdcard/Books
+condor install <app.apk>...    install or update apps (explains "needs newer Android" errors)
+condor apps                    list installed apps
+condor shell [command...]      shell on the tablet
+condor screenshot [out.png]    save the tablet's screen
+condor recon                   Phase 1 inspection + backup (same as recon.sh)
+condor reboot [bootloader|recovery]
+```
