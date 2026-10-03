@@ -37,6 +37,7 @@ Output: `condor-recon-<date>/SUMMARY.txt` (send this) and a `.tar.gz` backup to 
 ## `condor.exe`: command-line tool (Windows)
 
 Build: `cd cli && go build -o condor.exe .` (on Linux: `GOOS=windows go build -o condor.exe .`).
+Double-click `condor.exe` once (or run `condor setup`) and `condor` works in every new cmd window.
 On first run it downloads Google's platform-tools (adb/fastboot) into `%USERPROFILE%\.condor`.
 
 ```

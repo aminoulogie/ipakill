@@ -10,6 +10,7 @@
 //	condor screenshot [out.png]    save the tablet's screen to a PNG
 //	condor recon                   read-only inspection + backup for the Linux project
 //	condor reboot [bootloader|recovery]
+//	condor setup                   install so 'condor' works in any cmd window (also runs on double-click)
 package main
 
 import (
@@ -47,12 +48,28 @@ func condorHome() string {
 
 func main() {
 	if len(os.Args) < 2 {
+		// Double-clicked in Explorer: install so 'condor' works in every cmd window.
+		if runtime.GOOS == "windows" && !onPath() {
+			err := setup()
+			if err != nil {
+				fmt.Println("error:", err)
+			}
+			fmt.Print("\nPress Enter to close...")
+			fmt.Scanln()
+			return
+		}
 		usage()
 		os.Exit(2)
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	if cmd == "help" || cmd == "-h" || cmd == "--help" {
 		usage()
+		return
+	}
+	if cmd == "setup" {
+		if err := setup(); err != nil {
+			fail(err)
+		}
 		return
 	}
 	var err error
@@ -99,12 +116,62 @@ func usage() {
   condor screenshot [out.png]    save the tablet's screen
   condor recon                   read-only inspection + backup (Linux project)
   condor reboot [bootloader|recovery]
+  condor setup                   make 'condor' work in any cmd window
 `)
 }
 
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "error:", err)
 	os.Exit(1)
+}
+
+// ---------- setup: put condor on the user's PATH ----------
+
+var binDir = filepath.Join(home, "bin")
+
+func onPath() bool {
+	p, err := exec.LookPath("condor")
+	return err == nil && p != ""
+}
+
+// setup copies this executable to %USERPROFILE%\.condor\bin and adds that folder to the user PATH.
+func setup() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	name := "condor"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	dst := filepath.Join(binDir, name)
+	os.MkdirAll(binDir, 0o755)
+	if !strings.EqualFold(filepath.Clean(self), filepath.Clean(dst)) {
+		data, err := os.ReadFile(self)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(dst, data, 0o755); err != nil {
+			return fmt.Errorf("copy to %s: %w (close other condor windows and retry)", dst, err)
+		}
+	}
+	fmt.Println("installed", dst)
+	if runtime.GOOS != "windows" {
+		fmt.Printf("add this to your shell profile:  export PATH=\"%s:$PATH\"\n", binDir)
+		return nil
+	}
+	// The user PATH lives in the registry; setx would truncate it at 1024 chars, so use .NET.
+	ps := `$d='` + binDir + `'; $p=[Environment]::GetEnvironmentVariable('Path','User');` +
+		`if(-not (($p -split ';') -contains $d)){[Environment]::SetEnvironmentVariable('Path',(($p.TrimEnd(';')+';'+$d).TrimStart(';')),'User'); 'added'} else {'present'}`
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("update PATH: %s", strings.TrimSpace(string(out)))
+	}
+	if strings.TrimSpace(string(out)) == "added" {
+		fmt.Println("added", binDir, "to your PATH")
+	}
+	fmt.Println("\nDone. Open a NEW cmd window and type:  condor doctor")
+	return nil
 }
 
 // ---------- adb plumbing ----------
