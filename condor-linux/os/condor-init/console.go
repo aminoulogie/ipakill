@@ -159,8 +159,12 @@ func (c *console) input(p []byte) {
 
 func banner() string {
 	rel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
-	return fmt.Sprintf("\r\ncondor linux (tty1)   kernel %s\r\n\r\ncondor login: root (automatic login)\r\n\r\n",
-		strings.TrimSpace(string(rel)))
+	system := "Android shell (install Alpine: condor alpine install)"
+	if v := alpineVersion(); v != "" {
+		system = "Alpine Linux " + v
+	}
+	return fmt.Sprintf("\r\ncondor linux (tty1)   %s   kernel %s\r\n\r\ncondor login: root (automatic login)\r\n\r\n",
+		system, strings.TrimSpace(string(rel)))
 }
 
 // runConsole keeps a shell running on the screen, starting a new one whenever it exits.

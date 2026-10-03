@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"syscall"
@@ -50,14 +51,29 @@ func startShell(cols, rows int) (*os.File, func(), error) {
 	ws := [4]uint16{uint16(rows), uint16(cols), 0, 0}
 	ioctl(slave.Fd(), tiocswinsz, unsafe.Pointer(&ws))
 
-	os.MkdirAll(condorHome, 0o755)
-	os.WriteFile(shrcPath, []byte(shrc), 0o644)
-	cmd := exec.Command(shellPath)
-	cmd.Dir = condorHome
-	cmd.Env = []string{"PATH=" + shellPATH, "HOME=" + condorHome, "TERM=xterm", "ENV=" + shrcPath,
-		"USER=root", "LOGNAME=root"}
+	var cmd *exec.Cmd
+	attr := &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	if alpineInstalled() {
+		if err := alpineMounts(); err != nil {
+			log.Printf("alpine mounts: %v", err)
+		}
+		// A login shell inside Alpine: /etc/profile sets PATH and the prompt.
+		cmd = exec.Command("/bin/sh")
+		cmd.Args = []string{"-sh"}
+		cmd.Dir = "/root"
+		cmd.Env = []string{"HOME=/root", "TERM=xterm", "USER=root", "LOGNAME=root", "SHELL=/bin/sh",
+			"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+		attr.Chroot = alpineRoot
+	} else {
+		os.MkdirAll(condorHome, 0o755)
+		os.WriteFile(shrcPath, []byte(shrc), 0o644)
+		cmd = exec.Command(shellPath)
+		cmd.Dir = condorHome
+		cmd.Env = []string{"PATH=" + shellPATH, "HOME=" + condorHome, "TERM=xterm", "ENV=" + shrcPath,
+			"USER=root", "LOGNAME=root"}
+	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+	cmd.SysProcAttr = attr
 	if err := cmd.Start(); err != nil {
 		m.Close()
 		return nil, nil, err

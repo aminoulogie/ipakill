@@ -35,15 +35,31 @@ const (
 var shellPath = "/system/bin/sh"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "drm" { // diagnostic, read-only: what the display scans out
-		fmt.Print(drmInfo())
-		return
+	if len(os.Args) > 1 { // tools run by hand or by the condor CLI, not the console
+		switch os.Args[1] {
+		case "drm": // diagnostic, read-only: what the display scans out
+			fmt.Print(drmInfo())
+			return
+		case "untar": // condor-init untar <file.tar.gz> <dir>  (Android has no tar)
+			if len(os.Args) != 4 {
+				fmt.Fprintln(os.Stderr, "usage: condor-init untar <file.tar.gz> <dir>")
+				os.Exit(2)
+			}
+			n, err := untar(os.Args[2], os.Args[3])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "untar:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("untar: %d entries into %s\n", n, os.Args[3])
+			return
+		}
 	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("condor-init starting, pid %d", os.Getpid())
 	// Survive the end of the adb/shell session that may have started us by hand.
 	signal.Ignore(syscall.SIGHUP)
 	fixClock()
+	setHostname()
 	setBacklight(80)
 	s, err := openScreen(rotation)
 	if err != nil {
