@@ -1,9 +1,54 @@
 # condor-linux: project memory
 
-Turning an old **Condor TRA-901G** tablet into an e-reader running our own Linux userspace,
-with our own code written from scratch on top of Condor's kernel. Full plan: `PLAN.md`.
-Everything we've learned, with sources: `docs/KNOWLEDGE.md` (read it before suggesting
-anything about OS options, firmware or flashing).
+Turning an old **Condor TRA-901G** tablet into its own little Linux machine: it boots straight
+into our userspace (Alpine Linux + our Go `condor-init`) on top of Condor's signed kernel, with
+Wi-Fi, SSH and a console on its screen. Plan and what's next: `PLAN.md`. Everything learned,
+with sources: `docs/KNOWLEDGE.md` (read it before suggesting anything about OS options,
+firmware or flashing). **Start with "How the system works" below.**
+
+## How the system works (2026-10-03)
+```
+power on → signed kernel + ramdisk (stock, can't change) → Android init
+  → init runs /system/etc/install-recovery.sh as root (service flash_recovery, class main)
+      = our hook (cli/takeover.go: takeoverHook). If /data/condor/autostart (every boot) or
+        /data/condor/takeover (one-shot) exists: stop bootanim + zygote, exec condor-init.
+        Crash-loop guard: /data/condor/bootfail counter; at 3 the hook boots Android and
+        deletes autostart. condor-init clears it after 25 s (bootguard.go).
+  → /data/condor/condor-init (os/condor-init, Go, linux/386, runs as root, logs to init.log)
+      - fixes the clock (no RTC battery: floor = its own install mtime), hostname "condor"
+      - screen: Linux console on fb0 (console.go + vt/), Go Mono, 73x57 cells, portrait
+      - shell: Alpine login shell in a chroot of /data/alpine on a pty (pty_linux.go),
+        with /proc /sys /dev /tmp(tmpfs) /system(bind) mounted (alpine_linux.go)
+      - alpineBoot: writes Alpine config (prompt, proxy env, /usr/local/bin/wifi), runs
+        `wifi boot` (rejoin saved network), starts sshd if openssh is installed
+      - ports (all 127.0.0.1 except sshd):
+          2323 console: `condor term` joins the screen's session (PC + tablet share it)
+          2324 plain root shell (no pty), back door for tools
+          2325 tunnel: `condor net` control/data connections (internet over USB)
+          3128 HTTP proxy: via the PC when condor net runs, else direct over Wi-Fi
+          22   sshd inside Alpine (keys only), reachable over Wi-Fi
+  adbd keeps running the whole time, so the PC can always fix things over USB.
+```
+- On the tablet: `/data/condor/` (condor-init, autostart, bootfail, hook.log, init.log, shrc),
+  `/data/alpine/` (Alpine 3.24 x86 root; `/etc/condor/wpa.conf` = saved Wi-Fi network).
+- Without Alpine installed, the console falls back to Android's `/system/bin/sh`; if the
+  fonts fail, to the `ui` launcher; if the console fails entirely, the touch test screen.
+
+## Daily workflow (PowerShell on the PC)
+```
+.\condor-linux\dev.cmd           build condor-init for linux/386, push + restart (or arm + reboot)
+condor term                      the tablet's console from the PC (Ctrl+] leaves)
+ssh root@<tablet ip> / condor ssh  same over Wi-Fi (keys set up by condor ssh setup)
+condor alpine run <cmd>          run one command inside Alpine (exit code checked)
+condor net                       internet over USB for the tablet (leave running)
+condor takeover status           hook, autostart, condor-init md5, last log lines
+condor takeover auto on|off      boot into condor every time / back to Android
+condor takeover install-hook     update the /system hook (one file, md5-checked, ro after)
+condor reboot
+```
+Rebuild the CLI after pulling CLI changes: `cd cli; go build -o condor.exe .; .\condor.exe setup`
+(close `condor term` windows first, the exe is locked while they run).
+GitHub is often unreachable from this PC: pull with a retry loop, or use a git bundle.
 
 ## The machine you're running on
 - Windows PC, PowerShell. The tablet is attached over **micro-USB**. A WSL Linux environment
@@ -76,8 +121,11 @@ anything about OS options, firmware or flashing).
   framebuffer UI and EPUB reader in **Go** (`GOOS=linux GOARCH=386`), developed first on the
   PC with a fake-screen window, then on `/dev/fb0` + `/dev/input/event*` on the tablet.
 - ~~Our Linux image goes in the recovery slot~~: impossible, the firmware rejects any
-  modified boot/recovery image. New route: keep the signed kernel + ramdisk, hook early boot
-  from **/system**, stop Android's zygote/surfaceflinger, start our own userspace.
+  modified boot/recovery image. Route in use: keep the signed kernel + ramdisk, hook early
+  boot from **/system**, stop Android's zygote, run condor-init + Alpine (chroot).
+- The user wants a **Linux-style system** (console, terminal-first, Arch-like "build it
+  yourself" with apk), not an iPad-style UI. Alpine, not Arch (old kernel; Alpine's musl and
+  busybox are fine with 3.4).
 - Fallback ladder in PLAN.md if a phase is blocked.
 
 ## Current status
@@ -123,14 +171,29 @@ anything about OS options, firmware or flashing).
 - [x] `condor term` (2026-10-03): bridges to condor-init's root shell (127.0.0.1:2323) via
       `adb forward`; requires takeover mode (condor-init running). Windows sends CRLF; term.go
       strips `\r` from stdin or every command arrives as "id\r" (": not found"). `cli/term.go`.
-- [x] Clock sync (2026-10-03): tablet boots at **2013** (no RTC battery), breaking apk/TLS.
-      `condor shell "su -c 'date -s YYYYMMDD.HHMMSS'"` with the arg as **local** time (tablet is
-      fixed CET = UTC+1, no DST), so feed UTC+1h. Verify with `date +%s` (CLOCK_REALTIME, == PC)
-      or the `date -u` string; **`date -u +%s` is a toolbox bug** (double-applies the offset, reads
-      1h off). Resets on every reboot → re-run each takeover (candidate to automate in condor-init).
-- [ ] Alpine next: minirootfs (x86) onto microSD, chroot from takeover (apk needs the clock set).
-- [ ] Milestone 3: real text with a font
-- [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
+- [x] Clock: tablet boots at **2013** (no RTC battery), which breaks TLS. condor-init sets the
+      clock forward to its own install time at start (timefix_linux.go); `condor takeover push`
+      refreshes that. Manual alternative: `date -s` takes **local** time (fixed CET = UTC+1);
+      `date -u +%s` is a toolbox bug (1 h off), verify with `date +%s`.
+- [x] Text + launcher (`os/condor-init/ui`, Go fonts): status bar, app list. Kept as a fallback;
+      the user preferred a Linux console. `go run ./cmd/ui-preview` renders it to PNG.
+- [x] **Linux console on the screen** (console.go, vt/): pty shell, VT100/xterm subset, colours,
+      Go Mono; `condor term` shares the session (raw mode on Windows, VT output, Ctrl+] leaves).
+      Known: htop etc. render for 73x57, so a smaller PowerShell window scrolls; condor-init
+      redraws glyphs from the font each time (CPU-heavy under htop; a glyph cache would fix it).
+- [x] **Alpine 3.24 (x86)** in /data/alpine: `condor alpine install` downloads the minirootfs
+      (sha256-checked), `condor-init untar` unpacks it (Android has no tar). Console = Alpine
+      login shell. apk uses http mirrors through condor-init's proxy.
+- [x] **Internet over USB**: `condor net` (no adb reverse on 4.2: reverse tunnel, see tunnel.go).
+- [x] **Autostart**: `condor takeover auto on` → every boot goes into condor, with the
+      crash-loop fallback. Needed `install-hook` (the old one-shot hook ignored autostart).
+- [x] **Wi-Fi**: `wifi scan|connect|status|off|forget|debug` (see Recon findings for why it uses
+      Condor's wpa_supplicant). Rejoins at boot; give it ~30-40 s after boot. Proxy retries once.
+- [x] **SSH over Wi-Fi**: `condor ssh setup` (openssh, PC's ed25519 key, sshd), sshd at boot.
+      Don't run `setup-alpine` (it's for real installs).
+- [ ] On-screen keyboard (type on the tablet without a PC)
+- [ ] Glyph cache in the console renderer (CPU)
+- [ ] Books app (EPUB reader), power button (screen off), backlight and battery in the UI
 
 Update this checklist as things are done.
 
@@ -141,8 +204,10 @@ Update this checklist as things are done.
 2. Before the first flash: we must have the **stock TRA-901G 4.2.2 firmware** + Intel
    flash tool downloaded and a recon backup (`condor-recon-*.zip`) saved off the tablet.
 3. `fastboot boot` is unavailable here. Don't use `fastboot flash` (it rewrites the OSIP in
-   sector 0). Write only the **recovery** OSIP slot, with `dd` from Android at the exact OSIP
-   offset, same size, read back and verified. Never touch sector 0, boot or fastboot slots.
+   sector 0). Never touch sector 0 or the boot/fastboot/recovery OSIP slots: the firmware
+   enforces signatures, so changing them gains nothing. The only /system change is the hook
+   file, written with `condor takeover install-hook` (md5-checked, /system back to ro).
+   /system backup: `C:\Users\pro\condor-backup\dumps\system.img` (+ microSD `condor/`).
 4. Explain risk in plain words before anything that could fail to boot.
 5. The user is a beginner-to-intermediate: short steps, exact commands, PowerShell syntax.
 

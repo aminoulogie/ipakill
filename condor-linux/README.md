@@ -1,53 +1,55 @@
 # condor-linux
 
-Boot a from-scratch Linux (Alpine x86, Arch-style minimal build) on a **Condor TRA-901G**
-tablet (Intel Atom Z2580 "Clover Trail+", 2 GB RAM, 8.9" 1920×1200, Android 4.2.2),
-reusing Condor's own kernel, which already contains the touch, display and Wi-Fi drivers.
-Android stays on internal storage; Linux runs from microSD.
+Our own Linux on a **Condor TRA-901G** tablet (Intel Atom Z2580 "Clover Trail+", 2 GB RAM,
+8.9" 1920×1200, Android 4.2.2). It boots straight into Alpine Linux 3.24 and our Go
+`condor-init`, with a console on the screen, touch, Wi-Fi and SSH, on top of Condor's own
+signed kernel (which already has the drivers). Android stays installed underneath.
 
-## Plan
+- How it works, and the daily commands: [`CLAUDE.md`](CLAUDE.md)
+- What's done and what's next: [`PLAN.md`](PLAN.md)
+- Everything learned about the hardware, with sources: [`docs/KNOWLEDGE.md`](docs/KNOWLEDGE.md)
 
-| Phase | What | Risk |
-|---|---|---|
-| 1 | `recon.sh`: inspect tablet, pull modules/firmware, back up boot partitions | none (read-only) |
-| 2 | `fastboot boot` a test image from RAM, which tells us if the bootloader accepts our images | none (nothing written) |
-| 3 | Custom initramfs, Alpine rootfs on microSD, USB serial/SSH shell | none |
-| 4 | Display console, then Xorg (fbdev) | none |
-| 5 | Touch (evdev) + Wi-Fi (Condor modules + firmware + wpa_supplicant) | none |
-| 6 | KOReader for EPUBs | none |
+## Layout
 
-Why Alpine, not Arch: Condor's kernel is old (3.x). Modern systemd (Arch, Debian, Fedora)
-refuses to boot on it; Alpine (OpenRC + musl) doesn't care.
+| Path | What |
+|---|---|
+| `cli/` | `condor.exe`, the Windows command-line tool that drives the tablet over USB (adb) |
+| `os/condor-init/` | the program that runs on the tablet instead of Android's UI (Go, linux/386) |
+| `os/condor-init/vt/` | the terminal engine behind the on-screen console |
+| `os/condor-init/ui/` | text rendering with the Go fonts, and a simple launcher (fallback) |
+| `dev.cmd`, `dev.ps1` | build `condor-init` and run it on the tablet in one step |
+| `recon.sh` | the original read-only inspection script (bash); `condor recon` replaced it |
+| `docs/` | knowledge base and the original handoff prompt |
 
-## Phase 1: run it
-
-On a Linux PC (or WSL with usbipd):
-
-```
-sudo apt install adb fastboot        # Arch: sudo pacman -S android-tools
-./recon.sh                           # read-only inspection
-./recon.sh --fastboot                # also check the bootloader (reboots the tablet once)
-```
-
-On the tablet: Settings → About tablet → tap *Build number* 7× → Developer options →
-USB debugging ON, then accept the prompt when you plug in.
-
-Output: `condor-recon-<date>/SUMMARY.txt` (send this) and a `.tar.gz` backup to keep.
-
-## `condor.exe`: command-line tool (Windows)
-
-Build: `cd cli && go build -o condor.exe .` (on Linux: `GOOS=windows go build -o condor.exe .`).
-Double-click `condor.exe` once (or run `condor setup`) and `condor` works in every new cmd window.
-On first run it downloads Google's platform-tools (adb/fastboot) into `%USERPROFILE%\.condor`.
+## Build
 
 ```
-condor doctor                  check adb, cable, and authorization
-condor info                    model, Android, kernel, battery, storage
-condor books <file|dir>...     copy .epub/.pdf/... to /sdcard/Books
-condor install <app.apk>...    install or update apps (explains "needs newer Android" errors)
-condor apps                    list installed apps
-condor shell [command...]      shell on the tablet
-condor screenshot [out.png]    save the tablet's screen
-condor recon                   Phase 1 inspection + backup (same as recon.sh)
-condor reboot [bootloader|recovery]
+cd cli
+go build -o condor.exe .
+.\condor.exe setup          # puts 'condor' on PATH; downloads adb on first use
+cd ..
+.\dev.cmd                   # builds os/condor-init for linux/386 and installs it on the tablet
 ```
+
+## Commands
+
+```
+condor doctor                          check adb, cable, and authorization
+condor info                            model, Android, kernel, battery, storage
+condor term                            the tablet's console from the PC (Ctrl+] leaves)
+condor ssh setup | condor ssh          log in over Wi-Fi (setup once, over USB)
+condor net                             internet for the tablet over USB (leave it running)
+condor alpine install|status|remove    Alpine Linux root on the tablet
+condor alpine run <command>            run a command inside the tablet's Alpine
+condor takeover status                 hook, autostart, condor-init, logs
+condor takeover auto on|off            boot into condor every time / back to Android
+condor takeover arm|disarm             one-shot takeover for the next boot / cancel
+condor takeover push <bin> | restart   install a new condor-init / restart it in place
+condor takeover install-hook           update the startup hook in /system (one file)
+condor bootimg info|unpack|pack        Intel OSIP boot images (files on the PC)
+condor recon | backup                  read-only inspection / copy the tablet's files
+condor shell | reboot | screenshot     the usual adb helpers
+```
+
+On the tablet (Alpine): `wifi scan | connect SSID [password] | status | off | forget | debug`,
+and `apk` for everything else.
