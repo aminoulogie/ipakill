@@ -90,6 +90,14 @@ userspace: first a shell over USB and a test pattern on `/dev/fb0`, later Alpine
 microSD (chroot instead of switch_root) and our reader. Details and exact writes get
 planned and approved before anything is changed; `/system` is backed up first.
 
+Status (2026-10-03): hook installed and **milestone 1 done**: one-shot takeover boots into
+`condor-init`, which draws on the framebuffer and serves a root shell over USB
+(`condor takeover arm|disarm|status`). Next milestones:
+1. ✅ framebuffer test pattern + shell over USB
+2. touch: read Goodix events, draw where touched, calibrate axes; backlight control
+3. text: render a real font on the framebuffer
+4. reader: EPUB pages, page turns by tap/volume keys, then Wi-Fi and Alpine on microSD
+
 ### Phase 3: Hello initramfs
 A ~2 MB initramfs: busybox and a hand-written `/init` script that:
 1. mounts `/proc`, `/sys`, `/dev`

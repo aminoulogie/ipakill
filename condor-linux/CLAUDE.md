@@ -86,8 +86,20 @@ anything about OS options, firmware or flashing).
       back to droidboot ("RESULT: OKAY", no error text). Control with the original image:
       stock recovery booted ("Aucune commande"). Original restored and verified; sector 0,
       boot and fastboot verified unchanged before and after. → No custom kernel/ramdisk.
-- [ ] Factory reset via /cache/recovery/command (recovery menu ignores volume keys)
-- [ ] /system takeover route: stock signed kernel + ramdisk, early hook in /system
+- [x] No factory reset (root is too valuable). Pattern lock removed instead: gesture.key deleted,
+      locksettings password_type/autolock set to 0; originals on microSD `condor/` + PC `condor-backup\lock`.
+      Safety copy of Superuser.apk on microSD `condor/`.
+- [x] /system backed up: `condor-backup\dumps\system.img` + microSD `condor/system.img`
+      (md5 dd3e7835e36b8120435a62b099ed404a, equals the partition)
+- [x] Takeover hook installed: `/system/etc/install-recovery.sh` (stock flash_recovery service
+      runs it as root at class main). Verified harmless when not armed.
+- [x] **Milestone 1** (2026-10-03): `condor takeover arm` + reboot → zygote/system_server
+      stopped, `/data/condor/condor-init` (Go, linux/386) as root draws a correct, upright
+      test pattern on psbfb (1920x1200, 32 bpp XRGB, stride 7680, single page: pan ioctl
+      EINVAL is harmless) and serves a root shell on 127.0.0.1:2323 (`adb forward`).
+      adbd keeps running. Backlight: /sys/class/backlight/psb-bl (was 23).
+- [ ] Milestone 2: Goodix touch (event2) → draw where touched; backlight up
+- [ ] Milestone 3: real text with a font
 - [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
 
 Update this checklist as things are done.
