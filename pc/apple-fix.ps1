@@ -1,15 +1,18 @@
-# Some networks can't reach every address Apple's servers answer on (the
-# connection to port 443 just times out), which makes plumesign fail at
-# "Restoring session". For each Apple server plumesign uses, this finds an
-# address that does connect, by asking several public DNS servers, and pins it
-# in the hosts file. Run in an Administrator PowerShell:
+# Some networks can't reach every address Apple's and GitHub's servers answer
+# on (the connection to port 443 just times out), which makes plumesign fail at
+# "Restoring session" and downloads fail with "no answer from the server".
+# For each server ipakill uses, this checks every address it resolves to; if
+# any of them is unreachable it finds one that connects (public DNS, regional
+# DNS-over-HTTPS answers, known-good ones) and pins it in the hosts file. Run in an Administrator PowerShell:
 #   irm https://raw.githubusercontent.com/aminoulogie/ipakill/livecontainer/pc/apple-fix.ps1 | iex
 # Undo: run it again with $undo = $true set first, or delete the lines ending
 # in "# ipakill-apple" from C:\Windows\System32\drivers\etc\hosts.
 
 $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
 $tag = '# ipakill-apple'
-$servers = 'gsa.apple.com', 'developerservices2.apple.com', 'idmsa.apple.com', 'appleid.apple.com'
+$servers = 'gsa.apple.com', 'developerservices2.apple.com', 'idmsa.apple.com', 'appleid.apple.com',
+    'github.com', 'api.github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com',
+    'raw.githubusercontent.com'
 $dnsServers = '1.1.1.1', '8.8.8.8', '9.9.9.9', '208.67.222.222', '1.0.0.1', '8.8.4.4'
 # Apple answers differently by region; Google's DNS-over-HTTPS can ask "as if
 # from" other networks, which turns up more addresses to try.
@@ -39,8 +42,16 @@ $pins = @()
 foreach ($name in $servers) {
     $current = @((Resolve-DnsName $name -Type A -ErrorAction SilentlyContinue | Where-Object IP4Address).IP4Address)
     $first = if ($current.Count -gt 0) { $current[0] } else { $null }
-    if ($first -and (Test-Port443 $first)) {
-        Write-Host "${name} OK ($first)" -ForegroundColor Green
+    # Windows may use any of the addresses, so all of them have to work.
+    $bad = @($current | Where-Object { -not (Test-Port443 $_) })
+    $good = @($current | Where-Object { $bad -notcontains $_ })
+    if ($current.Count -gt 0 -and $bad.Count -eq 0) {
+        Write-Host "${name} OK ($($current -join ', '))" -ForegroundColor Green
+        continue
+    }
+    if ($good.Count -gt 0) {
+        Write-Host "${name} blocked at $($bad -join ', ') - pinned to $($good[0])" -ForegroundColor Yellow
+        $pins += "$($good[0])`t$name`t$tag"
         continue
     }
     $candidates = @()
@@ -54,13 +65,13 @@ foreach ($name in $servers) {
             $candidates += ($r.Answer | Where-Object type -eq 1).data
         } catch {}
     }
-    $candidates = $candidates | Where-Object { $_ -and $_ -ne $first }
+    $candidates = $candidates | Where-Object { $_ -and $bad -notcontains $_ }
     $found = $null
     foreach ($ip in ($candidates | Select-Object -Unique)) {
         if (Test-Port443 $ip) { $found = $ip; break }
     }
     if ($found) {
-        Write-Host "${name} blocked at $($current -join ', ') - pinned to $found" -ForegroundColor Yellow
+        Write-Host "${name} blocked at $($bad -join ', ') - pinned to $found" -ForegroundColor Yellow
         $pins += "$found`t$name`t$tag"
     } else {
         Write-Host "${name}: no reachable address found (tried $($candidates -join ', '))" -ForegroundColor Red
