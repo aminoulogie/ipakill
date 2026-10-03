@@ -204,6 +204,27 @@ func pickDevice() (Device, error) {
 	return devs[0], nil
 }
 
+// waitForDevice keeps looking for the iPhone for a while: over Wi-Fi it
+// drops out of sight when it sleeps and usually shows up again in seconds.
+func waitForDevice(limit time.Duration) (Device, error) {
+	deadline := time.Now().Add(limit)
+	announced := false
+	for {
+		dev, err := pickDevice()
+		if err == nil || time.Now().After(deadline) {
+			if err != nil {
+				err = fmt.Errorf("%v - unlock the iPhone and keep it on the same Wi-Fi, or plug it in by USB", err)
+			}
+			return dev, err
+		}
+		if !announced {
+			progLine("Looking for the iPhone (unlock it and keep ipakill open)…")
+			announced = true
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // ---------------------------------------------------------------- install
 
 // install signs and installs ipa, streaming the useful log lines to out.
@@ -219,7 +240,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	if _, err := os.Stat(plumesign); err != nil {
 		return App{}, fmt.Errorf("plumesign missing - run 'ipakill login' first")
 	}
-	dev, err := pickDevice()
+	dev, err := waitForDevice(20 * time.Second)
 	if err != nil {
 		return App{}, err
 	}
