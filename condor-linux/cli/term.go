@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"strings"
+
+	xterm "golang.org/x/term"
 )
 
 const termPort = "2323"
 
-// term opens the root shell that condor-init serves on the tablet (127.0.0.1:2323),
-// reached over USB with 'adb forward'. Only works in takeover mode: condor-init must
+// term joins the console shown on the tablet's screen (condor-init serves it on
+// 127.0.0.1:2323), reached over USB with 'adb forward': PC and tablet share one session. Only works in takeover mode: condor-init must
 // be running (condor takeover arm <condor-init>, then condor reboot).
 func term(args []string) error {
 	if err := needDevice(); err != nil {
@@ -31,15 +34,41 @@ func term(args []string) error {
 		return fmt.Errorf("connect to condor-init shell: %w", err)
 	}
 	defer c.Close()
-	fmt.Println("connected to condor-init shell (type 'exit' to quit)")
-
-	// Relay both ways; return when either side closes (shell exits, or stdin ends).
-	// Windows consoles send CRLF; the tablet's sh wants bare LF, so drop \r from stdin
-	// (otherwise every command arrives as "id\r": ": not found", garbled output).
+	// In a real console, go raw: every key goes straight to the tablet, which does the echo
+	// and line editing (so nothing is typed twice), and Ctrl+C reaches the tablet's shell.
+	// Ctrl+] leaves, like telnet. Piped input keeps the old line mode.
 	done := make(chan struct{}, 2)
 	go func() { io.Copy(os.Stdout, c); done <- struct{}{} }()
-	go func() { io.Copy(c, crStripper{os.Stdin}); done <- struct{}{} }()
+	fd := int(os.Stdin.Fd())
+	if xterm.IsTerminal(fd) {
+		if old, err := xterm.MakeRaw(fd); err == nil {
+			defer xterm.Restore(fd, old)
+		}
+		enableVTOutput()
+		fmt.Print("connected to the tablet console. Ctrl+] to leave.\r\n")
+		go func() {
+			buf := make([]byte, 256)
+			for {
+				n, err := os.Stdin.Read(buf)
+				if i := bytes.IndexByte(buf[:n], 0x1d); i >= 0 { // Ctrl+]
+					c.Write(buf[:i])
+					break
+				}
+				if n > 0 {
+					c.Write(buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
+			done <- struct{}{}
+		}()
+	} else {
+		// Windows pipes send CRLF; the tablet's shell wants bare LF.
+		go func() { io.Copy(c, crStripper{os.Stdin}); done <- struct{}{} }()
+	}
 	<-done
+	fmt.Print("\r\n")
 	return nil
 }
 
