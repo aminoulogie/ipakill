@@ -32,6 +32,19 @@ ipakill serve            keep running so the iPhone app can sync
 Wi-Fi installs need "Sync with this iPhone over Wi-Fi" turned on in iTunes
 (iPhone connected by USB once), and the PC and iPhone on the same network.
 
+## Terminal (run PC commands from the phone)
+
+Start the server with the terminal allowed:
+
+```
+ipakill-core serve --shell
+```
+
+Activity → Terminal then runs commands on the PC (cmd.exe), one at a time.
+Built-ins: `cd <dir>` (remembered), `update` (in the ipakill repo folder:
+git pull, rebuild ipakill-core, restart), `restart`. It is only as safe as the
+pairing code: ten wrong codes lock the server for five minutes.
+
 ## Apps inside ipakill
 
 From iOS 26 on, apps run inside ipakill must be signed on the phone with the

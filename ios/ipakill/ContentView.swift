@@ -536,39 +536,122 @@ struct IpakillPairView: View {
     }
 }
 
-// MARK: - Activity
+// MARK: - Activity (log + terminal)
 
 struct IpakillActivityView: View {
     @EnvironmentObject var sync: Sync
+    @State private var mode = 0
 
     var body: some View {
         NavigationView {
-            ScrollViewReader { proxy in
-                List {
-                    if sync.busy {
-                        HStack(spacing: 12) {
-                            ProgressView()
-                            Text("Working on the PC…").foregroundColor(.secondary)
-                        }
-                    }
-                    Section {
-                        ForEach(Array(sync.log.enumerated()), id: \.offset) { i, line in
-                            Text(line)
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundColor(line.hasPrefix("!") ? .red : .primary)
-                                .id(i)
-                        }
-                    } header: {
-                        Text("Log")
-                    }
+            VStack(spacing: 0) {
+                Picker("", selection: $mode) {
+                    Text("Log").tag(0)
+                    Text("Terminal").tag(1)
                 }
-                .listStyle(.insetGrouped)
-                .onChange(of: sync.log.count) { n in
-                    withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) }
-                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                if mode == 0 { LogView() } else { TerminalView() }
             }
-            .navigationTitle("Activity")
+            .navigationTitle(mode == 0 ? "Activity" : "Terminal")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .navigationViewStyle(.stack)
+    }
+}
+
+private struct LogView: View {
+    @EnvironmentObject var sync: Sync
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List {
+                if sync.busy {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Working on the PC…").foregroundColor(.secondary)
+                    }
+                }
+                Section {
+                    ForEach(Array(sync.log.enumerated()), id: \.offset) { i, line in
+                        Text(line)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundColor(line.hasPrefix("!") ? .red : .primary)
+                            .id(i)
+                    }
+                } header: {
+                    Text("Log")
+                }
+            }
+            .listStyle(.insetGrouped)
+            .onChange(of: sync.log.count) { n in
+                withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) }
+            }
+        }
+    }
+}
+
+/// Commands typed here run on the PC through 'ipakill serve --shell'.
+private struct TerminalView: View {
+    @EnvironmentObject var sync: Sync
+    @State private var input = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(sync.term.enumerated()), id: \.offset) { i, line in
+                            Text(line)
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundColor(color(line))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                                .id(i)
+                        }
+                        if sync.termBusy {
+                            ProgressView().padding(.top, 4).id(-1)
+                        }
+                    }
+                    .padding(12)
+                }
+                .background(Color.black)
+                .onChange(of: sync.term.count) { n in
+                    withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) }
+                }
+                .onTapGesture { focused = true }
+            }
+            HStack(spacing: 8) {
+                Text(">").font(.system(.body, design: .monospaced)).foregroundColor(.green)
+                TextField("command", text: $input)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.send)
+                    .focused($focused)
+                    .onSubmit(send)
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || sync.termBusy)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.secondarySystemBackground))
+        }
+    }
+
+    private func color(_ line: String) -> Color {
+        if line.hasPrefix("!") { return .red }
+        if line.contains("> ") && !line.contains("\n") { return .green }
+        return Color(white: 0.85)
+    }
+
+    private func send() {
+        let cmd = input
+        guard !cmd.trimmingCharacters(in: .whitespaces).isEmpty, !sync.termBusy else { return }
+        input = ""
+        Task { await sync.run(cmd) }
+        focused = true
     }
 }

@@ -26,6 +26,14 @@ private struct InstallResponse: Decodable {
     let log: String?
 }
 
+private struct ExecResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let output: String?
+    let code: Int?
+    let cwd: String?
+}
+
 private struct CertResponse: Decodable {
     let ok: Bool
     let error: String?
@@ -42,6 +50,11 @@ final class Sync: ObservableObject {
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
+
+    // Terminal: commands run on the PC (needs 'ipakill-core serve --shell').
+    @Published var term: [String] = ["type 'help' - commands run on the PC"]
+    @Published var termCwd = ""
+    @Published var termBusy = false
 
     @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
     @Published var store: [StoreApp] = []
@@ -301,6 +314,46 @@ final class Sync: ObservableObject {
             say("! \(error.localizedDescription)")
         }
         await poll()
+    }
+
+    // MARK: terminal
+
+    func run(_ command: String) async {
+        let line = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if line == "clear" {
+            term = []
+            return
+        }
+        term.append("\(termCwd.isEmpty ? "" : termCwd)> \(line)")
+        guard online else {
+            term.append("! not connected to the PC")
+            return
+        }
+        guard var req = request("/exec", timeout: 900),
+              let body = try? JSONEncoder().encode(["cmd": line]) else { return }
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        termBusy = true
+        defer { termBusy = false }
+        do {
+            let (data, resp) = try await URLSession.shared.upload(for: req, from: body)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                term.append("! the pc is running an older ipakill without the terminal - update it once from the PC")
+                return
+            }
+            let r = try JSONDecoder().decode(ExecResponse.self, from: data)
+            guard r.ok else {
+                term.append("! \(r.error ?? "failed")")
+                return
+            }
+            let out = (r.output ?? "").trimmingCharacters(in: .newlines)
+            if !out.isEmpty { term.append(out) }
+            if let c = r.code, c != 0 { term.append("! exit code \(c)") }
+            if let cwd = r.cwd { termCwd = cwd }
+        } catch {
+            term.append("! \(error.localizedDescription)")
+        }
+        if term.count > 500 { term.removeFirst(term.count - 500) }
     }
 
     // MARK: certificate for apps run inside ipakill

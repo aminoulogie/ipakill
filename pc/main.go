@@ -405,10 +405,30 @@ func serve() error {
 	os.MkdirAll(ipaDir, 0o755)
 	host, _ := os.Hostname()
 
+	// Wrong codes lock everyone out for a while, so a 6-digit code can't be
+	// guessed by someone else on the network (it guards the terminal too).
+	var (
+		failMu    sync.Mutex
+		failures  int
+		lockedTil time.Time
+	)
 	auth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			failMu.Lock()
+			locked := time.Now().Before(lockedTil)
+			failMu.Unlock()
+			if locked {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "too many wrong pairing codes - try again in a few minutes"})
+				return
+			}
 			// Images can't carry headers, so the code may also come as ?code=.
 			if r.Header.Get("X-Ipakill-Code") != cfg.Code && r.URL.Query().Get("code") != cfg.Code {
+				failMu.Lock()
+				if failures++; failures >= 10 {
+					failures, lockedTil = 0, time.Now().Add(5*time.Minute)
+					fmt.Println("[ipakill] 10 wrong pairing codes - locked for 5 minutes")
+				}
+				failMu.Unlock()
 				writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "wrong pairing code"})
 				return
 			}
@@ -514,11 +534,24 @@ func serve() error {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "p12": p12, "password": pass})
 	}))
 
+	http.HandleFunc("/exec", auth(shellHandler))
+
 	fmt.Println("[ipakill] Wi-Fi sync is running. In the ipakill iPhone app, enter:")
 	for _, ip := range localIPs() {
 		fmt.Printf("            PC address:   %s\n", ip)
 	}
 	fmt.Printf("            Pairing code: %s\n", cfg.Code)
+	if shellEnabled() {
+		fmt.Println("[ipakill] Terminal is ON: the iPhone app can run commands on this PC.")
+	}
 	fmt.Println("[ipakill] Keep this window open. Ctrl+C to stop.")
-	return http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+	// After a restart from the phone the old server may still hold the port briefly.
+	var err error
+	for i := 0; i < 20; i++ {
+		if err = http.ListenAndServe(fmt.Sprintf(":%d", port), nil); !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "Only one usage") {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return err
 }
