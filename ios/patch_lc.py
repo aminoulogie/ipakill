@@ -128,6 +128,16 @@ edit("LiveContainer/LCBootstrap.m",
     } while(0);
 """)
 
+# Home Screen icons made by LiveContainer's "Add to Home Screen" profile
+# open ipakill with a launch link. On a cold start, restart straight into the
+# app before any screen is drawn (ipakillFastLaunch in ContentView.swift).
+edit("LiveContainerSwiftUI/App/AppDelegate.swift",
+     """        self.window = (scene as? UIWindowScene)?.keyWindow
+    }""",
+     """        self.window = (scene as? UIWindowScene)?.keyWindow
+        ipakillFastLaunch(connectionOptions)
+    }""")
+
 # Branding.
 edit("xcconfigs/Global.xcconfig",
      "LIVECONTAINER_BUNDLE_IDENTIFIER = com.kdt.livecontainer$(DEVELOPMENT_TEAM_SUFFIX)",

@@ -138,6 +138,35 @@ struct InstallSheet: View {
     }
 }
 
+/// Called as ipakill's window is created. When a Home Screen icon (the
+/// "Add to Home Screen" profile) cold-starts ipakill with a launch link,
+/// restart straight into that app instead of drawing ipakill's screens and
+/// handling the link there. Apps that need Face ID unlock or JIT keep the
+/// normal path, which asks for those.
+func ipakillFastLaunch(_ options: UIScene.ConnectionOptions) {
+    guard let url = options.urlContexts.first?.url, url.host == "livecontainer-launch",
+          let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "bundle-name" })?.value,
+          name != "ui"
+    else { return }
+    let bundle = [LCPath.bundlePath, LCPath.lcGroupBundlePath]
+        .map { $0.appendingPathComponent(name) }
+        .first { FileManager.default.fileExists(atPath: $0.path) }
+    guard let bundle else { return }
+    let info = NSDictionary(contentsOf: bundle.appendingPathComponent("LCAppInfo.plist"))
+    if info?["isLocked"] as? Bool == true || info?["isJITNeeded"] as? Bool == true { return }
+    // Same as LiveContainer's own launch: apps with MetalANGLE need it preloaded on iOS 26+.
+    if #available(iOS 26.0, *) {
+        let angle = bundle.appendingPathComponent("Frameworks/MetalANGLE.framework/MetalANGLE").path
+        if FileManager.default.fileExists(atPath: angle) {
+            let list = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("preloadLibraries.txt")
+            try? angle.data(using: .utf8)?.write(to: list)
+        }
+    }
+    _ = LCSharedUtils.launchToGuestApp(with: url)
+}
+
 // MARK: - shared pieces
 
 /// Downloaded images, shrunk to the size they're shown at and kept in
@@ -901,13 +930,20 @@ private struct HomeScreenView: View {
     var body: some View {
         List {
             Section {
+                Text("In the **Apps** tab, long-press an app › **Add to Home Screen** › **Create App Clip**, then install the profile (Settings › Profile Downloaded › Install). The icon gets the app's own picture and name and opens it directly. (**Save App Icon** in the same menu puts the picture in Photos, for Shortcuts icons.)")
+                    .font(.callout)
+            } header: {
+                Text("Automatic (recommended)")
+            }
+
+            Section {
                 step(1, "Open the **Shortcuts** app, tap **+**.")
                 step(2, "Add **Text** and paste the app's **name** (copy it below).")
                 step(3, "Add **Save File**. Tap the folder, pick **On My iPhone › ipakill**. Turn **Ask Where to Save** off, set **Subpath** to `ipakill-launch.txt`, turn **Overwrite If File Exists** on.")
                 step(4, "Add **Open URLs** and paste the app's **link** (copy it below).")
                 step(5, "Tap the shortcut's name at the top › **Add to Home Screen**, choose its icon and name.")
             } header: {
-                Text("Make an icon (once per app)")
+                Text("Manual: with Shortcuts")
             } footer: {
                 Text("Tapping the icon opens the app directly. No extension and no app ID needed. The first time, Shortcuts asks to allow access to ipakill's folder: allow it.")
             }
