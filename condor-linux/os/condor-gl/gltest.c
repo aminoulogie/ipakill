@@ -31,6 +31,7 @@ extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 extern const char *dlerror(void);
 extern void exit(int);
+extern long read(int, void *, unsigned);
 
 static char out[512];
 #define say(...) do { int n = snprintf(out, sizeof out, __VA_ARGS__); write(1, out, n); } while (0)
@@ -64,6 +65,38 @@ static void unpan(void) {
 		say("framebuffer pan offset put back to 0\n");
 	}
 	close(fd);
+}
+
+/* diagnose explains why Android's EGL loader couldn't start the GPU driver. */
+static void diagnose(void) {
+	char buf[512];
+	const char *cfgs[] = {"/vendor/lib/egl/egl.cfg", "/system/lib/egl/egl.cfg", 0};
+	for (int i = 0; cfgs[i]; i++) {
+		int fd = open(cfgs[i], 0);
+		if (fd < 0) { say("  %s: missing\n", cfgs[i]); continue; }
+		long n = read(fd, buf, sizeof buf - 1);
+		close(fd);
+		buf[n > 0 ? n : 0] = 0;
+		say("  %s:\n%s\n", cfgs[i], buf);
+	}
+	const char *dirs[] = {"/vendor/lib/egl/", "/system/lib/egl/", "/system/vendor/lib/egl/", 0};
+	const char *names[] = {"libEGL_POWERVR_SGX544_115.so", "libGLESv2_POWERVR_SGX544_115.so", 0};
+	for (int d = 0; dirs[d]; d++)
+		for (int k = 0; names[k]; k++) {
+			char path[200];
+			snprintf(path, sizeof path, "%s%s", dirs[d], names[k]);
+			int fd = open(path, 0);
+			if (fd < 0) continue;
+			close(fd);
+			void *h = dlopen(path, 0);
+			say("  dlopen %s: %s\n", path, h ? "ok" : dlerror());
+		}
+	const char *devs[] = {"/dev/pvrsrvkm", "/dev/graphics/fb0", "/vendor", 0};
+	for (int i = 0; devs[i]; i++) {
+		int fd = open(devs[i], 0);
+		say("  %s: %s\n", devs[i], fd >= 0 ? "present" : "MISSING");
+		if (fd >= 0) close(fd);
+	}
 }
 
 int main(int argc, char **argv) {
@@ -112,7 +145,12 @@ int main(int argc, char **argv) {
 	if (!win) { say("FAIL: android_createDisplaySurface returned nothing (is SurfaceFlinger still running? stop surfaceflinger)\n"); unpan(); return 1; }
 	EGLDisplay dpy = eglGetDisplay(0);
 	EGLint maj = 0, min = 0;
-	if (!eglInitialize(dpy, &maj, &min)) { say("FAIL: eglInitialize 0x%x\n", eglGetError()); unpan(); return 1; }
+	if (!dpy || !eglInitialize(dpy, &maj, &min)) {
+		say("FAIL: the GPU driver didn't start (display %p, EGL error 0x%x). Looking for why:\n", dpy, eglGetError());
+		diagnose();
+		unpan();
+		return 1;
+	}
 	const EGLint cfgAttr[] = {0x3033 /*SURFACE_TYPE*/, 4 /*WINDOW*/, 0x3040 /*RENDERABLE*/, 4 /*ES2*/,
 		0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3038};
 	EGLConfig cfg; EGLint n = 0;

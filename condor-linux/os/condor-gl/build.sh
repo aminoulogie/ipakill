@@ -9,7 +9,7 @@ mkdir -p stubs
 cat > stubs/libc.c <<'S'
 void __libc_init(){} int snprintf(){return 0;} long write(){return 0;} void *malloc(){return 0;}
 int usleep(){return 0;} int open(){return 0;} int ioctl(){return 0;} int close(){return 0;}
-int clock_gettime(){return 0;} void exit(){}
+int clock_gettime(){return 0;} void exit(){} long read(){return 0;}
 S
 echo 'void *dlopen(){return 0;} void *dlsym(){return 0;} const char *dlerror(){return 0;}' > stubs/libdl.c
 for l in libc libdl; do

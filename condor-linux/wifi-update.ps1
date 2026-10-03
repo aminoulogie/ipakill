@@ -10,7 +10,9 @@
 # /proc/1/root/data/condor; and Android's own /system/bin/start (bind-mounted into Alpine)
 # restarts the flash_recovery service that runs condor-init, as "condor takeover restart" does.
 param([string]$Ip = "")
-$ErrorActionPreference = 'Stop'
+# Not 'Stop': git and ssh write progress to stderr, which Windows PowerShell 5.1 would turn
+# into a terminating error. Every step checks $LASTEXITCODE instead.
+$ErrorActionPreference = 'Continue'
 $repo = Split-Path $PSScriptRoot -Parent
 $ipFile = "$HOME\.condor\tablet-ip"
 
@@ -35,7 +37,7 @@ Write-Host "==> getting the latest code" -ForegroundColor Cyan
 Set-Location $repo
 $pulled = $false
 for ($i = 1; $i -le 3; $i++) {
-    git pull --no-edit 2>$null
+    git pull --no-edit 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { $pulled = $true; break }
     Start-Sleep 5
 }
@@ -47,7 +49,7 @@ Push-Location "$repo\condor-linux\os\condor-init"
 try {
     $env:GOOS = 'linux'; $env:GOARCH = '386'; $env:CGO_ENABLED = '0'
     go build -o $bin .
-    if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+    if ($LASTEXITCODE -ne 0) { Write-Host "build failed" -ForegroundColor Red; exit 1 }
 } finally {
     Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
     Pop-Location
