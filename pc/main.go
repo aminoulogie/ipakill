@@ -527,6 +527,11 @@ func downloadOnce(src, dst string) error {
 }
 
 func serve() error {
+	// Already running (e.g. the window a phone 'update' opened)? Say so plainly.
+	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil && !restarted() {
+		c.Close()
+		return fmt.Errorf("ipakill serve is already running in another window - use that one, or stop it first with: Stop-Process -Name ipakill-core")
+	}
 	cfg := loadSyncConfig()
 	for _, a := range os.Args[2:] {
 		if a == "--shell" || a == "--no-shell" {

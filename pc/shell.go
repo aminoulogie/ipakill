@@ -43,6 +43,17 @@ var terminalOn bool
 
 func shellEnabled() bool { return terminalOn }
 
+// restarted reports a server started by 'restart'/'update' from the phone,
+// which may have to wait for the old one to let go of the port.
+func restarted() bool {
+	for _, a := range os.Args[2:] {
+		if a == "--restarted" {
+			return true
+		}
+	}
+	return false
+}
+
 func currentDir() string {
 	if b, err := os.ReadFile(shellDir); err == nil {
 		if d := strings.TrimSpace(string(b)); d != "" {
@@ -187,7 +198,13 @@ func prepareRestart() (string, error) {
 func restartSoon() {
 	time.Sleep(500 * time.Millisecond)
 	exe, _ := os.Executable()
-	if err := startDetached(exe, os.Args[1:]...); err != nil {
+	args := []string{}
+	for _, a := range os.Args[1:] {
+		if a != "--restarted" {
+			args = append(args, a)
+		}
+	}
+	if err := startDetached(exe, append(args, "--restarted")...); err != nil {
 		fmt.Println("[ipakill] restart failed: " + err.Error())
 		return
 	}
