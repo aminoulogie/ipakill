@@ -37,6 +37,7 @@ power on → signed kernel + ramdisk (stock, can't change) → Android init
 ## Daily workflow (PowerShell on the PC)
 ```
 .\condor-linux\dev.cmd           build condor-init for linux/386, push + restart (or arm + reboot)
+condor-linux\wifi-update.cmd <ip>  same over Wi-Fi, no USB (IP remembered after the first time)
 condor term                      the tablet's console from the PC (Ctrl+] leaves)
 ssh root@<tablet ip> / condor ssh  same over Wi-Fi (keys set up by condor ssh setup)
 condor alpine run <cmd>          run one command inside Alpine (exit code checked)
@@ -284,7 +285,13 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       The panel's refresh is logged at start ("panel refresh: N Hz"); 120 Hz is impossible
       (panel ~60 Hz). Tests: animScale (0 = no frames); anim_test.go checks every transition
       ends on the exact new screen.
-- [ ] microSD bind into Alpine; update over Wi-Fi
+- [x] **Update over Wi-Fi** (wifi-update.cmd/.ps1): git pull, build, scp to Alpine /tmp, md5
+      check, then a detached (setsid) busybox script on the tablet installs into
+      /proc/1/root/data/condor (init's root: the real /data/condor seen from the chroot), keeps
+      condor-init.bak, restarts via /system/bin/start flash_recovery (bind-mounted Android
+      toolbox) and rolls back if no condor-init runs 15 s later. PC polls /tmp/condor-update.log.
+      Tested in simulation (good, broken, damaged); not yet on the tablet.
+- [ ] microSD bind into Alpine
 
 Update this checklist as things are done.
 
