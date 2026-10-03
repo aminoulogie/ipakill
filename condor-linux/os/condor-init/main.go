@@ -118,6 +118,7 @@ func main() {
 			go c.keysLoop("mid_powerbtn")
 			go c.keysLoop("gpio-keys")
 			go c.idleLoop()
+			c.wantGPU()
 		}
 	}
 	go runTunnel()

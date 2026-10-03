@@ -55,8 +55,12 @@ func (c *console) frames(d time.Duration, draw func(t float64)) {
 	}
 }
 
-// animBufs are the screen before and after a transition, in native layout.
+// animBufs are the screen before and after a transition, in native layout: the GPU's
+// shared pictures when it's up.
 func (c *console) animBufs() (a, b []byte) {
+	if c.gpu != nil {
+		return c.gpu.images()
+	}
 	if len(c.animA) != len(c.s.buf) {
 		c.animA, c.animB = make([]byte, len(c.s.buf)), make([]byte, len(c.s.buf))
 	}
@@ -78,6 +82,17 @@ func (c *console) transition(kind string, r image.Rectangle, change func()) {
 	change()
 	s.hold = false
 	copy(nu, s.buf)
+	if c.gpuHas(old, nu) {
+		switch kind {
+		case "push", "pop":
+			c.gpuFrames(durPush, func(t float64) []quad { return c.pushQuads(t, kind == "push") })
+		case "rise":
+			c.gpuFrames(durSheet, func(t float64) []quad { return c.riseQuads(gpuOld, gpuNew, r, t) })
+		case "fall":
+			c.gpuFrames(durSheet*4/5, func(t float64) []quad { return c.riseQuads(gpuNew, gpuOld, r, 1-t) })
+		}
+		kind = "" // done: no CPU frames
+	}
 	switch kind {
 	case "push", "pop":
 		c.frames(durPush, func(t float64) { c.pushFrame(old, nu, t, kind == "push"); s.markRows(0, s.fbH-1) })
@@ -181,6 +196,19 @@ func (c *console) animateTurn(old []byte, dir int) {
 	_, nu := c.animBufs()
 	copy(nu, c.s.buf)
 	style := c.lib.Prefs.PageTurn
+	if c.gpuHas(old, nu) {
+		c.gpuFrames(turnDuration[style], func(t float64) []quad {
+			switch {
+			case style == "slide":
+				return c.slideQuads(t, dir)
+			case dir > 0:
+				return c.curlQuads(gpuOld, gpuNew, t)
+			default:
+				return c.curlQuads(gpuNew, gpuOld, 1-t)
+			}
+		})
+		style = "" // done: no CPU frames
+	}
 	c.frames(turnDuration[style], func(t float64) {
 		c.s.markRows(0, c.s.fbH-1)
 		switch {

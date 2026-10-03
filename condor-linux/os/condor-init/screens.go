@@ -140,6 +140,7 @@ func (c *console) pageTap(x, y int) {
 	case "anim":
 		c.cfg.Animations = !c.cfg.Animations
 		c.cfg.save()
+		c.wantGPU()
 	case "off0", "off1", "off5", "off10":
 		fmt.Sscanf(id, "off%d", &c.cfg.ScreenOff)
 		c.cfg.save()

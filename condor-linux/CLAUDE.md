@@ -293,13 +293,20 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       Tested in simulation (good, broken, damaged); not yet on the tablet.
 - [x] Animations off by default (cfg.Animations, Settings > Display & Brightness > Motion):
       without a GPU every frame is CPU-pushed; instant changes feel fastest (e-reader style).
-- [ ] **GPU (condor-gl)**: no distro can use the SGX544 (Halium/libhybris on Clovertrail+ draws
-      fail; KOReader x86 needs Android 4.3). Route: a bionic-native helper using Android's
-      own libEGL/libGLESv2 via FramebufferNativeWindow (android_createDisplaySurface, libui,
-      SurfaceFlinger stopped). os/condor-gl/gltest (built with clang+lld, no NDK: stub
-      libc/libdl, own _start calling __libc_init) measures swap fps, texture upload, slide
-      fps. Run: condor-linux\gl-test.cmd. If fast: condor-init hands page images to the
-      helper, which animates on the GPU.
+- [x] **GPU works without Android's UI** (2026-10-03, os/condor-gl/gltest): PowerVR SGX 544MP,
+      OpenGL ES 2.0, swap 62 fps, full-screen texture upload 9.6 ms, full-screen slide 61.6 fps.
+      Needs: Android's root + environment (ANDROID_PROPERTY_WORKSPACE from init; run via the
+      2324 shell or from condor-init), SurfaceFlinger stopped, and `-mstackrealign` (bionic 4.2
+      enters main with a 4-byte aligned stack; clang's movaps faulted). Crash reports:
+      /data/tombstones + logcat (gl-run.sh prints both). A crashed GL program can leave the
+      display grey/green: reboot (don't FBIOPAN by hand; that made it green).
+- [ ] **GPU animations** (gpu.go, gpu_linux.go, os/condor-gl/glanim.c → glanim.bin, embedded):
+      with Animations on, condor-init writes glanim to /data/condor/condor-gl, stops
+      SurfaceFlinger and starts it; the screens before/after live in /dev/condor-gl.shm
+      (shared), each frame is a list of quads (pushQuads/riseQuads/slideQuads/curlQuads match
+      the CPU frames, gpu_test.go checks them pixel for pixel with a software GPU). Last frame
+      re-swapped until the display's yoffset is 0, then condor-init flushes as usual. Any GPU
+      error → back on the CPU (log "GPU: ..."). Not yet seen on the tablet.
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

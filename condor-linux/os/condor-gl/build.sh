@@ -11,14 +11,18 @@ mkdir -p stubs
 cat > stubs/libc.c <<'S'
 void __libc_init(){} int snprintf(){return 0;} long write(){return 0;} void *malloc(){return 0;}
 int usleep(){return 0;} int open(){return 0;} int ioctl(){return 0;} int close(){return 0;}
-int clock_gettime(){return 0;} void exit(){} long read(){return 0;}
+int clock_gettime(){return 0;} void exit(){} long read(){return 0;} void *mmap(){return 0;}
 S
 echo 'void *dlopen(){return 0;} void *dlsym(){return 0;} const char *dlerror(){return 0;}' > stubs/libdl.c
 for l in libc libdl; do
   clang $T -shared -nostdlib -fPIC -Wl,-soname,$l.so -o stubs/$l.so stubs/$l.c
 done
-clang $T -c gltest.c -o gltest.o
 clang $T -c start.S -o start.o
-ld.lld -m elf_i386 -o gltest --dynamic-linker=/system/bin/linker --hash-style=sysv \
-  -z norelro --no-rosegment start.o gltest.o stubs/libc.so stubs/libdl.so
-echo built gltest
+for p in gltest glanim; do
+  clang $T -Wall -c $p.c -o $p.o
+  ld.lld -m elf_i386 -o $p --dynamic-linker=/system/bin/linker --hash-style=sysv \
+    -z norelro --no-rosegment start.o $p.o stubs/libc.so stubs/libdl.so
+  echo built $p
+done
+# condor-init carries glanim inside itself (go:embed) and starts it when animations are on.
+cp glanim ../condor-init/glanim.bin

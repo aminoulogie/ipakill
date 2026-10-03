@@ -77,6 +77,9 @@ type console struct {
 	setPane        string // Settings: the pane shown
 	readerFrom     mode   // where the open book was opened from, for "Library"
 	animA, animB   []byte // the screen before and after a transition (native layout)
+	gpu            gpuDev // animations on the GPU (gpu.go), nil when they're on the CPU
+	gpuStarting    bool
+	gpuFailed      bool
 	wui            wordsUI
 	clients        map[net.Conn]bool
 }

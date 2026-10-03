@@ -13,3 +13,7 @@ func openScreen(rot Rotation) (*Screen, error) {
 func setBacklight(percent int) {}
 
 func blankScreen(s *Screen, off bool) {}
+
+func waitVsync(s *Screen) bool { return false }
+
+func refreshHz(s *Screen) float64 { return 0 }
