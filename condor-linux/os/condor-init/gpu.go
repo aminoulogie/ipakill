@@ -5,8 +5,11 @@ import (
 	"image"
 	"log"
 	"math"
+	"os"
 	"time"
 )
+
+func gpuEnabled() bool { _, err := os.Stat("/data/condor/gpu"); return err == nil }
 
 // Animations on the GPU. The tablet's PowerVR SGX544 works only through Android's own
 // drivers, so a small bionic program (os/condor-gl/glanim.c, carried inside condor-init)
@@ -187,8 +190,13 @@ func (c *console) gpuFrames(d time.Duration, build func(t float64) []quad) bool 
 }
 
 // wantGPU starts the GPU helper in the background when animations are on (once).
+//
+// Off unless /data/condor/gpu exists: tested on the tablet (gl-show), the GPU draws
+// correctly but its frames never reach the panel (black screen). Android shows them through
+// Intel's hardware composer, which only SurfaceFlinger drives; without it the display
+// plane the driver flips to isn't shown. Kept for experiments.
 func (c *console) wantGPU() {
-	if !c.cfg.Animations || c.gpu != nil || c.gpuStarting || c.gpuFailed {
+	if !c.cfg.Animations || c.gpu != nil || c.gpuStarting || c.gpuFailed || !gpuEnabled() {
 		return
 	}
 	c.gpuStarting = true

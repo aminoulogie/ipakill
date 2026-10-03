@@ -300,13 +300,15 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       enters main with a 4-byte aligned stack; clang's movaps faulted). Crash reports:
       /data/tombstones + logcat (gl-run.sh prints both). A crashed GL program can leave the
       display grey/green: reboot (don't FBIOPAN by hand; that made it green).
-- [ ] **GPU animations** (gpu.go, gpu_linux.go, os/condor-gl/glanim.c → glanim.bin, embedded):
-      with Animations on, condor-init writes glanim to /data/condor/condor-gl, stops
-      SurfaceFlinger and starts it; the screens before/after live in /dev/condor-gl.shm
-      (shared), each frame is a list of quads (pushQuads/riseQuads/slideQuads/curlQuads match
-      the CPU frames, gpu_test.go checks them pixel for pixel with a software GPU). Last frame
-      re-swapped until the display's yoffset is 0, then condor-init flushes as usual. Any GPU
-      error → back on the CPU (log "GPU: ..."). Not yet seen on the tablet.
+- [x] **GPU animations: dead end on this panel** (2026-10-03). glanim (gpu.go, gpu_linux.go,
+      os/condor-gl/glanim.c → glanim.bin) works and gpu_test.go matches its quads to the CPU
+      frames, but on the tablet the screen goes black. gl-show proved it: the GPU renders
+      correctly (glReadPixels matches condor's screen) yet nothing it posts through
+      FramebufferNativeWindow is shown (fb0 virtual 1920x1200, pan 0,0; power off/on doesn't
+      restore condor either; reboot does). Android displays via Intel's hardware composer,
+      which only SurfaceFlinger drives. Readback + write() would cost what the CPU path costs.
+      The GPU path now only starts if /data/condor/gpu exists (experiments). Animations stay
+      on the CPU (off by default).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.
