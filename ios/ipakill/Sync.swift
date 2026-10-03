@@ -377,21 +377,13 @@ final class Sync: ObservableObject {
         progress = InstallProgress()
         progressLines = 0
         // Poll the PC for the progress bar and the full log while it works.
+        progressFrom = 0
+        progressStarted = nil
         let poller = Task { @MainActor in
-            var from = 0
-            var started: Int64?
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                guard let p = await fetchProgress(from: from) else { continue }
-                if started == nil { started = p.started; from = 0 }
-                if p.started != started { continue }  // an older install
-                for line in p.lines ?? [] {
-                    say("  " + line)
-                    progressLines += 1
-                }
-                from = p.next ?? from
-                progress = InstallProgress(name: p.name ?? "", stage: p.stage ?? "", done: p.done ?? 0,
-                                           total: p.total ?? 0, percent: p.percent ?? 0)
+                if Task.isCancelled { break }
+                await pollProgress()
             }
         }
         defer {
@@ -416,6 +408,7 @@ final class Sync: ObservableObject {
             }
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
             poller.cancel()
+            await drainProgress()
             if progressLines == 0 {  // an older PC without /progress: show its summary
                 for line in (r.log ?? "").split(separator: "\n") {
                     say(line.trimmingCharacters(in: .whitespaces))
@@ -427,6 +420,29 @@ final class Sync: ObservableObject {
             say("! \(error.localizedDescription)")
         }
         await poll()
+    }
+
+    private var progressFrom = 0
+    private var progressStarted: Int64?
+
+    /// Takes the PC's new log lines and progress for the current install.
+    private func pollProgress() async {
+        guard let p = await fetchProgress(from: progressFrom) else { return }
+        if progressStarted == nil { progressStarted = p.started }
+        guard p.started == progressStarted else { return }  // an older install
+        for line in p.lines ?? [] {
+            say("  " + line)
+            progressLines += 1
+        }
+        progressFrom = p.next ?? progressFrom
+        progress = InstallProgress(name: p.name ?? "", stage: p.stage ?? "", done: p.done ?? 0,
+                                   total: p.total ?? 0, percent: p.percent ?? 0)
+    }
+
+    /// After the install answered: the last lines, which hold the error if any.
+    private func drainProgress() async {
+        guard progressStarted != nil else { return }
+        await pollProgress()
     }
 
     private func fetchProgress(from: Int) async -> ProgressResponse? {
