@@ -20,3 +20,4 @@ for mode in "" eglfirst; do
 		echo "--- crash report $t"
 		head -n 70 "$t"
 	done
+done
