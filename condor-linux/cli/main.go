@@ -12,6 +12,7 @@
 //	condor backup [folder]         copy the tablet's internal storage (/sdcard) to the PC
 //	condor reboot [bootloader|recovery]
 //	condor bootimg info|unpack|pack  Intel OSIP boot images (files on the PC only)
+//	condor takeover status|arm|disarm|hook  one-shot boot into our own userspace via /system
 //	condor setup                  install so 'condor' works in any cmd window (also runs on double-click)
 package main
 
@@ -105,6 +106,8 @@ func main() {
 		err = backup(args)
 	case "reboot":
 		err = reboot(args)
+	case "takeover":
+		err = takeover(args)
 	default:
 		usage()
 		os.Exit(2)
@@ -130,6 +133,10 @@ func usage() {
   condor bootimg info <img>              show an Intel boot image's layout
   condor bootimg unpack <img> [dir]      split it into cmdline, kernel, ramdisk...
   condor bootimg pack <dir> <out.img>    rebuild an image from an unpacked folder
+  condor takeover status                 /system hook, condor-init, trigger, logs
+  condor takeover arm [condor-init]      next boot (once) stops Android, runs condor-init
+  condor takeover disarm                 next boot is normal Android
+  condor takeover hook                   print the hook script that lives in /system
   condor setup                   make 'condor' work in any cmd window
 `)
 }
