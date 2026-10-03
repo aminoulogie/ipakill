@@ -268,6 +268,22 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       None, spacing, margins, brightness, line by line, translate to, goal), bookmarks (red
       ribbon, Contents | Bookmarks | Highlights). Page turns time-boxed (curl 360 ms, slide 280
       ms; curl shows the page's back with mirrored print). Tests set PageTurn "none".
+- [x] **Whole OS in iPadOS's look** (system.go, bar.go, keyboard.go, anim.go, fonts/): Inter
+      (OFL, fonts/LICENSE-Inter.txt) is the system font — SF itself may not be used off Apple
+      platforms; terminal in DejaVu Sans Mono (Menlo's family). Status bar: time + date left,
+      Wi-Fi, battery % and battery icon right, coloured by the screen under it. Home screen:
+      wallpaper, Calendar + Books/reading-goal widgets, icons (Books, Book Store, Words,
+      Terminal, Settings), frosted dock. Settings: sidebar (device card, Wi-Fi, Battery,
+      Display & Brightness, General/About, Restart & Shut Down) + inset grouped panes.
+      Keyboard: iPad light (store, words) / dark (terminal) with ⇧ ⌫ return.
+- [x] **Animations** (anim.go): composed in the framebuffer's native layout (sideways on the
+      portrait screen = whole native rows, a memmove), never redrawn per frame; paced by
+      FBIO_WAITFORVSYNC when the driver has it; time-boxed (spring ease-out). push/pop
+      (apps, books, store pages, words), rise/fall (Look Up sheet, Contents), page slide/curl,
+      the lit line gliding. Frame cost on the PC: push/slide ~1 ms, rise ~2 ms, curl ~3 ms.
+      The panel's refresh is logged at start ("panel refresh: N Hz"); 120 Hz is impossible
+      (panel ~60 Hz). Tests: animScale (0 = no frames); anim_test.go checks every transition
+      ends on the exact new screen.
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

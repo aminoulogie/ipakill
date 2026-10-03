@@ -9,10 +9,9 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gomonobold"
-	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 
+	"condor-init/fonts"
 	"condor-init/ui"
 )
 
@@ -138,21 +137,13 @@ type keyboard struct {
 	onHide   func(visible bool) // console relayout
 	big      font.Face
 	small    font.Face
+	dark     bool // iPadOS's dark keyboard (the terminal); light elsewhere
 }
 
 func newKeyboard(s *Screen, send func([]byte), onHide func(bool)) (*keyboard, error) {
-	f, err := opentype.Parse(gomonobold.TTF)
-	if err != nil {
-		return nil, err
-	}
-	big, err := opentype.NewFace(f, &opentype.FaceOptions{Size: 42, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return nil, err
-	}
-	small, err := opentype.NewFace(f, &opentype.FaceOptions{Size: 30, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return nil, err
-	}
+	// The system font, with DejaVu for the key symbols (⇧ ⌫ ⌨).
+	big := textFace("inter", fonts.InterRegular, false, 42)
+	small := textFace("inter", fonts.InterRegular, false, 28)
 	kb := &keyboard{s: s, y0: s.H - kbHeight, layers: kbLayout(), visible: true,
 		pressed: map[int]*kbKey{}, repeats: map[int]chan struct{}{}, repeated: map[int]bool{},
 		send: send, onHide: onHide, big: big, small: small}
@@ -189,15 +180,23 @@ func (kb *keyboard) keyAt(x, y int) *kbKey {
 	return nil
 }
 
+// iPadOS keyboard colours: light and dark.
+type kbColours struct{ bg, key, special, pressed, text, shadow, active color.RGBA }
+
 var (
-	kbBG      = color.RGBA{18, 18, 20, 255}
-	kbKeyBG   = color.RGBA{55, 59, 65, 255}
-	kbSpecial = color.RGBA{40, 42, 46, 255}
-	kbPressed = color.RGBA{129, 162, 190, 255}
-	kbActive  = color.RGBA{181, 189, 104, 255}
-	kbText    = color.RGBA{220, 223, 221, 255}
-	kbDark    = color.RGBA{20, 20, 24, 255}
+	kbLight = kbColours{rgb(0xd1d4db), rgb(0xffffff), rgb(0xabb0ba), rgb(0xabb0ba), rgb(0x000000), rgb(0x898a8d), rgb(0x007aff)}
+	kbDarkC = kbColours{rgb(0x2b2b2e), rgb(0x6b6b6f), rgb(0x46464a), rgb(0x8c8c90), rgb(0xffffff), rgb(0x0f0f10), rgb(0x0a84ff)}
 )
+
+func (kb *keyboard) colours() kbColours {
+	if kb.dark {
+		return kbDarkC
+	}
+	return kbLight
+}
+
+// keyLabels: iPadOS's names and symbols for the named keys.
+var keyLabels = map[string]string{"bksp": "⌫", "shift": "⇧", "enter": "return", "hide": "⌨", "sym": ".?123"}
 
 func (kb *keyboard) active(key *kbKey) bool {
 	switch key.act {
@@ -216,29 +215,34 @@ func (kb *keyboard) active(key *kbKey) bool {
 // drawKey paints one key. Caller holds drawMu.
 func (kb *keyboard) drawKey(key *kbKey, pressed bool) {
 	r := key.r
+	col := kb.colours()
 	img := image.NewRGBA(image.Rect(0, 0, r.Dx()+kbGap, r.Dy()+kbGap))
-	ui.Fill(img, img.Rect, kbBG)
-	bg, fg := kbKeyBG, kbText
-	if key.act != actType || utf8.RuneCountInString(key.label) > 1 { // named keys: esc, bksp...
-		bg = kbSpecial
+	ui.Fill(img, img.Rect, col.bg)
+	bg, fg := col.key, col.text
+	if key.act != actType || utf8.RuneCountInString(key.label) > 1 { // named keys: esc, ⌫...
+		bg = col.special
 	}
 	if kb.active(key) {
-		bg, fg = kbActive, kbDark
+		bg, fg = col.key, col.active
 	}
 	if pressed {
-		bg, fg = kbPressed, kbDark
+		bg = col.pressed
 	}
 	inner := image.Rect(kbGap/2, kbGap/2, kbGap/2+r.Dx(), kbGap/2+r.Dy())
-	ui.RoundRect(img, inner, 14, bg)
+	ui.RoundRect(img, image.Rect(inner.Min.X, inner.Min.Y+2, inner.Max.X, inner.Max.Y+2), 12, col.shadow)
+	ui.RoundRect(img, inner, 12, bg)
 	label := key.label
 	if kb.shift && key.act == actType {
 		label = key.shiftLabel
 	}
+	if l, ok := keyLabels[label]; ok {
+		label = l
+	}
 	if key.act == actLayer && kb.layer == 1 {
-		label = "abc"
+		label = "ABC"
 	}
 	face := kb.big
-	if len([]rune(label)) > 1 {
+	if len([]rune(label)) > 1 || label == "⌨" {
 		face = kb.small
 	}
 	m := face.Metrics()
@@ -256,7 +260,7 @@ func (kb *keyboard) draw() {
 		return
 	}
 	bg := image.NewRGBA(image.Rect(0, 0, kb.s.W, kbHeight))
-	ui.Fill(bg, bg.Rect, kbBG)
+	ui.Fill(bg, bg.Rect, kb.colours().bg)
 	kb.s.blitRGBA(bg, 0, kb.y0)
 	for _, keys := range kb.layers[kb.layer] {
 		for _, key := range keys {

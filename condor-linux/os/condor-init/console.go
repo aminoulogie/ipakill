@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-fonts/dejavu/dejavusansmono"
+	"github.com/go-fonts/dejavu/dejavusansmonobold"
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gomono"
-	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
 
 	"condor-init/vt"
@@ -39,44 +39,46 @@ var (
 
 // console is the terminal shown on the tablet's screen.
 type console struct {
-	s                  *Screen
-	t                  *vt.Term
-	reg, bold          font.Face
-	cw, ch, asc        int // cell width, cell height, baseline offset
-	offX, offY         int // grid origin, centring the grid on the screen
-	mu                 sync.Mutex
-	master             *os.File // the shell's pty, nil between shells
-	kb                 *keyboard
-	glyphs             map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
-	barH               int                      // status bar height at the top
-	screenOn           bool
-	mode               mode  // launcher, terminal or settings
-	page               *page // the launcher/settings page on screen, for taps
-	pf                 *pageFonts
-	cfg                savedSettings // brightness, screen-off timeout
-	confirm            string        // power button waiting for its second tap
-	wifiBusy           bool
-	lastInput          time.Time // for the screen-off timeout
-	lib                *library  // reader prefs + progress per book
-	rf                 *readerFonts
-	book               *openBook
-	shelf              []shelfBook
-	store              storeState
-	skb                *keyboard // the store's search keyboard
-	fromStore          bool      // the open book came from the store (a preview or a download)
-	rd                 readerUI  // the reader's selection, menus, panels, gestures
-	pcache             pageCache // the current book page, drawn once
-	marksVersion       int
-	lastRead           time.Time
-	words              *wordBook
-	shelfFrom          int // first book on the library page
-	shelfPer           int
-	homePop            []*storeItem // Home: Gutenberg\'s most read
-	homePopLoading     bool
-	homePopErr         time.Time
-	turnOld, turnFrame *image.RGBA // page-turn animation buffers
-	wui                wordsUI
-	clients            map[net.Conn]bool
+	s              *Screen
+	t              *vt.Term
+	reg, bold      font.Face
+	cw, ch, asc    int // cell width, cell height, baseline offset
+	offX, offY     int // grid origin, centring the grid on the screen
+	mu             sync.Mutex
+	master         *os.File // the shell's pty, nil between shells
+	kb             *keyboard
+	glyphs         map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
+	barH           int                      // status bar height at the top
+	screenOn       bool
+	mode           mode  // launcher, terminal or settings
+	page           *page // the launcher/settings page on screen, for taps
+	pf             *pageFonts
+	cfg            savedSettings // brightness, screen-off timeout
+	confirm        string        // power button waiting for its second tap
+	wifiBusy       bool
+	lastInput      time.Time // for the screen-off timeout
+	lib            *library  // reader prefs + progress per book
+	rf             *readerFonts
+	book           *openBook
+	shelf          []shelfBook
+	store          storeState
+	skb            *keyboard // the store's search keyboard
+	fromStore      bool      // the open book came from the store (a preview or a download)
+	rd             readerUI  // the reader's selection, menus, panels, gestures
+	pcache         pageCache // the current book page, drawn once
+	marksVersion   int
+	lastRead       time.Time
+	words          *wordBook
+	shelfFrom      int // first book on the library page
+	shelfPer       int
+	homePop        []*storeItem // Home: Gutenberg\'s most read
+	homePopLoading bool
+	homePopErr     time.Time
+	setPane        string // Settings: the pane shown
+	readerFrom     mode   // where the open book was opened from, for "Library"
+	animA, animB   []byte // the screen before and after a transition (native layout)
+	wui            wordsUI
+	clients        map[net.Conn]bool
 }
 
 func newConsole(s *Screen) (*console, error) {
@@ -87,11 +89,11 @@ func newConsole(s *Screen) (*console, error) {
 		}
 		return opentype.NewFace(f, &opentype.FaceOptions{Size: consoleFontSize, DPI: 72, Hinting: font.HintingFull})
 	}
-	reg, err := mk(gomono.TTF)
+	reg, err := mk(dejavusansmono.TTF) // Menlo, macOS Terminal's font, is drawn from DejaVu Sans Mono
 	if err != nil {
 		return nil, err
 	}
-	bold, err := mk(gomonobold.TTF)
+	bold, err := mk(dejavusansmonobold.TTF)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +117,7 @@ func newConsole(s *Screen) (*console, error) {
 	if c.kb, err = newKeyboard(s, c.input, c.keyboardShown); err != nil {
 		return nil, err
 	}
+	c.kb.dark = true                             // the terminal's keyboard
 	c.skb, err = newKeyboard(s, func(b []byte) { // typing on a page: the store's search, a word's meaning
 		if c.mode == modeWords {
 			c.wordsKey(b)
@@ -170,7 +173,7 @@ func (c *console) touchLoop() {
 				// The "≡ condor" corner of the status bar goes home from any screen.
 				if p.Up && p.Y < c.barH && p.X < c.s.W/3 {
 					if c.mode != modeLauncher {
-						c.setMode(modeLauncher)
+						c.transition("pop", image.Rectangle{}, func() { c.setMode(modeLauncher) })
 					}
 					continue
 				}

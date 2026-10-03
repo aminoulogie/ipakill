@@ -725,7 +725,7 @@ func (c *console) storeTap(id string) bool {
 	}
 	switch {
 	case id == "store":
-		c.setMode(modeStore)
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeStore) })
 		return true
 	case id == "s:search":
 		if !st.typing {
@@ -765,11 +765,16 @@ func (c *console) storeTap(id string) bool {
 	case strings.HasPrefix(id, "s:item"):
 		var i int
 		if _, err := fmt.Sscanf(id, "s:item%d", &i); err == nil && i < len(st.results) {
-			st.sel = st.results[i]
-			c.fetchSummary(st.sel)
+			c.transition("push", image.Rectangle{}, func() {
+				st.sel = st.results[i]
+				c.fetchSummary(st.sel)
+				c.showPage()
+			})
 		}
+		return true
 	case id == "s:back":
-		st.sel = nil
+		c.transition("pop", image.Rectangle{}, func() { st.sel = nil; c.showPage() })
+		return true
 	case id == "s:preview":
 		c.storeFetch(false)
 		return true

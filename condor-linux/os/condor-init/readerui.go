@@ -760,7 +760,8 @@ func (c *console) readerTap(id string) bool {
 		var i int
 		if _, err := fmt.Sscanf(id, "book%d", &i); err == nil && i < len(c.shelf) {
 			c.fromStore = false
-			c.openBookAt(c.shelf[i].path)
+			c.readerFrom = c.mode
+			c.transition("push", image.Rectangle{}, func() { c.openBookAt(c.shelf[i].path) })
 		}
 		return true
 	case id == "shelf:prev" || id == "shelf:next":
@@ -782,13 +783,15 @@ func (c *console) readerTap(id string) bool {
 	}
 	relayout := false
 	switch {
-	case id == "shelf" && c.fromStore:
+	case id == "shelf": // back to where the book was opened from
 		c.saveProgress()
-		c.setMode(modeStore)
-		return true
-	case id == "shelf":
-		c.saveProgress()
-		c.setMode(modeBooks)
+		back := c.readerFrom
+		if c.fromStore {
+			back = modeStore
+		} else if back != modeBooksHome && back != modeLauncher && back != modeStore {
+			back = modeBooks
+		}
+		c.transition("pop", image.Rectangle{}, func() { c.setMode(back) })
 		return true
 	case id == "prev" || id == "next":
 		dir := map[string]int{"prev": -1, "next": 1}[id]
@@ -806,9 +809,15 @@ func (c *console) readerTap(id string) bool {
 		var at int
 		fmt.Sscanf(id, "r:seek:%d", &at)
 		c.seek(at)
-	case id == "contents" || id == "marks" || id == "r:list:contents" || id == "r:list:marks" || id == "r:list:bookmarks":
-		c.closeOverlays()
-		c.rd.chrome = false
+	case id == "contents" || id == "marks": // the list rises as a sheet
+		c.transition("rise", c.fullSheet(), func() {
+			c.closeOverlays()
+			c.rd.chrome = false
+			c.rd.view, c.rd.listFrom = id, -1
+			c.showPage()
+		})
+		return true
+	case id == "r:list:contents" || id == "r:list:marks" || id == "r:list:bookmarks":
 		c.rd.view, c.rd.listFrom = strings.TrimPrefix(id, "r:list:"), -1
 	case id == "linemode":
 		pr.LineFocus = !pr.LineFocus
@@ -836,10 +845,14 @@ func (c *console) readerTap(id string) bool {
 			c.unmark(m.ID)
 		}
 		c.closeOverlays()
-	case id == "r:lookup":
-		c.ask("meaning")
-	case id == "r:translate":
-		c.ask("translate")
+	case id == "r:lookup" || id == "r:translate":
+		kind := map[string]string{"r:lookup": "meaning", "r:translate": "translate"}[id]
+		if c.rd.panel != nil { // switching in the open sheet
+			c.ask(kind)
+			break
+		}
+		c.transition("rise", c.lookupSheet(), func() { c.ask(kind); c.showPage() })
+		return true
 	case strings.HasPrefix(id, "r:lang:"):
 		pr.TranslateTo = strings.TrimPrefix(id, "r:lang:")
 		c.lib.save()
@@ -847,6 +860,10 @@ func (c *console) readerTap(id string) bool {
 	case id == "r:keep":
 		c.keepWord()
 	case id == "r:close":
+		if c.rd.panel != nil {
+			c.transition("fall", c.lookupSheet(), func() { c.closeOverlays(); c.showPage() })
+			return true
+		}
 		c.closeOverlays()
 	case id == "r:panel":
 		return true // a tap on a card, between its buttons
@@ -1080,7 +1097,7 @@ func (c *console) listTap(id string) {
 	ob := c.book
 	switch {
 	case id == "r:list:back":
-		c.rd.view = ""
+		c.transition("fall", c.fullSheet(), func() { c.rd.view = ""; c.showPage() })
 	case id == "r:list:prev":
 		c.rd.listFrom = max(c.rd.listFrom-listPerPage, 0)
 	case id == "r:list:next":

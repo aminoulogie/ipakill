@@ -47,30 +47,34 @@ func TestLauncherAndSettings(t *testing.T) {
 	if c.mode != modeLauncher || c.page == nil {
 		t.Fatal("should start on the launcher")
 	}
-	if out := os.Getenv("SCREENS_PNG"); out != "" {
-		screenPNG(t, c.s, out+"-launcher.png")
-	}
+	shot(t, c, "system-home")
 	tapButton(t, c, "terminal")
 	if c.mode != modeTerminal {
-		t.Fatal("terminal card should open the terminal")
+		t.Fatal("terminal icon should open the terminal")
 	}
 	c.setMode(modeLauncher)
 	tapButton(t, c, "settings")
 	if c.mode != modeSettings {
-		t.Fatal("settings card should open settings")
+		t.Fatal("settings icon should open settings")
 	}
+	shot(t, c, "system-settings-wifi")
+	tapButton(t, c, "set:pane:display")
 	tapButton(t, c, "bright+")
 	tapButton(t, c, "off1")
 	if c.cfg.Brightness != 90 || c.cfg.ScreenOff != 1 {
 		t.Fatalf("settings: %+v", c.cfg)
 	}
+	shot(t, c, "system-settings-display")
+	tapButton(t, c, "set:pane:general")
+	shot(t, c, "system-settings-general")
+	tapButton(t, c, "set:pane:battery")
+	shot(t, c, "system-settings-battery")
+	tapButton(t, c, "set:pane:power")
 	tapButton(t, c, "restart") // first tap only asks for confirmation
 	if c.confirm != "restart" {
 		t.Fatalf("confirm = %q", c.confirm)
 	}
-	if out := os.Getenv("SCREENS_PNG"); out != "" {
-		screenPNG(t, c.s, out+"-settings.png")
-	}
+	shot(t, c, "system-settings-power")
 	tapButton(t, c, "home")
 	if c.mode != modeLauncher || c.confirm != "" {
 		t.Fatalf("home: mode %v confirm %q", c.mode, c.confirm)

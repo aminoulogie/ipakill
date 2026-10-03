@@ -6,11 +6,10 @@ import (
 	"image/color"
 	"math"
 
-	"github.com/go-fonts/liberation/liberationsansbold"
-	"github.com/go-fonts/liberation/liberationsansregular"
 	"github.com/go-fonts/liberation/liberationserifbold"
 	"golang.org/x/image/font"
 
+	"condor-init/fonts"
 	"condor-init/ui"
 )
 
@@ -46,11 +45,12 @@ var apFonts *appleFonts
 
 func apple() *appleFonts {
 	if apFonts == nil {
-		reg := func(s float64) font.Face { return textFace("libsans", liberationsansregular.TTF, false, s) }
-		bold := func(s float64) font.Face { return textFace("libsans-bold", liberationsansbold.TTF, true, s) }
+		reg := func(s float64) font.Face { return textFace("inter", fonts.InterRegular, false, s) }
+		semi := func(s float64) font.Face { return textFace("inter-semibold", fonts.InterSemiBold, true, s) }
+		bold := func(s float64) font.Face { return textFace("inter-bold", fonts.InterBold, true, s) }
 		serif := func(s float64) font.Face { return textFace("libserif-bold", liberationserifbold.TTF, true, s) }
-		apFonts = &appleFonts{largeTitle: bold(72), title: bold(46), headline: bold(34), body: reg(34),
-			callout: reg(31), caption: reg(26), captionBold: bold(26), serifLarge: serif(80), serifTitle: serif(48)}
+		apFonts = &appleFonts{largeTitle: bold(68), title: bold(44), headline: semi(33), body: reg(33),
+			callout: reg(30), caption: reg(25), captionBold: semi(25), serifLarge: serif(80), serifTitle: serif(48)}
 	}
 	return apFonts
 }
@@ -286,14 +286,16 @@ func (c *console) booksTabs(p *page, on string) {
 	cx, cy := c.s.W-70, 66
 	ring(img, cx, cy, 30, 7, float64(mins)/float64(max(goal, 1)), rgb(0xd7eef8), apRingBlue)
 	apTextCenter(img, f.captionBold, cx, cy-4, apRingBlue, fmt.Sprint(mins))
-	apTextCenter(img, textFace("libsans", liberationsansregular.TTF, false, 15), cx, cy+16, apSecondary, fmt.Sprint(goal))
+	apTextCenter(img, textFace("inter", fonts.InterRegular, false, 15), cx, cy+16, apSecondary, fmt.Sprint(goal))
 	p.buttons = append(p.buttons, button{"r:goal", image.Rect(cx-50, 10, cx+60, 120)})
 }
 
 // booksTap handles the tab bar. Caller holds drawMu.
 func (c *console) booksTap(id string) bool {
 	switch id {
-	case "books", "tab:home":
+	case "books": // from the home screen
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeBooksHome) })
+	case "tab:home":
 		c.setMode(modeBooksHome)
 	case "tab:library":
 		c.setMode(modeBooks)

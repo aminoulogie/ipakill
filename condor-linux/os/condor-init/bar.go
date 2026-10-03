@@ -5,8 +5,8 @@ import (
 	"image"
 	"image/color"
 	"log"
+	"math"
 	"net"
-	"strings"
 	"time"
 
 	"condor-init/ui"
@@ -14,13 +14,6 @@ import (
 
 // The status bar along the top: date and time on the left, Wi-Fi address and battery on the
 // right. Redrawn every 20 seconds and whenever the screen is redrawn.
-
-var (
-	barBG    = color.RGBA{40, 42, 46, 255}
-	barFG    = color.RGBA{197, 200, 198, 255}
-	barGreen = color.RGBA{181, 189, 104, 255}
-	barRed   = color.RGBA{204, 102, 102, 255}
-)
 
 func wifiAddr() string {
 	ifc, err := net.InterfaceByName("wlan0")
@@ -36,55 +29,72 @@ func wifiAddr() string {
 	return ""
 }
 
-// barParts returns the left and right texts and the battery colour.
-func barParts() (left, right string, batColor color.RGBA) {
-	now := time.Now().In(displayZone)
-	left = " ≡ condor  " + now.Format("Mon 02 Jan 15:04")
-	wifi := "wifi off"
-	if ip := wifiAddr(); ip != "" {
-		wifi = "wifi " + ip
+// barColours: the bar takes the colour of the screen under it, like iPadOS's.
+func (c *console) barColours() (bg, fg color.RGBA) {
+	switch {
+	case c.mode == modeTerminal:
+		return rgb(0x000000), rgb(0xffffff)
+	case c.mode == modeLauncher:
+		return wallpaperTop, rgb(0xffffff)
+	case c.mode == modeReader && c.book != nil:
+		th := c.theme()
+		return th.bg, th.fg
 	}
-	batColor = barFG
-	bat := "bat ?"
-	if pct, charging := ui.ReadBattery(); pct >= 0 {
-		bat = fmt.Sprintf("bat %d%%", pct)
-		switch {
-		case charging:
-			bat += "+"
-			batColor = barGreen
-		case pct <= 15:
-			batColor = barRed
-		}
-	}
-	return left, wifi + "  " + bat + " ", batColor
+	return apBG, apLabel
 }
 
-// drawBar paints the status bar. Caller holds drawMu.
+// drawBar paints the status bar: time and date on the left; Wi-Fi, battery percentage and
+// the battery on the right. Caller holds drawMu.
 func (c *console) drawBar() {
 	if !c.screenOn {
 		return
 	}
-	left, right, batColor := barParts()
-	cols := c.s.W / c.cw
-	cells := []rune(strings.Repeat(" ", cols))
-	copy(cells, []rune(left))
-	rr := []rune(right)
-	if len(rr) <= cols {
-		copy(cells[cols-len(rr):], rr)
-	}
-	batStart := cols - len(rr) + strings.Index(right, "bat")
-	line := image.NewRGBA(image.Rect(0, 0, cols*c.cw, c.ch))
-	for x, r := range cells {
-		fg := barFG
-		if x >= batStart && strings.Contains(right, "bat") {
-			fg = batColor
+	bg, fg := c.barColours()
+	f := apple()
+	img := image.NewRGBA(image.Rect(0, 0, c.s.W, c.barH))
+	ui.Fill(img, img.Rect, bg)
+	now := time.Now().In(displayZone)
+	cy := c.barH/2 + 9
+	t := now.Format("15:04")
+	ui.DrawText(img, f.captionBold, 30, cy, fg, t)
+	ui.DrawText(img, f.caption, 30+ui.TextWidth(f.captionBold, t)+14, cy, fg, now.Format("Mon 2 Jan"))
+
+	// The battery: an outline, filled to the charge (green while charging, red when low).
+	x := c.s.W - 30
+	pct, charging := ui.ReadBattery()
+	br := image.Rect(x-50, c.barH/2-11, x-6, c.barH/2+11)
+	ui.RoundRect(img, br, 7, blend(bg, fg, 0.45))
+	ui.RoundRect(img, br.Inset(2), 5, bg)
+	ui.RoundRect(img, image.Rect(br.Max.X+2, br.Min.Y+7, br.Max.X+6, br.Max.Y-7), 2, blend(bg, fg, 0.45))
+	if pct >= 0 {
+		fill := fg
+		switch {
+		case charging:
+			fill = rgb(0x34c759)
+		case pct <= 20:
+			fill = rgb(0xff3b30)
 		}
-		c.putGlyph(line, x*c.cw, r, fg, barBG, true)
+		in := br.Inset(4)
+		ui.RoundRect(img, image.Rect(in.Min.X, in.Min.Y, in.Min.X+max(in.Dx()*pct/100, 4), in.Max.Y), 3, fill)
+		label := fmt.Sprintf("%d%%", pct)
+		x = br.Min.X - 10 - ui.TextWidth(f.caption, label)
+		ui.DrawText(img, f.caption, x, cy, fg, label)
 	}
-	bg := image.NewRGBA(image.Rect(0, 0, c.s.W, c.barH))
-	ui.Fill(bg, bg.Rect, barBG)
-	c.s.blitRGBA(bg, 0, 0)
-	c.s.blitRGBA(line, (c.s.W-cols*c.cw)/2, (c.barH-c.ch)/2)
+	// Wi-Fi: three arcs and a dot, faint when not connected.
+	wc := fg
+	if wifiAddr() == "" {
+		wc = blend(bg, fg, 0.3)
+	}
+	wx, wy := x-34, c.barH/2+10
+	for i, rad := range []int{8, 16, 24} {
+		for a := 225.0; a <= 315; a += 3 {
+			th := a * math.Pi / 180
+			ui.Circle(img, wx+int(float64(rad)*math.Cos(th)), wy+int(float64(rad)*math.Sin(th)), 2, wc)
+		}
+		_ = i
+	}
+	ui.Circle(img, wx, wy, 3, wc)
+	c.s.blitRGBA(img, 0, 0)
 }
 
 // redrawAll repaints everything: status bar, console, keyboard. Caller holds drawMu.

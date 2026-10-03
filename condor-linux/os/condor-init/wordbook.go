@@ -361,12 +361,28 @@ func (wb *wordBook) nextUp() *wordEntry {
 
 // wordsTap handles the words app. Caller holds drawMu.
 func (c *console) wordsTap(id string) bool {
-	st, wb := &c.wui, c.words
+	st := &c.wui
 	if id == "words" {
 		*st = wordsUI{}
-		c.setMode(modeWords)
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeWords) })
 		return true
 	}
+	if !strings.HasPrefix(id, "w:") {
+		return false
+	}
+	switch { // moving between the list, a word and the review: slide
+	case strings.HasPrefix(id, "w:open:") || id == "w:review":
+		c.transition("push", image.Rectangle{}, func() { c.wordsTapNow(id) })
+		return true
+	case id == "w:back" && !(st.view == "word" && st.edit):
+		c.transition("pop", image.Rectangle{}, func() { c.wordsTapNow(id) })
+		return true
+	}
+	return c.wordsTapNow(id)
+}
+
+func (c *console) wordsTapNow(id string) bool {
+	st, wb := &c.wui, c.words
 	if !strings.HasPrefix(id, "w:") {
 		return false
 	}

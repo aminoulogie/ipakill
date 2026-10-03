@@ -60,95 +60,6 @@ func batteryInfo() string {
 	return s
 }
 
-// launcherPage is the home screen: one card per app.
-func (c *console) launcherPage() *page {
-	pn := newPen(c.s.W, c.s.H-c.barH, c.pf)
-	pn.y = 150
-	pn.text(c.pf.title, pgText, pn.mx, pn.y, "condor")
-	ver := alpineVersion()
-	if ver == "" {
-		ver = "-"
-	}
-	pn.y += 56
-	pn.text(c.pf.small, pgMuted, pn.mx, pn.y, "alpine "+ver+"  ·  kernel "+kernelRelease())
-	pn.y += 50
-	apps := []struct{ id, name, desc string }{
-		{"terminal", "terminal", "Alpine shell with keyboard"},
-		{"settings", "settings", "display, wi-fi, battery, power"},
-		{"books", "books", "read EPUB books"},
-		{"store", "store", "free books from 4 libraries, with covers"},
-		{"words", "words", "your word book and today's review"},
-	}
-	for _, a := range apps {
-		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)
-		ui.RoundRect(pn.p.img, r, 24, pgCard)
-		nameColor, descColor := pgText, pgMuted
-		if a.id == "" {
-			nameColor = pgMuted
-		}
-		pn.text(c.pf.bold, nameColor, r.Min.X+44, r.Min.Y+72, "> "+a.name)
-		pn.text(c.pf.small, descColor, r.Min.X+44+ui.TextWidth(c.pf.bold, "> "), r.Min.Y+124, a.desc)
-		if a.id != "" {
-			pn.p.buttons = append(pn.p.buttons, button{a.id, r})
-		}
-		pn.y += 200
-	}
-	return pn.p
-}
-
-// settingsPage draws settings with the current values.
-func (c *console) settingsPage() *page {
-	pn := newPen(c.s.W, c.s.H-c.barH, c.pf)
-	back := image.Rect(pn.mx-12, 24, pn.mx+260, 124)
-	pn.btn("home", "< home", back, pgBtn, pgText)
-	pn.y = 230
-	pn.text(c.pf.title, pgText, pn.mx, pn.y, "settings")
-
-	pn.heading("DISPLAY")
-	pn.line(c.pf.body, pgText, fmt.Sprintf("brightness  %d%%", c.cfg.Brightness))
-	pn.row([]string{"bright-", "bright+"}, []string{"-", "+"}, "", false)
-	pn.line(c.pf.body, pgText, "screen off after")
-	sel := fmt.Sprintf("off%d", c.cfg.ScreenOff)
-	pn.row([]string{"off0", "off1", "off5", "off10"}, []string{"never", "1 min", "5 min", "10 min"}, sel, false)
-
-	pn.heading("WI-FI")
-	ssid, ip := savedSSID(), wifiAddr()
-	switch {
-	case ip != "":
-		pn.line(c.pf.body, pgText, "connected  "+ssid)
-		pn.line(c.pf.small, pgMuted, "address "+ip+"   ssh root@"+ip)
-	case ssid != "":
-		pn.line(c.pf.body, pgText, "not connected  (saved: "+ssid+")")
-	default:
-		pn.line(c.pf.body, pgText, "no network saved")
-		pn.line(c.pf.small, pgMuted, "in the terminal: wifi connect \"name\" \"password\"")
-	}
-	label := "reconnect"
-	if c.wifiBusy {
-		label = "connecting..."
-	}
-	pn.row([]string{"wifi"}, []string{label}, "", false)
-
-	pn.heading("BATTERY")
-	pn.line(c.pf.body, pgText, batteryInfo())
-
-	pn.heading("SYSTEM")
-	pn.line(c.pf.body, pgText, "alpine "+alpineVersion()+"  ·  kernel "+kernelRelease())
-	pn.line(c.pf.small, pgMuted, "up "+uptime()+"   ·   hostname condor")
-
-	pn.heading("POWER")
-	ids := []string{"restart", "poweroff", "android"}
-	labels := []string{"restart", "power off", "android"}
-	for i, id := range ids {
-		if c.confirm == id {
-			labels[i] = "tap again"
-		}
-	}
-	pn.row(ids, labels, c.confirm, true)
-	pn.line(c.pf.small, pgMuted, "android: turns autostart off and restarts into Android")
-	return pn.p
-}
-
 // showPage draws the current page (launcher or settings) under the bar. Caller holds drawMu.
 func (c *console) showPage() {
 	if !c.screenOn {
@@ -198,15 +109,25 @@ func (c *console) pageTap(x, y int) {
 	if c.booksTap(id) || c.homeTap(id) || c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) {
 		return
 	}
+	switch {
+	case strings.HasPrefix(id, "set:pane:"):
+		c.setPane = strings.TrimPrefix(id, "set:pane:")
+		c.showPage()
+		return
+	}
 	switch id {
+	case "store":
+		c.store.sel = nil
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeStore) })
+		return
 	case "terminal":
-		c.setMode(modeTerminal)
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeTerminal) })
 		return
 	case "settings":
-		c.setMode(modeSettings)
+		c.transition("push", image.Rectangle{}, func() { c.setMode(modeSettings) })
 		return
 	case "home":
-		c.setMode(modeLauncher)
+		c.transition("pop", image.Rectangle{}, func() { c.setMode(modeLauncher) })
 		return
 	case "bright-", "bright+":
 		step := 10

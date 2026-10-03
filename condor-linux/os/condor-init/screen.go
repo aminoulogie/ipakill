@@ -97,7 +97,8 @@ type Screen struct {
 	W, H             int // logical
 	rot              Rotation
 	red, green, blue bitfield
-	dirtyLo, dirtyHi int // native rows changed since the last Flush; lo > hi means none
+	dirtyLo, dirtyHi int  // native rows changed since the last Flush; lo > hi means none
+	hold             bool // drawing the next frame of a transition: Flush waits
 }
 
 func newScreen(dev io.WriterAt, fbW, fbH, stride, bpp int, red, green, blue bitfield, rot Rotation) *Screen {
@@ -133,7 +134,7 @@ func (s *Screen) Set(x, y int, r, g, b uint8) {
 
 // Flush writes the rows changed since the last Flush to the framebuffer device.
 func (s *Screen) Flush() error {
-	if s.dirtyLo > s.dirtyHi {
+	if s.dirtyLo > s.dirtyHi || s.hold {
 		return nil
 	}
 	lo, hi := s.dirtyLo, s.dirtyHi

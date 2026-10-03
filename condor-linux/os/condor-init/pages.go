@@ -7,14 +7,13 @@ import (
 	"os"
 
 	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/gomono"
-	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/font/sfnt"
 
 	"github.com/go-fonts/dejavu/dejavusans"
 	"github.com/go-fonts/dejavu/dejavusansbold"
 
+	"condor-init/fonts"
 	"condor-init/ui"
 )
 
@@ -69,11 +68,11 @@ var (
 type pageFonts struct{ title, body, bold, small font.Face }
 
 func loadPageFonts() (*pageFonts, error) {
-	reg, err := opentype.Parse(gomono.TTF)
+	reg, err := opentype.Parse(fonts.InterRegular)
 	if err != nil {
 		return nil, err
 	}
-	bold, err := opentype.Parse(gomonobold.TTF)
+	bold, err := opentype.Parse(fonts.InterSemiBold)
 	if err != nil {
 		return nil, err
 	}

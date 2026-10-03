@@ -9,8 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-fonts/liberation/liberationsansbold"
-
+	"condor-init/fonts"
 	"condor-init/ui"
 )
 
@@ -200,7 +199,7 @@ func (c *console) booksHomePage() *page {
 		} else {
 			nb := image.Rect(x, by-16, x+70, by+18)
 			ui.RoundRect(img, nb, 17, apNewBadge)
-			apTextCenter(img, textFace("libsans-bold", liberationsansbold.TTF, true, 20), (nb.Min.X+nb.Max.X)/2, (nb.Min.Y+nb.Max.Y)/2, rgb(0xffffff), "NEW")
+			apTextCenter(img, textFace("inter-bold", fonts.InterBold, true, 20), (nb.Min.X+nb.Max.X)/2, (nb.Min.Y+nb.Max.Y)/2, rgb(0xffffff), "NEW")
 		}
 		iconDots(img, r.Max.X-22, by, apSecondary)
 		p.buttons = append(p.buttons, button{fmt.Sprintf("book%d", i), image.Rect(x, cy, x+cw, by+24)})

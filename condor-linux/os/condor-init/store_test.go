@@ -205,6 +205,7 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 		t.Fatal("tapping the search box should bring up the keyboard")
 	}
 	c.storeKey([]byte("frankx"))
+	shot(t, c, "store-typing")
 	c.storeKey([]byte{0x7f})
 	c.storeKey([]byte("\r"))
 	drawMu.Unlock()

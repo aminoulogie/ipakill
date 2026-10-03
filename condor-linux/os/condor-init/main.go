@@ -89,6 +89,7 @@ func main() {
 	if err != nil {
 		log.Printf("framebuffer: %v", err)
 	} else {
+		log.Printf("panel refresh: %.1f Hz (animations are paced to it)", refreshHz(s))
 		if err := s.Clear(); err != nil {
 			log.Printf("clear: %v", err)
 		}

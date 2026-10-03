@@ -494,8 +494,11 @@ func (c *console) turn(dir int) {
 	c.invalidatePage()
 	c.saveProgress()
 	if old != nil {
-		c.page = c.readerPage()
+		c.s.hold = true
+		c.showPage()
+		c.s.hold = false
 		c.animateTurn(old, dir)
+		return
 	}
 	c.showPage()
 }
@@ -969,10 +972,16 @@ func (c *console) refreshLines(a, b int) {
 	}
 	ra, rb := c.litRect(a), c.litRect(b)
 	if c.page != nil && c.pcache.key == c.pageKey() && c.pcache.dim != nil && !c.overlayOpen() {
-		// The page on screen is the cached page with another line lit: put the old line back
-		// to dim and light the new one, touching only those two strips.
+		// The page on screen is the cached page with another line lit: the band glides from
+		// the old line to the new, then the old line is put back to dim and the new one lit.
 		img := c.page.img
 		th := c.theme()
+		if !ra.Empty() && !rb.Empty() && c.animOK() && animScale > 0 {
+			c.glideLines(a, b)
+			area := ra.Union(rb)
+			copyRows(img, c.pcache.dim, area)
+			ra = area // blit all of it: the glide drew in between
+		}
 		copyRows(img, c.pcache.dim, ra)
 		copyRows(img, c.pcache.normal, rb)
 		if line := c.book.pages[c.book.page]; b >= 0 && b < len(line) {

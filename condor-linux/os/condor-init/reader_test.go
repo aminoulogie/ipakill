@@ -740,10 +740,10 @@ func TestPageTurnsAndBookmarks(t *testing.T) {
 	defer func() { turnDuration = old }()
 	for _, style := range []string{"slide", "curl"} {
 		c.lib.Prefs.PageTurn = style
-		before := turnFrames
+		before := animFrames
 		c.turn(1)
 		c.turn(-1)
-		if turnFrames == before {
+		if animFrames == before {
 			t.Errorf("%s: no frames drawn", style)
 		}
 		end := append([]byte(nil), c.s.buf...)
@@ -757,9 +757,12 @@ func TestPageTurnsAndBookmarks(t *testing.T) {
 	from := c.turnFrom()
 	c.book.page++
 	c.invalidatePage()
-	c.page = c.readerPage()
-	curlFrame(c.turnFrame, from, c.page.img, 0.45, c.theme())
-	c.s.blitRGBA(c.turnFrame, 0, c.barH)
+	c.s.hold = true
+	c.showPage()
+	c.s.hold = false
+	_, nu := c.animBufs()
+	copy(nu, c.s.buf)
+	c.curlFrame(from, nu, 0.45)
 	shot(t, c, "reader-curl")
 	c.lib.Prefs.PageTurn = "none"
 	c.showPage()

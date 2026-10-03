@@ -109,3 +109,38 @@ func blankScreen(s *Screen, off bool) {
 		log.Printf("FBIOBLANK %d: %v", mode, e)
 	}
 }
+
+const fbioWaitForVsync = 0x40044620 // _IOW('F', 0x20, __u32)
+
+var vsyncBroken bool
+
+// waitVsync waits for the panel's next vertical blank, so an animation frame lands whole.
+// Drivers without FBIO_WAITFORVSYNC say so once; frames are then paced by the clock.
+func waitVsync(s *Screen) bool {
+	f, ok := s.dev.(*os.File)
+	if !ok || vsyncBroken {
+		return false
+	}
+	var crtc uint32
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioWaitForVsync, uintptr(unsafe.Pointer(&crtc))); e != 0 {
+		log.Printf("FBIO_WAITFORVSYNC: %v (frames paced by the clock)", e)
+		vsyncBroken = true
+		return false
+	}
+	return true
+}
+
+// refreshHz is the panel's refresh rate from its timings (0 if the driver doesn't say).
+func refreshHz(s *Screen) float64 {
+	f, ok := s.dev.(*os.File)
+	if !ok {
+		return 0
+	}
+	var v [40]uint32 // struct fb_var_screeninfo
+	if ioctl(f.Fd(), fbioGetVScreenInfo, unsafe.Pointer(&v[0])) != nil || v[25] == 0 {
+		return 0
+	}
+	htotal := float64(v[0] + v[26] + v[27] + v[30]) // xres + left + right + hsync
+	vtotal := float64(v[1] + v[28] + v[29] + v[31]) // yres + upper + lower + vsync
+	return 1e12 / float64(v[25]) / htotal / vtotal  // pixclock is in picoseconds
+}
