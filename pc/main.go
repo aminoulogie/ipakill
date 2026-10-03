@@ -494,6 +494,26 @@ func serve() error {
 		installAndReply(w, dst, Meta{Name: q.Get("name"), Version: q.Get("version")})
 	}))
 
+	// The signing certificate, for running apps inside ipakill (see cert.go).
+	http.HandleFunc("/cert", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "POST only"})
+			return
+		}
+		profile, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad upload"})
+			return
+		}
+		p12, pass, err := signingP12(profile)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		fmt.Println("[ipakill] Sent the signing certificate to the iPhone")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "p12": p12, "password": pass})
+	}))
+
 	fmt.Println("[ipakill] Wi-Fi sync is running. In the ipakill iPhone app, enter:")
 	for _, ip := range localIPs() {
 		fmt.Printf("            PC address:   %s\n", ip)

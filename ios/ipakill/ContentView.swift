@@ -1,50 +1,25 @@
 import SwiftUI
 
-// Native iOS look in the style of ESign: tab bar at the bottom, grouped lists,
-// rounded app icons and capsule GET buttons.
+// ipakill's own tabs. They are compiled into LiveContainer's UI framework and
+// shown by its tab bar (see ios/patch_lc.py), next to LiveContainer's "Apps"
+// tab where apps run inside ipakill. iOS 15 APIs only: that's the framework's target.
+//
+// Look: ESign style - grouped lists, rounded app icons, capsule GET buttons.
 
-private enum Tab: Hashable {
-    case sources, library, activity, settings
-}
-
-struct ContentView: View {
+/// Starts and stops polling the PC with the app's lifecycle.
+struct IpakillLifecycle: ViewModifier {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
-    @State private var tab: Tab = .sources
 
-    var body: some View {
-        TabView(selection: $tab) {
-            SourcesView(onInstall: install)
-                .tabItem { Label("Sources", systemImage: "square.stack.3d.up.fill") }
-                .tag(Tab.sources)
-            LibraryView(onInstall: install, onImport: importFile)
-                .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
-                .badge(sync.updateCount)
-                .tag(Tab.library)
-            ActivityView()
-                .tabItem { Label("Activity", systemImage: "arrow.down.circle.fill") }
-                .tag(Tab.activity)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(Tab.settings)
-        }
-        .onAppear {
-            if !sync.configured { tab = .settings }
-            Task { await sync.refreshStore() }
-        }
-        .onChange(of: phase) { p in
-            p == .active ? sync.start() : sync.stop()
-        }
-    }
-
-    private func install(_ s: StoreApp) {
-        tab = .activity
-        Task { await sync.install(s) }
-    }
-
-    private func importFile(_ url: URL) {
-        tab = .activity
-        Task { await sync.install(url) }
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                sync.start()
+                Task { await sync.refreshStore() }
+            }
+            .onChange(of: phase) { p in
+                p == .active ? sync.start() : sync.stop()
+            }
     }
 }
 
@@ -77,7 +52,7 @@ struct AppIcon: View {
     }
 }
 
-/// App Store style capsule button: GET / UPDATE / OPEN.
+/// App Store style capsule button: GET / UPDATE / RENEW.
 struct CapsuleButton: View {
     let title: String
     var filled = false
@@ -115,20 +90,56 @@ private func expiryText(_ date: Date) -> String {
     return f.string(from: date)
 }
 
+/// The two ways to get an app: run it inside ipakill (no install slot, no
+/// app ID) or have the PC sign and install it as a normal app.
+struct GetActions: ViewModifier {
+    @EnvironmentObject var sync: Sync
+    @EnvironmentObject var sharedModel: SharedModel
+    @Binding var app: StoreApp?
+    let onPCInstall: (StoreApp) -> Void
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog(app?.name ?? "", isPresented: Binding(
+            get: { app != nil }, set: { if !$0 { app = nil } }
+        ), titleVisibility: .visible, presenting: app) { a in
+            Button("Run inside ipakill") { runInside(a) }
+            Button("Install with PC signing") {
+                sharedModel.selectedTab = .ipakillActivity
+                onPCInstall(a)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Inside ipakill needs no install slot and no re-signing of its own.")
+        }
+    }
+
+    private func runInside(_ a: StoreApp) {
+        Task {
+            // Apps inside ipakill are signed on the phone with ipakill's certificate.
+            if !sync.hasCertificate {
+                guard await sync.importCertificate() else { return }
+            }
+            var c = URLComponents(string: "livecontainer://install")!
+            c.queryItems = [URLQueryItem(name: "url", value: a.url)]
+            sharedModel.selectedTab = .apps
+            sharedModel.deepLink = c.url
+        }
+    }
+}
+
 // MARK: - Sources
 
-struct SourcesView: View {
+struct IpakillSourcesView: View {
     @EnvironmentObject var sync: Sync
-    let onInstall: (StoreApp) -> Void
     @State private var adding = false
-    @State private var newSource = ""
+    @State private var picked: StoreApp?
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
                 Section {
                     NavigationLink {
-                        StoreAppsView(title: "All Apps", apps: allApps, onInstall: onInstall)
+                        StoreAppsView(title: "All Apps", apps: allApps, picked: $picked)
                     } label: {
                         HStack(spacing: 14) {
                             Image(systemName: "square.grid.3x3.fill")
@@ -149,7 +160,7 @@ struct SourcesView: View {
                 Section {
                     ForEach(sync.sources, id: \.self) { src in
                         NavigationLink {
-                            StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), onInstall: onInstall)
+                            StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), picked: $picked)
                         } label: {
                             SourceRow(source: src)
                         }
@@ -184,24 +195,51 @@ struct SourcesView: View {
                     Button { adding = true } label: { Image(systemName: "plus") }
                 }
             }
-            .alert("Add Source", isPresented: $adding) {
-                TextField("https://…", text: $newSource)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                Button("Cancel", role: .cancel) { newSource = "" }
-                Button("Add") {
-                    sync.addSource(newSource)
-                    newSource = ""
-                }
-            } message: {
-                Text("Paste a GitHub repo or a source URL.")
+            .sheet(isPresented: $adding) {
+                AddSourceView().environmentObject(sync)
             }
         }
+        .navigationViewStyle(.stack)
+        .modifier(GetActions(app: $picked) { a in Task { await sync.install(a) } })
     }
 
     private var allApps: [StoreApp] {
         sync.store.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+private struct AddSourceView: View {
+    @EnvironmentObject var sync: Sync
+    @Environment(\.dismiss) private var dismiss
+    @State private var link = ""
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    TextField("https://…", text: $link)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit(add)
+                } footer: {
+                    Text("Paste a GitHub repo or an AltStore, SideStore or ESign source link.")
+                }
+            }
+            .navigationTitle("Add Source")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add", action: add).disabled(link.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func add() {
+        sync.addSource(link)
+        dismiss()
     }
 }
 
@@ -237,11 +275,11 @@ private struct SourceRow: View {
 }
 
 /// The apps of one source (or of all sources), searchable.
-struct StoreAppsView: View {
+private struct StoreAppsView: View {
     @EnvironmentObject var sync: Sync
     let title: String
     let apps: [StoreApp]
-    let onInstall: (StoreApp) -> Void
+    @Binding var picked: StoreApp?
     @State private var query = ""
 
     var body: some View {
@@ -251,7 +289,7 @@ struct StoreAppsView: View {
                     .foregroundColor(.secondary)
             }
             ForEach(shown) { s in
-                StoreAppRow(app: s, onInstall: onInstall)
+                StoreAppRow(app: s, picked: $picked)
             }
         }
         .listStyle(.plain)
@@ -273,7 +311,7 @@ struct StoreAppsView: View {
 private struct StoreAppRow: View {
     @EnvironmentObject var sync: Sync
     let app: StoreApp
-    let onInstall: (StoreApp) -> Void
+    @Binding var picked: StoreApp?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -287,11 +325,11 @@ private struct StoreAppRow: View {
                 }
             }
             Spacer(minLength: 8)
-            button.disabled(sync.busy || !sync.online)
+            button.disabled(sync.busy)
         }
         .padding(.vertical, 4)
         .contextMenu {
-            Button { onInstall(app) } label: { Label("Sign & Install", systemImage: "arrow.down.app") }
+            Button { picked = app } label: { Label("Get…", systemImage: "arrow.down.app") }
             Button { UIPasteboard.general.string = app.url } label: {
                 Label("Copy IPA Link", systemImage: "link")
             }
@@ -301,39 +339,44 @@ private struct StoreAppRow: View {
     @ViewBuilder private var button: some View {
         if let have = sync.installed(app) {
             if let v = have.version, !v.isEmpty, Version.isNewer(app.version, than: v) {
-                CapsuleButton(title: "UPDATE", filled: true) { onInstall(app) }
+                CapsuleButton(title: "UPDATE", filled: true) { picked = app }
             } else {
-                CapsuleButton(title: "SIGN") { onInstall(app) }
+                CapsuleButton(title: "SIGN") { picked = app }
             }
         } else {
-            CapsuleButton(title: "GET") { onInstall(app) }
+            CapsuleButton(title: "GET") { picked = app }
         }
     }
 }
 
-// MARK: - Library
+// MARK: - Library (apps the PC signed and installed as normal apps)
 
-struct LibraryView: View {
+struct IpakillLibraryView: View {
     @EnvironmentObject var sync: Sync
-    let onInstall: (StoreApp) -> Void
-    let onImport: (URL) -> Void
     @State private var picking = false
+    @State private var pairing = false
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             List {
-                Section { StatusCard() }
+                Section {
+                    Button { pairing = true } label: { StatusCard() }
+                        .buttonStyle(.plain)
+                    CertificateRow()
+                } footer: {
+                    Text("Apps you run inside ipakill are in the Apps tab. They need ipakill's certificate, which comes from the PC.")
+                }
 
                 Section {
                     if sync.apps.isEmpty {
-                        Text("No signed apps yet. Get one from Sources or import an .ipa with +.")
+                        Text("No PC-signed apps yet. Get one from Sources or import an .ipa with +.")
                             .font(.footnote).foregroundColor(.secondary)
                     }
                     ForEach(sync.apps) { app in
-                        LibraryRow(app: app, onInstall: onInstall)
+                        LibraryRow(app: app)
                     }
                 } header: {
-                    Text("Signed Apps")
+                    Text("Installed by the PC")
                 }
             }
             .listStyle(.insetGrouped)
@@ -343,15 +386,23 @@ struct LibraryView: View {
                 await sync.refreshStore()
             }
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { pairing = true } label: { Image(systemName: "desktopcomputer") }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { picking = true } label: { Image(systemName: "plus") }
                         .disabled(sync.busy)
                 }
             }
             .fileImporter(isPresented: $picking, allowedContentTypes: [.data]) { result in
-                if case .success(let url) = result { onImport(url) }
+                if case .success(let url) = result { Task { await sync.install(url) } }
             }
+            .sheet(isPresented: $pairing) {
+                IpakillPairView().environmentObject(sync)
+            }
+            .onAppear { if !sync.configured { pairing = true } }
         }
+        .navigationViewStyle(.stack)
     }
 }
 
@@ -376,8 +427,11 @@ private struct StatusCard: View {
                     Text("ipakill: \(daysText(d))").font(.footnote).foregroundColor(daysColor(d))
                 }
             }
+            Spacer()
+            Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundColor(.secondary)
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 
     private var linkText: String {
@@ -389,10 +443,33 @@ private struct StatusCard: View {
     }
 }
 
+private struct CertificateRow: View {
+    @EnvironmentObject var sync: Sync
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: sync.hasCertificate ? "checkmark.seal.fill" : "seal")
+                .font(.title2)
+                .foregroundColor(sync.hasCertificate ? .green : .secondary)
+                .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Certificate").font(.body.weight(.semibold))
+                Text(sync.hasCertificate ? "Imported - apps can run inside ipakill" : "Not imported yet")
+                    .font(.footnote).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 8)
+            CapsuleButton(title: sync.hasCertificate ? "RENEW" : "IMPORT") {
+                Task { await sync.importCertificate() }
+            }
+            .disabled(sync.busy || !sync.online)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 private struct LibraryRow: View {
     @EnvironmentObject var sync: Sync
     let app: SignedApp
-    let onInstall: (StoreApp) -> Void
 
     var body: some View {
         HStack(spacing: 14) {
@@ -410,9 +487,9 @@ private struct LibraryRow: View {
             Spacer(minLength: 8)
             Group {
                 if let up = sync.update(for: app) {
-                    CapsuleButton(title: "UPDATE", filled: true) { onInstall(up) }
+                    CapsuleButton(title: "UPDATE", filled: true) { Task { await sync.install(up) } }
                 } else if app.daysLeft < 7, let entry = sync.storeEntry(for: app) {
-                    CapsuleButton(title: "RENEW") { onInstall(entry) }
+                    CapsuleButton(title: "RENEW") { Task { await sync.install(entry) } }
                 }
             }
             .disabled(sync.busy || !sync.online)
@@ -421,19 +498,57 @@ private struct LibraryRow: View {
     }
 }
 
+struct IpakillPairView: View {
+    @EnvironmentObject var sync: Sync
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    HStack {
+                        Text("Status")
+                        Spacer()
+                        Text(sync.online ? "Connected" : "Offline")
+                            .foregroundColor(sync.online ? .green : .red)
+                    }
+                    TextField("PC address (192.168.1.20)", text: $sync.host)
+                        .keyboardType(.decimalPad)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField("Pairing code", text: $sync.code)
+                        .keyboardType(.numberPad)
+                } footer: {
+                    Text("On the PC run 'ipakill serve' and type the address and code it prints.")
+                }
+            }
+            .navigationTitle("PC")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        sync.start()
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Activity
 
-struct ActivityView: View {
+struct IpakillActivityView: View {
     @EnvironmentObject var sync: Sync
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollViewReader { proxy in
                 List {
                     if sync.busy {
                         HStack(spacing: 12) {
                             ProgressView()
-                            Text("Signing on the PC…").foregroundColor(.secondary)
+                            Text("Working on the PC…").foregroundColor(.secondary)
                         }
                     }
                     Section {
@@ -454,47 +569,6 @@ struct ActivityView: View {
             }
             .navigationTitle("Activity")
         }
-    }
-}
-
-// MARK: - Settings
-
-struct SettingsView: View {
-    @EnvironmentObject var sync: Sync
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    LabeledContent("Status") {
-                        Text(sync.online ? "Connected" : "Offline")
-                            .foregroundColor(sync.online ? .green : .red)
-                    }
-                    TextField("PC address (192.168.1.20)", text: $sync.host)
-                        .keyboardType(.decimalPad)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    TextField("Pairing code", text: $sync.code)
-                        .keyboardType(.numberPad)
-                    Button("Connect") { sync.start() }
-                } header: {
-                    Text("PC")
-                } footer: {
-                    Text("On the PC run 'ipakill serve' and type the address and code it prints.")
-                }
-
-                Section("About") {
-                    LabeledContent("Version", value: appVersion)
-                    if let exp = sync.selfExpires {
-                        LabeledContent("Certificate expires", value: expiryText(exp))
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-        }
-    }
-
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        .navigationViewStyle(.stack)
     }
 }

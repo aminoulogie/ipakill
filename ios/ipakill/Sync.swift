@@ -26,6 +26,13 @@ private struct InstallResponse: Decodable {
     let log: String?
 }
 
+private struct CertResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let p12: Data?          // base64 in the JSON
+    let password: String?
+}
+
 /// Talks to `ipakill serve` on the PC over Wi-Fi.
 @MainActor
 final class Sync: ObservableObject {
@@ -294,6 +301,60 @@ final class Sync: ObservableObject {
             say("! \(error.localizedDescription)")
         }
         await poll()
+    }
+
+    // MARK: certificate for apps run inside ipakill
+
+    /// Whether LiveContainer's signer has a certificate (it signs guest apps on the phone).
+    var hasCertificate: Bool { LCSharedUtils.certificatePassword() != nil }
+
+    /// Asks the PC for the certificate this copy of ipakill is signed with and
+    /// stores it where LiveContainer's signer reads it. The PC only keeps the
+    /// key; the certificate itself comes from our own provisioning profile.
+    @discardableResult
+    func importCertificate() async -> Bool {
+        guard online else {
+            say("! connect to the PC first - it holds the signing key")
+            return false
+        }
+        guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+              let profile = FileManager.default.contents(atPath: path)
+        else {
+            say("! this copy of ipakill has no provisioning profile")
+            return false
+        }
+        guard var req = request("/cert", timeout: 30) else { return false }
+        req.httpMethod = "POST"
+        say("$ ipakill cert")
+        busy = true
+        defer { busy = false }
+        do {
+            let (data, resp) = try await URLSession.shared.upload(for: req, from: profile)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                say("! the pc is running an older ipakill - rebuild ipakill-core and restart 'ipakill serve'")
+                return false
+            }
+            let r = try JSONDecoder().decode(CertResponse.self, from: data)
+            guard r.ok, let p12 = r.p12, let pass = r.password else {
+                say("! \(r.error ?? "the PC sent no certificate")")
+                return false
+            }
+            guard let team = LCUtils.getCertTeamId(withKeyData: p12, password: pass) else {
+                say("! the certificate from the PC could not be opened")
+                return false
+            }
+            // Same keys LiveContainer's own "Import Certificate" writes.
+            LCUtils.appGroupUserDefault.set(p12, forKey: "LCCertificateData")
+            LCUtils.appGroupUserDefault.set(pass, forKey: "LCCertificatePassword")
+            LCUtils.appGroupUserDefault.set(NSDate.now, forKey: "LCCertificateUpdateDate")
+            UserDefaults.standard.set(LCSharedUtils.appGroupID(), forKey: "LCAppGroupID")
+            objectWillChange.send()
+            say("certificate imported (team \(team)). apps can now run inside ipakill.")
+            return true
+        } catch {
+            say("! \(error.localizedDescription)")
+            return false
+        }
     }
 
     private static func readOwnExpiry() -> Date? {

@@ -3,70 +3,99 @@ name: Build iOS ipa
 # Produces an UNSIGNED ipakill-<version>.ipa and publishes it as a GitHub
 # release, which is what the ipakill store reads to offer updates. Signing
 # happens on install, so this repo never holds Apple credentials.
+#
+# ipakill is built on LiveContainer's engine (AGPL-3.0) so it can run other
+# apps inside itself: CI checks out LiveContainer at a pinned commit and
+# ios/patch_lc.py adds ipakill's code and branding.
 
 on:
   push:
-    branches: [main]
+    branches: [main, livecontainer]   # livecontainer: test builds, artifact only
     paths: ['ios/**', '.github/workflows/ios-ipa.yml']
   workflow_dispatch:
 
 permissions:
   contents: write   # to publish the release
 
+env:
+  # LiveContainer nightly with the iOS 27 launch fix. Bump deliberately:
+  # patch_lc.py fails if the code it edits has moved.
+  LC_COMMIT: 4dbe0f9a626de801184a42c0be8d2cb105058e3d
+
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 30
+    runs-on: macos-latest
+    timeout-minutes: 60
 
     steps:
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'   # what LiveContainer itself builds with
+
       - uses: actions/checkout@v4
 
       - name: Version
         id: ver
         run: echo "v=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
-      - name: Generate Xcode project
+      - name: Check out LiveContainer
         run: |
-          brew install xcodegen
-          cd ios && xcodegen generate
+          set -eo pipefail
+          git clone --filter=blob:none https://github.com/LiveContainer/LiveContainer.git "$RUNNER_TEMP/lc"
+          cd "$RUNNER_TEMP/lc"
+          git checkout --quiet "$LC_COMMIT"
+          git submodule update --init --recursive --depth 1
+
+      - name: Add ipakill
+        run: python3 ios/patch_lc.py "$RUNNER_TEMP/lc" "${{ steps.ver.outputs.v }}"
 
       - name: Archive (unsigned)
         run: |
           set -eo pipefail
-          cd ios
-          xcodebuild \
-            -project ipakill.xcodeproj \
-            -scheme ipakill \
+          cd "$RUNNER_TEMP/lc"
+          xcodebuild archive \
+            -project LiveContainer.xcodeproj \
+            -scheme LiveContainer \
             -configuration Release \
-            -sdk iphoneos \
+            -sdk iphoneos -arch arm64 \
             -archivePath "$RUNNER_TEMP/ipakill.xcarchive" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            MARKETING_VERSION="${{ steps.ver.outputs.v }}" \
-            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
-            archive
+            | tee "$RUNNER_TEMP/build.log" | grep -E "error:|warning: .*ipakill/|\*\* ARCHIVE" || true
+          grep -q "ARCHIVE SUCCEEDED" "$RUNNER_TEMP/build.log"
 
-      # An .ipa is just a zip with the .app inside Payload/.
+      # An .ipa is just a zip with the .app inside Payload/. The extensions
+      # (multitasking, share sheet, launch shortcuts) are left out for now:
+      # each would cost a free-account app ID.
       - name: Package as .ipa
         run: |
           set -eo pipefail
-          APP_PATH="$RUNNER_TEMP/ipakill.xcarchive/Products/Applications/ipakill.app"
-          test -d "$APP_PATH" || { echo "No .app in archive"; exit 1; }
+          APP="$RUNNER_TEMP/ipakill.xcarchive/Products/Applications/LiveContainer.app"
+          test -d "$APP" || { echo "No .app in archive"; exit 1; }
+          rm -rf "$APP/Frameworks/SideStoreSupport.framework" "$APP/PlugIns" "$APP/Extensions"
           mkdir -p "$RUNNER_TEMP/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/Payload/"
+          cp -R "$APP" "$RUNNER_TEMP/Payload/"
           cd "$RUNNER_TEMP"
-          zip -qry "ipakill-${{ steps.ver.outputs.v }}.ipa" Payload
+          zip -qry "ipakill-${{ steps.ver.outputs.v }}.ipa" Payload -x "._*" -x ".DS_Store"
           ls -lh ipakill-*.ipa
 
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
+
       - name: Publish release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.ver.outputs.v }}
         run: |
           gh release create "v$V" "$RUNNER_TEMP/ipakill-$V.ipa" \
             --repo "$GITHUB_REPOSITORY" --title "ipakill $V" \
-            --notes "Unsigned. Install from the ipakill store, or run: ipakill ipakill-$V.ipa"
+            --notes "Unsigned. Install from the ipakill store, or run: ipakill ipakill-$V.ipa. Built on LiveContainer $LC_COMMIT (AGPL-3.0)."
 
       - uses: actions/upload-artifact@v4
         with:
