@@ -81,3 +81,9 @@ func startShell(cols, rows int) (*os.File, func(), error) {
 	}
 	return m, func() { cmd.Wait() }, nil
 }
+
+// setWinsize tells the pty (and so the programs on it, via SIGWINCH) its size in cells.
+func setWinsize(f *os.File, cols, rows int) {
+	ws := [4]uint16{uint16(rows), uint16(cols), 0, 0}
+	ioctl(f.Fd(), tiocswinsz, unsafe.Pointer(&ws))
+}

@@ -54,12 +54,12 @@ on it; Alpine's musl and busybox are fine. It's minimal and "build it yourself" 
 | 11 | Wi-Fi with Condor's wpa_supplicant, rejoins at boot | `wifi.go`, `proxy.go` |
 | 12 | SSH over Wi-Fi (keys only), sshd at boot | `cli/ssh.go`, `alpine.go` |
 | 13 | One-step dev loop: `dev.cmd` builds, pushes, restarts | `dev.ps1` |
+| 14 | On-screen keyboard under the console (hide/show, resizes the shell) | `keyboard.go` |
 
 ## Next
 
 | # | Step | Done when | Notes |
 |---|---|---|---|
-| A | **On-screen keyboard** | type commands on the tablet's screen, no PC | Split the screen: console on top, keyboard below; touch already works. Resize the pty when the keyboard shows. |
 | B | Glyph cache in the console renderer | `htop` doesn't make condor-init use much CPU | Render each (rune, colour, bold) once, reuse the pixels. |
 | C | Power button + backlight | power button blanks/unblanks the screen; brightness keys | `mid_powerbtn` is event3, `gpio-keys` (volume) event1; real suspend is unreliable on Intel MID, so blank instead. |
 | D | Battery and clock in a status line | always-visible battery % and time | `/sys/class/power_supply`; time zone is fixed WAT (UTC+1). |

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -47,7 +46,8 @@ type console struct {
 	cw, ch, asc int // cell width, cell height, baseline offset
 	offX, offY  int // grid origin, centring the grid on the screen
 	mu          sync.Mutex
-	master      io.Writer // the shell's pty, nil between shells
+	master      *os.File // the shell's pty, nil between shells
+	kb          *keyboard
 	clients     map[net.Conn]bool
 }
 
@@ -71,12 +71,58 @@ func newConsole(s *Screen) (*console, error) {
 	m := reg.Metrics()
 	c := &console{s: s, reg: reg, bold: bold, cw: adv.Ceil(),
 		ch: (m.Ascent + m.Descent).Ceil() + 2, asc: m.Ascent.Ceil() + 1, clients: map[net.Conn]bool{}}
-	const pad = 16 // keep text off the bezel
-	cols, rows := (s.W-2*pad)/c.cw, (s.H-2*pad)/c.ch
-	c.offX, c.offY = (s.W-cols*c.cw)/2, (s.H-rows*c.ch)/2
+	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
+	c.offX, c.offY = (s.W-cols*c.cw)/2, consolePad
 	c.t = vt.New(cols, rows)
 	c.t.Reply = c.input
+	if c.kb, err = newKeyboard(s, c.input, c.keyboardShown); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// consolePad keeps text off the bezel.
+const consolePad = 16
+
+// rowsFor is how many text rows fit in a console area h pixels tall.
+func (c *console) rowsFor(h int) int { return (h - 2*consolePad) / c.ch }
+
+// keyboardShown resizes the console around the on-screen keyboard (shown or hidden): the
+// grid, the shell's window size (programs get SIGWINCH), and a full redraw.
+// Caller holds drawMu (the keyboard calls it from a touch).
+func (c *console) keyboardShown(visible bool) {
+	h := c.s.H
+	if visible {
+		h -= kbHeight
+	}
+	c.t.Resize(c.t.Cols, c.rowsFor(h))
+	c.mu.Lock()
+	if c.master != nil {
+		setWinsize(c.master, c.t.Cols, c.t.Rows)
+	}
+	c.mu.Unlock()
+	clear(c.s.buf)
+	c.s.markRows(0, c.s.fbH-1)
+	c.render()
+	if visible {
+		c.kb.draw()
+	}
+	c.s.Flush()
+}
+
+// touchLoop feeds touches to the on-screen keyboard. It doesn't return.
+func (c *console) touchLoop() {
+	for {
+		err := readTouch("Goodix", c.s.fbW, c.s.fbH, c.s.rot, func(string, ...any) {}, func(pts []TouchPoint) {
+			drawMu.Lock()
+			defer drawMu.Unlock()
+			for _, p := range pts {
+				c.kb.touch(p)
+			}
+		})
+		log.Printf("touch: %v; retrying in 2s", err)
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func colorOf(i uint8, def color.RGBA, bold bool) color.RGBA {

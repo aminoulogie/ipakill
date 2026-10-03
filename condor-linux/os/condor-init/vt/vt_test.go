@@ -79,3 +79,23 @@ func TestDirtyRows(t *testing.T) {
 		t.Fatal("dirty marks should be cleared")
 	}
 }
+
+func TestResizeKeepsCursorLine(t *testing.T) {
+	term := New(10, 5)
+	feed(term, "a\r\nb\r\nc\r\nd\r\ne") // cursor on the last row
+	term.Resize(10, 3)
+	if term.Text(0) != "c" || term.Text(2) != "e" {
+		t.Fatalf("rows after shrink: %q %q %q", term.Text(0), term.Text(1), term.Text(2))
+	}
+	if x, y := term.Cursor(); x != 1 || y != 2 {
+		t.Fatalf("cursor %d,%d", x, y)
+	}
+	term.Resize(10, 6)
+	if term.Text(0) != "c" || term.Text(5) != "" {
+		t.Fatalf("rows after grow: %q / %q", term.Text(0), term.Text(5))
+	}
+	feed(term, "\r\nf") // writing still works at the new size
+	if term.Text(3) != "f" {
+		t.Fatalf("row 3 = %q", term.Text(3))
+	}
+}

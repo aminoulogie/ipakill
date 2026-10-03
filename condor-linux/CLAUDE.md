@@ -191,7 +191,10 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       Condor's wpa_supplicant). Rejoins at boot; give it ~30-40 s after boot. Proxy retries once.
 - [x] **SSH over Wi-Fi**: `condor ssh setup` (openssh, PC's ed25519 key, sshd), sshd at boot.
       Don't run `setup-alpine` (it's for real installs).
-- [ ] On-screen keyboard (type on the tablet without a PC)
+- [x] **On-screen keyboard** (keyboard.go): bottom 616 px, console above it (73x38), terminal
+      layout (esc tab ctrl alt arrows / numbers / letters / sym layer), one-shot shift/ctrl/alt,
+      commits on finger lift, bksp/arrows repeat; `hide` gives the console the full screen
+      (73x56), any tap brings it back; the pty is resized (SIGWINCH) both ways.
 - [ ] Glyph cache in the console renderer (CPU)
 - [ ] Books app (EPUB reader), power button (screen off), backlight and battery in the UI
 

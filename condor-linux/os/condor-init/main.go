@@ -106,8 +106,12 @@ func main() {
 			log.Printf("console: %v; showing the launcher instead", err)
 			go runHome(s)
 		} else {
+			drawMu.Lock()
+			c.kb.draw()
+			drawMu.Unlock()
 			go c.run()
 			go c.serve()
+			go c.touchLoop()
 		}
 	}
 	go runTunnel()

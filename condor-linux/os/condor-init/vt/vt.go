@@ -461,3 +461,33 @@ func (t *Term) sgr() {
 		}
 	}
 }
+
+// Resize changes the grid to cols x rows, keeping the text around the cursor: when the grid
+// gets shorter, rows scroll off the top so the cursor's line stays visible.
+func (t *Term) Resize(cols, rows int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cols == t.Cols && rows == t.Rows {
+		return
+	}
+	shift := max(0, t.cy-(rows-1))
+	cells := make([]Cell, cols*rows)
+	for i := range cells {
+		cells[i] = Cell{Ch: ' ', FG: Default, BG: Default}
+	}
+	for y := 0; y < rows; y++ {
+		sy := y + shift
+		if sy >= t.Rows {
+			break
+		}
+		copy(cells[y*cols:y*cols+min(cols, t.Cols)], t.cells[sy*t.Cols:sy*t.Cols+min(cols, t.Cols)])
+	}
+	t.cells, t.Cols, t.Rows = cells, cols, rows
+	t.cy = min(t.cy-shift, rows-1)
+	t.cx = min(t.cx, cols-1)
+	t.savedX, t.savedY = min(t.savedX, cols-1), min(t.savedY, rows-1)
+	t.top, t.bot = 0, rows-1
+	t.wrapPending = false
+	t.dirty = make([]bool, rows)
+	t.markAll()
+}
