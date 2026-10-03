@@ -31,6 +31,7 @@ const (
 	modeReader // a book open
 	modeStore  // free books to download
 	modeWords  // the word book
+	modeBooksHome
 )
 
 type button struct {

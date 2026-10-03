@@ -165,6 +165,9 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 	bg := coverColors[(h&0x7fffffff)%len(coverColors)]
 	ui.Fill(img, r, bg)
 	ui.Fill(img, image.Rect(r.Min.X+r.Dx()/12, r.Min.Y, r.Min.X+r.Dx()/12+6, r.Max.Y), blend(bg, pgDark, 0.35))
+	if r.Dx() < 120 { // too small for a title: the colour and the spine say "a book"
+		return
+	}
 	face, small := apple().captionBold, apple().caption
 	if r.Dx() > 400 {
 		face = apple().headline
@@ -173,7 +176,7 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 	pad := r.Dx()/12 + 22
 	y := r.Min.Y + r.Dy()/6
 	for i, l := range wrapText(face, it.title, r.Dx()-pad-18) {
-		if i == 5 {
+		if i == 5 || y+lh > r.Max.Y-70 {
 			break
 		}
 		y += lh

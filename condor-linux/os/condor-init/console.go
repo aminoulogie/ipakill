@@ -39,40 +39,44 @@ var (
 
 // console is the terminal shown on the tablet's screen.
 type console struct {
-	s            *Screen
-	t            *vt.Term
-	reg, bold    font.Face
-	cw, ch, asc  int // cell width, cell height, baseline offset
-	offX, offY   int // grid origin, centring the grid on the screen
-	mu           sync.Mutex
-	master       *os.File // the shell's pty, nil between shells
-	kb           *keyboard
-	glyphs       map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
-	barH         int                      // status bar height at the top
-	screenOn     bool
-	mode         mode  // launcher, terminal or settings
-	page         *page // the launcher/settings page on screen, for taps
-	pf           *pageFonts
-	cfg          savedSettings // brightness, screen-off timeout
-	confirm      string        // power button waiting for its second tap
-	wifiBusy     bool
-	lastInput    time.Time // for the screen-off timeout
-	lib          *library  // reader prefs + progress per book
-	rf           *readerFonts
-	book         *openBook
-	shelf        []shelfBook
-	store        storeState
-	skb          *keyboard // the store's search keyboard
-	fromStore    bool      // the open book came from the store (a preview or a download)
-	rd           readerUI  // the reader's selection, menus, panels, gestures
-	pcache       pageCache // the current book page, drawn once
-	marksVersion int
-	lastRead     time.Time
-	words        *wordBook
-	shelfFrom    int // first book on the library page
-	shelfPer     int
-	wui          wordsUI
-	clients      map[net.Conn]bool
+	s                  *Screen
+	t                  *vt.Term
+	reg, bold          font.Face
+	cw, ch, asc        int // cell width, cell height, baseline offset
+	offX, offY         int // grid origin, centring the grid on the screen
+	mu                 sync.Mutex
+	master             *os.File // the shell's pty, nil between shells
+	kb                 *keyboard
+	glyphs             map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
+	barH               int                      // status bar height at the top
+	screenOn           bool
+	mode               mode  // launcher, terminal or settings
+	page               *page // the launcher/settings page on screen, for taps
+	pf                 *pageFonts
+	cfg                savedSettings // brightness, screen-off timeout
+	confirm            string        // power button waiting for its second tap
+	wifiBusy           bool
+	lastInput          time.Time // for the screen-off timeout
+	lib                *library  // reader prefs + progress per book
+	rf                 *readerFonts
+	book               *openBook
+	shelf              []shelfBook
+	store              storeState
+	skb                *keyboard // the store's search keyboard
+	fromStore          bool      // the open book came from the store (a preview or a download)
+	rd                 readerUI  // the reader's selection, menus, panels, gestures
+	pcache             pageCache // the current book page, drawn once
+	marksVersion       int
+	lastRead           time.Time
+	words              *wordBook
+	shelfFrom          int // first book on the library page
+	shelfPer           int
+	homePop            []*storeItem // Home: Gutenberg\'s most read
+	homePopLoading     bool
+	homePopErr         time.Time
+	turnOld, turnFrame *image.RGBA // page-turn animation buffers
+	wui                wordsUI
+	clients            map[net.Conn]bool
 }
 
 func newConsole(s *Screen) (*console, error) {

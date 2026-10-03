@@ -47,17 +47,27 @@ import (
 type readerTheme struct {
 	name                  string
 	bg, fg, strong, faint color.RGBA
-	mark                  color.RGBA // the lit line and a selection
+	mark                  color.RGBA // the lit line (line by line)
 	markA                 float64
 	dark                  bool
+	bold                  bool // Apple's "Bold": the body in the bold face
 }
 
-// From Soma's READER_THEMES (night first: it was this tablet's default before paper/sepia).
+// Apple Books' six themes, in its order, then Original's dark appearance (the half-moon
+// button). The lit-line inks are Soma's: yellow on light paper, blue on dark.
 var readerThemes = []readerTheme{
-	{"night", rgb(0x0b0b0d), rgb(0xe8e6e2), rgb(0xffffff), rgb(0x77736c), color.RGBA{120, 170, 255, 255}, 0.30, true},
-	{"paper", rgb(0xf8f6f1), rgb(0x1b1a17), rgb(0x000000), rgb(0x8a8578), color.RGBA{255, 214, 10, 255}, 0.42, false},
-	{"sepia", rgb(0xf2e6ce), rgb(0x3b2f1e), rgb(0x1f1708), rgb(0x9a8a6d), color.RGBA{214, 138, 10, 255}, 0.34, false},
+	{"Original", rgb(0xffffff), rgb(0x000000), rgb(0x000000), rgb(0x8e8e93), color.RGBA{255, 214, 10, 255}, 0.42, false, false},
+	{"Quiet", rgb(0x4a4a4d), rgb(0xd8d8da), rgb(0xffffff), rgb(0x9a9a9e), color.RGBA{120, 170, 255, 255}, 0.30, true, false},
+	{"Paper", rgb(0xeeeeec), rgb(0x1d1d1f), rgb(0x000000), rgb(0x8a8a8a), color.RGBA{255, 214, 10, 255}, 0.42, false, false},
+	{"Bold", rgb(0xffffff), rgb(0x000000), rgb(0x000000), rgb(0x8e8e93), color.RGBA{255, 214, 10, 255}, 0.42, false, true},
+	{"Calm", rgb(0xeee2cc), rgb(0x3b2f1e), rgb(0x1f1708), rgb(0x9a8a6d), color.RGBA{214, 138, 10, 255}, 0.34, false, false},
+	{"Focus", rgb(0xfffcf0), rgb(0x1c1c1e), rgb(0x000000), rgb(0x8e8e93), color.RGBA{255, 214, 10, 255}, 0.42, false, false},
+	{"Night", rgb(0x000000), rgb(0xe8e6e2), rgb(0xffffff), rgb(0x77736c), color.RGBA{120, 170, 255, 255}, 0.30, true, false},
 }
+
+const themeNight = 6
+
+func (c *console) theme() readerTheme { return readerThemes[c.lib.Prefs.Theme] }
 
 func rgb(v uint32) color.RGBA { return color.RGBA{uint8(v >> 16), uint8(v >> 8), uint8(v), 255} }
 
@@ -96,6 +106,8 @@ func fontIndex(id string) int {
 
 type readerPrefs struct {
 	Theme        int     `json:"theme"`
+	ThemeSet     int     `json:"theme_set"` // 2 = Apple's themes (before: night, paper, sepia)
+	PageTurn     string  `json:"page_turn"` // "curl", "slide" or "none"
 	Size         int     `json:"size"`
 	Font         string  `json:"font"`
 	LineHeight   float64 `json:"line_height"`
@@ -115,11 +127,12 @@ type bookProgress struct {
 
 // library is saved in /data/condor/books.json.
 type library struct {
-	Prefs    readerPrefs             `json:"prefs"`
-	Progress map[string]bookProgress `json:"progress"`
-	Marks    map[string][]bookMark   `json:"marks"`    // highlights, by book path
-	Finished map[string]string       `json:"finished"` // book path -> date finished
-	Reading  map[string]int          `json:"reading"`  // date -> seconds read
+	Prefs     readerPrefs             `json:"prefs"`
+	Progress  map[string]bookProgress `json:"progress"`
+	Marks     map[string][]bookMark   `json:"marks"`    // highlights, by book path
+	Finished  map[string]string       `json:"finished"` // book path -> date finished
+	Reading   map[string]int          `json:"reading"`  // date -> seconds read
+	Bookmarks map[string][]bookmark   `json:"bookmarks"`
 }
 
 const libraryPath = condorHome + "/books.json"
@@ -141,12 +154,26 @@ func loadLibrary() *library {
 	if l.Reading == nil {
 		l.Reading = map[string]int{}
 	}
+	if l.Bookmarks == nil {
+		l.Bookmarks = map[string][]bookmark{}
+	}
 	p := &l.Prefs
 	if p.Size == 0 {
 		p.Size = textSizeDefault
 	}
 	p.Size = min(max(p.Size, textSizeMin), textSizeMax)
+	if p.ThemeSet < 2 { // night, paper, sepia → Night, Original, Calm
+		if b, err := os.ReadFile(libraryPath); err == nil && len(b) > 0 {
+			p.Theme = []int{themeNight, 0, 4}[min(max(p.Theme, 0), 2)]
+		} else {
+			p.Theme = 0 // new: Original, as Apple Books
+		}
+		p.ThemeSet = 2
+	}
 	p.Theme = min(max(p.Theme, 0), len(readerThemes)-1)
+	if p.PageTurn != "slide" && p.PageTurn != "none" {
+		p.PageTurn = "curl"
+	}
 	p.Font = readerFontList[fontIndex(p.Font)].id
 	if p.LineHeight == 0 {
 		p.LineHeight = lineHeightDef
@@ -223,20 +250,28 @@ func textFace(key string, data []byte, bold bool, size float64) font.Face {
 
 // newReaderFonts makes (once) the faces for a font, size and line spacing.
 func newReaderFonts(fontID string, size int, lineHeight float64) *readerFonts {
-	key := fmt.Sprintf("%s/%d/%.1f", fontID, size, lineHeight)
+	return newReaderFontsB(fontID, size, lineHeight, false)
+}
+
+// newReaderFontsB: with boldBody, the text itself is set in the bold face (Apple's "Bold").
+func newReaderFontsB(fontID string, size int, lineHeight float64, boldBody bool) *readerFonts {
+	key := fmt.Sprintf("%s/%d/%.1f/%v", fontID, size, lineHeight, boldBody)
 	if rf := readerFaces[key]; rf != nil {
 		return rf
 	}
 	f := readerFontList[fontIndex(fontID)]
 	rf := &readerFonts{font: f.id, size: size, lh: int(math.Round(float64(size) * lineHeight)),
-		body: textFace(f.id, f.reg, false, float64(size)), bold: textFace(f.id+"-bold", f.bold, true, float64(size)*1.25)}
+		body: textFace(f.id, f.reg, false, float64(size)), bold: textFace(f.id+"-bold", f.bold, true, float64(size)*1.45)}
+	if boldBody {
+		rf.body = textFace(f.id+"-bold", f.bold, true, float64(size))
+	}
 	readerFaces[key] = rf
 	return rf
 }
 
 func (c *console) readerFontsNow() *readerFonts {
 	p := c.lib.Prefs
-	return newReaderFonts(p.Font, p.Size, p.LineHeight)
+	return newReaderFontsB(p.Font, p.Size, p.LineHeight, c.theme().bold)
 }
 
 // --- layout ------------------------------------------------------------------------------
@@ -244,10 +279,11 @@ func (c *console) readerFontsNow() *readerFonts {
 // rline is one laid-out line of a chapter, placed on its page.
 type rline struct {
 	tline
-	heading bool
-	block   int
-	y, h    int // top and height within the text area
-	word    int // index of its first word in the chapter
+	heading  bool
+	ornament bool // the last line of a chapter heading: a flourish under it
+	block    int
+	y, h     int // top and height within the text area
+	word     int // index of its first word in the chapter
 }
 
 func (l rline) last() int { return l.words[len(l.words)-1].idx }
@@ -271,18 +307,35 @@ type openBook struct {
 // layoutChapter wraps a chapter's paragraphs to the page and cuts them into pages.
 func layoutChapter(blocks []epub.Block, f *readerFonts, width, height int) (pages [][]rline, words []string, blockOf []int) {
 	var lines []rline
+	extra := 0 // room for a heading's ornament
 	for bi, blk := range blocks {
 		ws := strings.Fields(blk.Text)
 		face, gap, lh := f.body, f.lh/3, f.lh
 		if blk.Heading {
-			face, gap, lh = f.bold, f.lh, int(float64(f.lh)*1.25)
+			face, gap, lh = f.bold, f.lh, int(float64(f.lh)*1.3)
 		}
-		for i, tl := range layoutWords(face, ws, len(words), width, !blk.Heading) {
+		tls := layoutWords(face, ws, len(words), width, !blk.Heading)
+		for i, tl := range tls {
 			g := 0
 			if i == 0 && len(lines) > 0 {
-				g = gap
+				g = gap + extra
 			}
-			lines = append(lines, rline{tline: tl, heading: blk.Heading, block: bi, y: g, h: lh, word: tl.words[0].idx})
+			if blk.Heading { // Apple Books: chapter titles centred
+				lw := tl.words[len(tl.words)-1].x + tl.words[len(tl.words)-1].w - tl.words[0].x
+				if tl.rtl {
+					lw = tl.words[0].x + tl.words[0].w - tl.words[len(tl.words)-1].x
+				}
+				shift := (width-lw)/2 - min(tl.words[0].x, tl.words[len(tl.words)-1].x)
+				for k := range tl.words {
+					tl.words[k].x += shift
+				}
+			}
+			lines = append(lines, rline{tline: tl, heading: blk.Heading, block: bi, y: g, h: lh, word: tl.words[0].idx,
+				ornament: blk.Heading && i == len(tls)-1})
+		}
+		extra = 0
+		if blk.Heading && len(tls) > 0 {
+			extra = f.lh / 2
 		}
 		for range ws {
 			blockOf = append(blockOf, bi)
@@ -382,6 +435,7 @@ func (c *console) openBookAt(path string) {
 		return
 	}
 	c.lastRead = time.Now()
+	c.saveProgress() // opened now: first under Continue
 	go c.loadTitles(c.book)
 	c.setMode(modeReader)
 }
@@ -411,6 +465,7 @@ func (c *console) turn(dir int) {
 	if ob == nil {
 		return
 	}
+	old := c.turnFrom() // the page as it is, for the page-turn animation
 	c.readTick()
 	c.rd.sel, c.rd.menu, c.rd.panel, c.rd.chrome = nil, menuNone, nil, false
 	switch {
@@ -438,6 +493,10 @@ func (c *console) turn(dir int) {
 	}
 	c.invalidatePage()
 	c.saveProgress()
+	if old != nil {
+		c.page = c.readerPage()
+		c.animateTurn(old, dir)
+	}
 	c.showPage()
 }
 
@@ -583,11 +642,11 @@ func (c *console) drawText(img *image.RGBA, th readerTheme, dim bool) {
 				if th.dark {
 					a = mc.darkA
 				}
+				ink := mc.light
 				if th.dark {
-					ui.Fill(img, r, fade(blend(th.bg, mc.dark, a)))
-				} else {
-					ui.Fill(img, r, fade(blend(th.bg, mc.light, a)))
+					ink = mc.dark
 				}
+				ui.RoundRect(img, r, 6, fade(blend(th.bg, ink, a)))
 			}
 		}
 		face, col := c.rf.body, th.fg
@@ -597,6 +656,16 @@ func (c *console) drawText(img *image.RGBA, th readerTheme, dim bool) {
 		asc := face.Metrics().Ascent.Ceil()
 		top := tr.Min.Y + l.y + (l.h-(face.Metrics().Ascent+face.Metrics().Descent).Ceil())/2
 		drawWords(img, face, l.tline, tr.Min.X, top+asc, fade(col))
+		if l.ornament { // a flourish under the chapter title: a line, a diamond, a line
+			cx, oy := tr.Min.X+tr.Dx()/2, tr.Min.Y+l.y+l.h+c.rf.lh/4
+			oc := fade(blend(th.bg, th.fg, 0.55))
+			line(img, cx-70, oy, cx-16, oy, 3, oc)
+			line(img, cx+16, oy, cx+70, oy, 3, oc)
+			for i := 0; i <= 9; i++ {
+				ui.Fill(img, image.Rect(cx-i, oy-9+i, cx+i+1, oy-8+i), oc)
+				ui.Fill(img, image.Rect(cx-i, oy+9-i, cx+i+1, oy+10-i), oc)
+			}
+		}
 	}
 }
 
@@ -606,7 +675,7 @@ func (c *console) buildPage() {
 	if c.pcache.key == key {
 		return
 	}
-	th := readerThemes[c.lib.Prefs.Theme]
+	th := c.theme()
 	w, h := c.s.W, c.s.H-c.barH
 	if c.pcache.normal == nil || c.pcache.normal.Rect.Dx() != w || c.pcache.normal.Rect.Dy() != h {
 		c.pcache.normal = image.NewRGBA(image.Rect(0, 0, w, h))
@@ -630,16 +699,71 @@ func (c *console) drawFooter(img *image.RGBA, th readerTheme) {
 	f := apple()
 	h := img.Rect.Dy()
 	m := c.lib.Prefs.Margin
-	// Apple Books: the book's place in small grey type, above and below the text.
-	apTextCenter(img, f.caption, c.s.W/2, 70, th.faint, clip(f.caption, ob.chTitle, c.s.W-2*m))
+	// Apple Books: the book's title in small grey type above the text, the page below it,
+	// how much of the chapter is left at the right.
+	apTextCenter(img, f.caption, c.s.W/2, 70, th.faint, clip(f.caption, ob.b.Title, c.s.W-2*m-160))
 	foot := fmt.Sprintf("%d of %d", ob.page+1, len(ob.pages))
 	if ob.finished {
 		foot = "The End"
 	}
 	apTextCenter(img, f.caption, c.s.W/2, h-readerFooterH/2, th.faint, foot)
 	if left := len(ob.pages) - ob.page - 1; left > 0 && !ob.finished {
-		apTextRight(img, f.caption, c.s.W-m, h-readerFooterH/2+9, th.faint, fmt.Sprintf("%d left in chapter", left))
+		s := fmt.Sprintf("%d pages left in chapter", left)
+		if left == 1 {
+			s = "1 page left in chapter"
+		}
+		apTextRight(img, f.caption, c.s.W-m, h-readerFooterH/2+9, th.faint, s)
 	}
+	if c.bookmarked() != nil { // the red ribbon
+		x := c.s.W - 110
+		ui.Fill(img, image.Rect(x, 0, x+44, 70), rgb(0xff3b30))
+		for i := 0; i < 18; i++ {
+			ui.Fill(img, image.Rect(x, 70+i, x+22-i*22/18, 71+i), rgb(0xff3b30))
+			ui.Fill(img, image.Rect(x+22+i*22/18, 70+i, x+44, 71+i), rgb(0xff3b30))
+		}
+	}
+}
+
+// bookmark is a saved place in a book.
+type bookmark struct {
+	ID      string `json:"id"`
+	Chapter int    `json:"chapter"`
+	Word    int    `json:"word"`
+	Text    string `json:"text"` // the page's first words
+	Added   string `json:"added"`
+}
+
+// bookmarked is the bookmark on the page on screen, or nil.
+func (c *console) bookmarked() *bookmark {
+	ob := c.book
+	pg := ob.pages[ob.page]
+	for i, b := range c.lib.Bookmarks[ob.path] {
+		if b.Chapter == ob.chapter && b.Word >= pg[0].word && b.Word <= pg[len(pg)-1].last() {
+			return &c.lib.Bookmarks[ob.path][i]
+		}
+	}
+	return nil
+}
+
+// toggleBookmark adds or removes the page's bookmark.
+func (c *console) toggleBookmark() {
+	ob := c.book
+	if b := c.bookmarked(); b != nil {
+		var kept []bookmark
+		for _, o := range c.lib.Bookmarks[ob.path] {
+			if o.ID != b.ID {
+				kept = append(kept, o)
+			}
+		}
+		c.lib.Bookmarks[ob.path] = kept
+	} else {
+		w := ob.pages[ob.page][0].word
+		text := strings.Join(ob.words[w:min(w+14, len(ob.words))], " ")
+		c.lib.Bookmarks[ob.path] = append(c.lib.Bookmarks[ob.path], bookmark{ID: fmt.Sprintf("b%d", time.Now().UnixNano()),
+			Chapter: ob.chapter, Word: w, Text: text + "…", Added: time.Now().Format("2006-01-02")})
+	}
+	c.lib.save()
+	c.marksVersion++
 }
 
 // textRows is the band of rows the text area covers, where dimming applies.
@@ -673,7 +797,7 @@ func (c *console) readerPage() *page {
 		return c.readerListPage()
 	}
 	ob := c.book
-	th := readerThemes[c.lib.Prefs.Theme]
+	th := c.theme()
 	c.buildPage()
 	img := canvas(c.s.W, c.s.H-c.barH)
 	copy(img.Pix, c.pcache.normal.Pix)
@@ -687,11 +811,22 @@ func (c *console) readerPage() *page {
 			blendRect(img, image.Rect(b.Min.X-16, b.Min.Y, b.Max.X+16, b.Max.Y), th.mark, th.markA)
 		}
 	}
-	if s := c.rd.sel; s != nil {
+	if s := c.rd.sel; s != nil { // iOS selection: light blue, with a handle at each end
+		var first, last image.Rectangle
 		for _, l := range ob.pages[ob.page] {
 			if r, ok := c.wordsRect(l, s.from, s.to); ok {
-				blendRect(img, r, th.mark, th.markA+0.15)
+				blendRect(img, r, apBlue, 0.22)
+				if first.Empty() {
+					first = r
+				}
+				last = r
 			}
+		}
+		if !first.Empty() && c.rd.g.selecting == false {
+			ui.Fill(img, image.Rect(first.Min.X-2, first.Min.Y, first.Min.X+2, first.Max.Y), apBlue)
+			ui.Circle(img, first.Min.X, first.Min.Y-8, 10, apBlue)
+			ui.Fill(img, image.Rect(last.Max.X-2, last.Min.Y, last.Max.X+2, last.Max.Y), apBlue)
+			ui.Circle(img, last.Max.X, last.Max.Y+8, 10, apBlue)
 		}
 	}
 	p := &page{img: img}
@@ -725,69 +860,79 @@ func (c *console) readerPage() *page {
 	return p
 }
 
-// accent is the controls' colour on a theme.
+// accent is the controls' tint on a theme: system blue (the dark-mode blue on dark paper).
 func (th readerTheme) accent() color.RGBA {
 	if th.dark {
-		return apOrange
+		return rgb(0x0a84ff)
 	}
-	return rgb(0xd9730d)
+	return apBlue
 }
 
-// drawChrome is Apple Books' controls: a bar on top (back, contents, highlights, line by
-// line, Aa) and a progress slider at the bottom.
+// drawChrome is Apple Books' controls: a bar on top (Library; contents and highlights in a
+// group on the left; the title; line by line, Aa and the bookmark in a group on the right)
+// and a slider through the book at the bottom.
 func (c *console) drawChrome(p *page, th readerTheme) {
 	f := apple()
 	ob := c.book
 	img := p.img
 	h := img.Rect.Dy()
-	bar := blend(th.bg, th.fg, 0.05)
-	sep := blend(th.bg, th.fg, 0.15)
+	sep := blend(th.bg, th.fg, 0.12)
+	group := blend(th.bg, th.fg, 0.07)
+	ink := blend(th.bg, th.fg, 0.85)
 	acc := th.accent()
 
 	top := image.Rect(0, 0, c.s.W, 130)
-	ui.Fill(img, top, bar)
+	ui.Fill(img, top, th.bg)
 	ui.Fill(img, image.Rect(0, top.Max.Y-2, c.s.W, top.Max.Y), sep)
 	back := "Library"
 	if c.fromStore {
 		back = "Store"
 	}
-	iconBack(img, 40, 65, acc)
-	apText(img, f.body, 72, 77, acc, back)
-	p.buttons = append(p.buttons, button{"shelf", image.Rect(0, 0, 300, top.Max.Y)})
-	icons := []string{"contents", "marks", "linemode", "settings"}
-	for i, id := range icons {
-		cx := c.s.W - 70 - (len(icons)-1-i)*120
-		switch id {
-		case "contents":
-			iconList(img, cx, 65, acc)
-		case "marks":
-			iconMarker(img, cx, 65, acc)
-		case "linemode":
-			lit := blend(bar, acc, 0.35)
-			if c.lib.Prefs.LineFocus {
-				ui.RoundRect(img, image.Rect(cx-50, 22, cx+50, 108), 22, blend(bar, acc, 0.22))
-				lit = acc
-			}
-			iconLines(img, cx, 65, acc, lit)
-		case "settings":
-			iconAa(img, cx, 65, acc)
-		}
-		p.buttons = append(p.buttons, button{id, image.Rect(cx-58, 0, cx+58, top.Max.Y)})
+	iconBack(img, 34, 65, acc)
+	apText(img, f.body, 62, 77, acc, back)
+	p.buttons = append(p.buttons, button{"shelf", image.Rect(0, 0, 200, top.Max.Y)})
+	// Left group: contents, highlights.
+	lg := image.Rect(210, 28, 210+190, 102)
+	ui.RoundRect(img, lg, 37, group)
+	iconList(img, lg.Min.X+48, 65, ink)
+	iconPen(img, lg.Min.X+142, 65, ink)
+	p.buttons = append(p.buttons, button{"contents", image.Rect(lg.Min.X, 0, lg.Min.X+95, top.Max.Y)},
+		button{"marks", image.Rect(lg.Min.X+95, 0, lg.Max.X, top.Max.Y)})
+	// Right group: line by line, Aa, bookmark.
+	rg := image.Rect(c.s.W-24-290, 28, c.s.W-24, 102)
+	ui.RoundRect(img, rg, 37, group)
+	lit := blend(group, ink, 0.4)
+	if c.lib.Prefs.LineFocus {
+		ui.RoundRect(img, image.Rect(rg.Min.X+6, rg.Min.Y+6, rg.Min.X+96, rg.Max.Y-6), 31, blend(group, acc, 0.25))
+		lit = acc
 	}
+	iconLines(img, rg.Min.X+50, 65, ink, lit)
+	iconAa(img, rg.Min.X+148, 65, ink)
+	bm := c.bookmarked()
+	bmCol := ink
+	if bm != nil {
+		bmCol = apRed
+	}
+	iconBookmark(img, rg.Min.X+242, 65, bmCol, bm != nil)
+	p.buttons = append(p.buttons, button{"linemode", image.Rect(rg.Min.X, 0, rg.Min.X+98, top.Max.Y)},
+		button{"settings", image.Rect(rg.Min.X+98, 0, rg.Min.X+196, top.Max.Y)},
+		button{"r:bookmark", image.Rect(rg.Min.X+196, 0, rg.Max.X+24, top.Max.Y)})
+	// The title between them.
+	apTextCenter(img, f.headline, (lg.Max.X+rg.Min.X)/2, 65, th.fg, clip(f.headline, ob.b.Title, rg.Min.X-lg.Max.X-40))
 
 	// Bottom: where you are in the book; tap the slider to jump.
-	bot := image.Rect(0, h-190, c.s.W, h)
-	ui.Fill(img, bot, bar)
+	bot := image.Rect(0, h-170, c.s.W, h)
+	ui.Fill(img, bot, th.bg)
 	ui.Fill(img, image.Rect(0, bot.Min.Y, c.s.W, bot.Min.Y+2), sep)
-	tx0, tx1, ty := 70, c.s.W-70, bot.Min.Y+60
-	ui.RoundRect(img, image.Rect(tx0, ty-4, tx1, ty+4), 4, sep)
+	tx0, tx1, ty := 70, c.s.W-70, bot.Min.Y+56
+	ui.RoundRect(img, image.Rect(tx0, ty-3, tx1, ty+3), 3, sep)
 	pct := c.progressPct()
 	kx := tx0 + (tx1-tx0)*pct/100
-	ui.RoundRect(img, image.Rect(tx0, ty-4, kx, ty+4), 4, th.faint)
-	ui.Circle(img, kx, ty, 18, th.fg)
+	ui.RoundRect(img, image.Rect(tx0, ty-3, kx, ty+3), 3, th.faint)
+	ui.Circle(img, kx, ty+2, 17, blend(th.bg, rgb(0x000000), 0.15))
+	ui.Circle(img, kx, ty, 16, rgb(0xffffff))
 	for i := 0; i < 100; i++ {
-		x0 := tx0 + (tx1-tx0)*i/100
-		x1 := tx0 + (tx1-tx0)*(i+1)/100
+		x0, x1 := tx0+(tx1-tx0)*i/100, tx0+(tx1-tx0)*(i+1)/100
 		if i == 0 {
 			x0 = 0
 		}
@@ -796,9 +941,8 @@ func (c *console) drawChrome(p *page, th readerTheme) {
 		}
 		p.buttons = append(p.buttons, button{fmt.Sprintf("r:seek:%d", i), image.Rect(x0, ty-40, x1, ty+40)})
 	}
-	label := fmt.Sprintf("%s  ·  %d of %d", ob.chTitle, ob.page+1, len(ob.pages))
-	apTextCenter(img, f.caption, c.s.W/2, ty+62, th.fg, clip(f.caption, label, c.s.W-240))
-	apTextCenter(img, f.caption, c.s.W/2, ty+102, th.faint, fmt.Sprintf("%d%% of the book", pct))
+	apTextCenter(img, f.caption, c.s.W/2, ty+58, th.fg, clip(f.caption, ob.chTitle, c.s.W-240))
+	apTextCenter(img, f.caption, c.s.W/2, ty+94, th.faint, fmt.Sprintf("%d of %d  ·  %d%%", ob.page+1, len(ob.pages), pct))
 	p.buttons = append(p.buttons, button{"r:bar", top}, button{"r:bar", bot})
 }
 
@@ -828,7 +972,7 @@ func (c *console) refreshLines(a, b int) {
 		// The page on screen is the cached page with another line lit: put the old line back
 		// to dim and light the new one, touching only those two strips.
 		img := c.page.img
-		th := readerThemes[c.lib.Prefs.Theme]
+		th := c.theme()
 		copyRows(img, c.pcache.dim, ra)
 		copyRows(img, c.pcache.normal, rb)
 		if line := c.book.pages[c.book.page]; b >= 0 && b < len(line) {

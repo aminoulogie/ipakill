@@ -165,6 +165,8 @@ func (c *console) showPage() {
 		c.page = c.storePage()
 	case c.mode == modeWords:
 		c.page = c.wordsPage()
+	case c.mode == modeBooksHome:
+		c.page = c.booksHomePage()
 	default:
 		c.page = c.launcherPage()
 	}
@@ -193,7 +195,7 @@ func (c *console) pageTap(x, y int) {
 	if id != c.confirm {
 		c.confirm = ""
 	}
-	if c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) {
+	if c.booksTap(id) || c.homeTap(id) || c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) {
 		return
 	}
 	switch id {

@@ -153,10 +153,27 @@ func (c *console) uiFonts() *readerFonts { return newReaderFonts("sans", 32, 1.4
 
 func (c *console) wordsPage() *page {
 	wb, st := c.words, &c.wui
+	f := apple()
 	h := c.s.H - c.barH
-	pn := newPen(c.s.W, h, c.pf)
-	f := c.uiFonts()
-	textW := c.s.W - 2*pn.mx
+	img := canvas(c.s.W, h)
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img}
+	mx := 48
+	tw := c.s.W - 2*mx
+	pill := func(id, label string, r image.Rectangle, primary bool) {
+		bg, fg := apCard2, apBlue
+		if primary {
+			bg, fg = apBlue, rgb(0xffffff)
+		}
+		ui.RoundRect(img, r, r.Dy()/2, bg)
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, label)
+		p.buttons = append(p.buttons, button{id, r})
+	}
+	back := func(label string) {
+		iconBack(img, mx, 64, apBlue)
+		apText(img, f.body, mx+30, 76, apBlue, label)
+		p.buttons = append(p.buttons, button{"w:back", image.Rect(0, 10, 300, 120)})
+	}
 	switch st.view {
 	case "word":
 		w := wb.find(st.sel)
@@ -164,143 +181,167 @@ func (c *console) wordsPage() *page {
 			st.view = ""
 			return c.wordsPage()
 		}
-		pn.btn("w:back", "< words", image.Rect(pn.mx-12, 20, pn.mx+260, 110), pgBtn, pgText)
-		pn.y = 210
-		for _, l := range layoutWords(f.bold, strings.Fields(w.Word), 0, textW, false) {
-			drawWords(pn.p.img, f.bold, l, pn.mx, pn.y, pgText)
-			pn.y += 64
+		back("Words")
+		y := 150
+		for _, l := range layoutWords(f.serifLarge, strings.Fields(w.Word), 0, tw, false) {
+			y += 80
+			drawWords(img, f.serifLarge, l, mx, y, apLabel)
 		}
-		meta := "from " + w.Book
-		if w.Book == "" {
-			meta = "kept"
+		meta := "Kept " + w.Added
+		if w.Book != "" {
+			meta = "From " + w.Book + "  ·  " + w.Added
 		}
-		meta += " · " + w.Added
-		pn.text(c.pf.small, pgMuted, pn.mx, pn.y, clip(c.pf.small, meta, textW))
-		pn.heading("MEANING")
-		pn.y += 20
+		apText(img, f.caption, mx, y+50, apSecondary, clip(f.caption, meta, tw))
+		y += 120
+		section := func(title string) {
+			apText(img, f.captionBold, mx, y, apSecondary, strings.ToUpper(title))
+			y += 20
+		}
+		section("Meaning")
 		meaning := w.Meaning
 		if st.edit {
-			meaning = st.editText + "_"
+			meaning = st.editText + "|"
 		}
+		col := apLabel
 		if meaning == "" {
-			meaning = "no meaning yet: tap \"write meaning\" to type one"
+			meaning, col = "No meaning yet. Tap Write Meaning to add one.", apSecondary
 		}
-		pn.y = drawParagraphs(pn.p.img, f.body, meaning, pn.mx, pn.y, textW, f.lh, pn.y+8*f.lh, pgText)
+		y = drawParagraphs(img, f.body, meaning, mx, y, tw, 48, y+8*48, col) + 40
 		if w.Sentence != "" {
-			pn.heading("IN THE BOOK")
-			pn.y += 20
-			pn.y = drawParagraphs(pn.p.img, f.body, "“"+w.Sentence+"”", pn.mx, pn.y, textW, f.lh, pn.y+6*f.lh, pgMuted)
+			section("In the book")
+			y = drawParagraphs(img, f.callout, "“"+w.Sentence+"”", mx, y, tw, 44, y+6*44, apSecondary) + 40
 		}
-		pn.heading("REVIEW")
-		status := "learned: all three reviews done"
+		section("Review")
+		status := "Learned: all three reviews done."
 		if d := w.due(); d != "" {
-			status = fmt.Sprintf("review %d of 3 due %s", w.stage()+1, d)
+			status = fmt.Sprintf("Review %d of 3, due %s.", w.stage()+1, d)
 		} else if w.Meaning == "" {
-			status = "comes up for review once it has a meaning"
+			status = "Comes up for review once it has a meaning."
 		}
-		pn.line(c.pf.body, pgText, status)
+		apText(img, f.body, mx, y+30, apLabel, status)
+		y += 80
+		half := (tw - 24) / 2
 		if st.edit {
-			pn.row([]string{"w:editdone"}, []string{"save meaning"}, "", false)
+			pill("w:editdone", "Save Meaning", image.Rect(mx, y, mx+tw, y+96), true)
 		} else {
-			del := "delete"
+			pill("w:edit", "Write Meaning", image.Rect(mx, y, mx+half, y+96), false)
+			del := "Delete"
 			if st.confirm {
-				del = "tap again"
+				del = "Tap Again to Delete"
 			}
-			pn.row([]string{"w:edit", "w:delete"}, []string{"write meaning", del}, map[bool]string{true: "w:delete"}[st.confirm], true)
+			r := image.Rect(mx+half+24, y, mx+tw, y+96)
+			ui.RoundRect(img, r, 48, apCard2)
+			apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apRed, del)
+			p.buttons = append(p.buttons, button{"w:delete", r})
 		}
-		return pn.p
+		return p
 
 	case "review":
-		pn.btn("w:back", "< words", image.Rect(pn.mx-12, 20, pn.mx+260, 110), pgBtn, pgText)
+		back("Words")
 		var queue []*wordEntry
 		for _, w := range wb.dueToday(today()) {
 			if !st.skipped[w.ID] {
 				queue = append(queue, w)
 			}
 		}
-		pn.text(c.pf.title, pgText, pn.mx, 220, "review")
+		apText(img, f.serifLarge, mx, 228, apLabel, "Review")
 		if len(queue) == 0 {
-			pn.y = 300
-			pn.line(c.pf.body, pgText, "all done for today")
+			apText(img, f.title, mx, 360, apLabel, "All done for today")
 			if next := wb.nextUp(); next != nil {
-				pn.line(c.pf.small, pgMuted, fmt.Sprintf("next: \"%s\" on %s", next.Word, next.due()))
+				apText(img, f.callout, mx, 420, apSecondary, fmt.Sprintf("Next: “%s” on %s", next.Word, next.due()))
 			}
-			return pn.p
+			return p
 		}
 		w := queue[0]
-		pn.text(c.pf.small, pgMuted, pn.mx, 280, fmt.Sprintf("%d to go  ·  review %d of 3", len(queue), w.stage()+1))
-		card := image.Rect(pn.mx, 320, c.s.W-pn.mx, h-260)
-		ui.RoundRect(pn.p.img, card, 28, pgCard)
-		y := card.Min.Y + 100
-		for _, l := range layoutWords(f.bold, strings.Fields(w.Word), 0, card.Dx()-80, false) {
-			drawWords(pn.p.img, f.bold, l, card.Min.X+40, y, pgText)
-			y += 64
+		apText(img, f.caption, mx, 280, apSecondary, fmt.Sprintf("%d to go  ·  review %d of 3", len(queue), w.stage()+1))
+		card := image.Rect(mx, 320, c.s.W-mx, h-250)
+		shadow(img, card, 30, 0.10)
+		ui.RoundRect(img, card, 30, apGrouped)
+		y := card.Min.Y + 70
+		for _, l := range layoutWords(f.serifTitle, strings.Fields(w.Word), 0, card.Dx()-80, false) {
+			y += 40
+			drawWords(img, f.serifTitle, l, card.Min.X+40, y, apLabel)
+			y += 24
 		}
 		if w.Sentence != "" {
-			y = drawParagraphs(pn.p.img, f.body, "“"+w.Sentence+"”", card.Min.X+40, y+10, card.Dx()-80, f.lh, y+10+5*f.lh, pgMuted)
+			y = drawParagraphs(img, f.callout, "“"+w.Sentence+"”", card.Min.X+40, y+20, card.Dx()-80, 44, y+20+5*44, apSecondary)
 		}
 		if st.shown {
-			ui.Fill(pn.p.img, image.Rect(card.Min.X+40, y+20, card.Max.X-40, y+22), pgBtn)
-			drawParagraphs(pn.p.img, f.body, w.Meaning, card.Min.X+40, y+50, card.Dx()-80, f.lh, card.Max.Y-30, pgText)
-			pn.y = h - 230
-			pn.row([]string{"w:notyet", "w:gotit"}, []string{"not yet", "got it"}, "w:gotit", false)
+			ui.Fill(img, image.Rect(card.Min.X+40, y+24, card.Max.X-40, y+26), apSeparator)
+			drawParagraphs(img, f.body, w.Meaning, card.Min.X+40, y+54, card.Dx()-80, 48, card.Max.Y-30, apLabel)
+			half := (tw - 24) / 2
+			pill("w:notyet", "Not Yet", image.Rect(mx, h-200, mx+half, h-104), false)
+			pill("w:gotit", "Got It", image.Rect(mx+half+24, h-200, mx+tw, h-104), true)
 		} else {
-			pn.y = h - 230
-			pn.row([]string{"w:show"}, []string{"show meaning"}, "w:show", false)
+			pill("w:show", "Show Meaning", image.Rect(mx, h-200, mx+tw, h-104), true)
 		}
-		pn.p.buttons = append(pn.p.buttons, button{"w:show", card})
-		return pn.p
+		p.buttons = append(p.buttons, button{"w:show", card})
+		return p
 	}
 
 	// The list.
-	pn.btn("home", "< home", image.Rect(pn.mx-12, 20, pn.mx+240, 110), pgBtn, pgText)
-	pn.text(c.pf.title, pgText, pn.mx+280, 88, "words")
+	c.booksTabs(p, "tab:words")
+	apText(img, f.serifLarge, mx, 228, apLabel, "Words")
 	due := len(wb.dueToday(today()))
-	pn.text(c.pf.small, pgMuted, pn.mx, 180, fmt.Sprintf("%d words kept  ·  %d to review today", len(wb.Words), due))
-	pn.y = 200
+	apText(img, f.caption, mx, 280, apSecondary, fmt.Sprintf("%d words kept  ·  %d to review today", len(wb.Words), due))
+	y := 310
 	if due > 0 {
-		pn.row([]string{"w:review"}, []string{fmt.Sprintf("review now (%d)", due)}, "w:review", false)
+		pill("w:review", fmt.Sprintf("Review Now (%d)", due), image.Rect(mx, y, mx+tw, y+96), true)
+		y += 126
 	}
 	if len(wb.Words) == 0 {
-		pn.y += 40
-		pn.line(c.pf.body, pgText, "no words yet")
-		pn.line(c.pf.small, pgMuted, "in a book, long-press a word, then tap \"keep\"")
-		return pn.p
+		apText(img, f.title, mx, y+100, apLabel, "No words yet")
+		drawParagraphs(img, f.callout, "In a book, touch and hold a word, then tap Keep Word. It comes back for review after two days, a week and a month.",
+			mx, y+130, tw, 44, y+400, apSecondary)
+		return p
 	}
 	list := make([]*wordEntry, len(wb.Words))
 	for i := range wb.Words {
 		list[len(list)-1-i] = &wb.Words[i] // newest first
 	}
-	st.from = min(st.from, (len(list)-1)/wordsPerPage*wordsPerPage)
-	pn.y += 30
-	for i := st.from; i < len(list) && i < st.from+wordsPerPage; i++ {
+	per := wordsPerPage
+	st.from = min(st.from, (len(list)-1)/per*per)
+	grp := image.Rect(mx, y, c.s.W-mx, y+min(per, len(list)-st.from)*170)
+	ui.RoundRect(img, grp, 26, apGrouped)
+	for i := st.from; i < len(list) && i < st.from+per; i++ {
 		w := list[i]
-		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)
-		ui.RoundRect(pn.p.img, r, 22, pgCard)
-		if l := layoutWords(c.uiFonts().bold, strings.Fields(w.Word), 0, r.Dx()-64, false); len(l) > 0 {
-			drawWords(pn.p.img, c.uiFonts().bold, l[0], r.Min.X+32, r.Min.Y+60, pgText)
+		r := image.Rect(mx, y, c.s.W-mx, y+170)
+		if i > st.from {
+			ui.Fill(img, image.Rect(mx+32, r.Min.Y, c.s.W-mx, r.Min.Y+1), apSeparator)
+		}
+		if l := layoutWords(f.headline, strings.Fields(w.Word), 0, r.Dx()-110, false); len(l) > 0 {
+			drawWords(img, f.headline, l[0], r.Min.X+32, r.Min.Y+56, apLabel)
 		}
 		meaning := w.Meaning
 		if meaning == "" {
-			meaning = "no meaning yet"
+			meaning = "No meaning yet"
 		}
-		if l := layoutWords(f.body, strings.Fields(meaning), 0, r.Dx()-64, false); len(l) > 0 {
-			drawWords(pn.p.img, f.body, l[0], r.Min.X+32, r.Min.Y+108, pgMuted)
+		if l := layoutWords(f.callout, strings.Fields(meaning), 0, r.Dx()-110, false); len(l) > 0 {
+			drawWords(img, f.callout, l[0], r.Min.X+32, r.Min.Y+102, apSecondary)
 		}
-		state := "learned"
+		state := "Learned"
 		if d := w.due(); d != "" {
-			state = "next review " + d
+			state = "Next review " + d
+		} else if strings.TrimSpace(w.Meaning) == "" {
+			state = "Needs a meaning"
 		}
-		pn.text(c.pf.small, pgMuted, r.Min.X+32, r.Min.Y+150, clip(c.pf.small, state+"  ·  "+w.Book, r.Dx()-64))
-		pn.p.buttons = append(pn.p.buttons, button{"w:open:" + w.ID, r})
-		pn.y += 186
+		if w.Book != "" {
+			state += "  ·  " + w.Book
+		}
+		apText(img, f.caption, r.Min.X+32, r.Min.Y+144, apSecondary, clip(f.caption, state, r.Dx()-110))
+		iconChevronRight(img, r.Max.X-44, (r.Min.Y+r.Max.Y)/2, apSecondary)
+		p.buttons = append(p.buttons, button{"w:open:" + w.ID, r})
+		y += 170
 	}
-	if len(list) > wordsPerPage {
-		pn.y = h - 124
-		pn.row([]string{"w:prev", "w:count", "w:next"}, []string{"< prev",
-			fmt.Sprintf("%d-%d of %d", st.from+1, min(st.from+wordsPerPage, len(list)), len(list)), "next >"}, "", false)
+	if len(list) > per {
+		by := h - 100
+		apText(img, f.body, mx, by+48, apBlue, "‹ Previous")
+		p.buttons = append(p.buttons, button{"w:prev", image.Rect(0, by, 360, by+90)})
+		apTextCenter(img, f.caption, c.s.W/2, by+38, apSecondary, fmt.Sprintf("%d–%d of %d", st.from+1, min(st.from+per, len(list)), len(list)))
+		apTextRight(img, f.body, c.s.W-mx, by+48, apBlue, "Next ›")
+		p.buttons = append(p.buttons, button{"w:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
 	}
-	return pn.p
+	return p
 }
 
 // nextUp is the next word coming for review after today.

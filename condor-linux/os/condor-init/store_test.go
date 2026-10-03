@@ -315,7 +315,23 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	if c.mode != modeReader {
 		t.Errorf("open after download: mode %v", c.mode)
 	}
+	// Home: the books being read, top picks, the library, the most read free books.
+	c.setMode(modeBooksHome)
 	drawMu.Unlock()
+	waitFor(t, "popular on Home", func() bool { return len(c.homePop) > 0 })
+	waitFor(t, "covers on Home", func() bool { return covers.get(f.srv.URL+"/img/84.jpg", 150, 225) != nil })
+	drawMu.Lock()
+	c.showPage()
+	shot(t, c, "books-home")
+	if len(c.readingNow()) != 1 {
+		t.Errorf("continue: %v", c.readingNow())
+	}
+	tapButton(t, c, "home:pick:1")
+	if c.mode != modeStore || storeTopics[c.store.topic].topic != "adventure" {
+		t.Errorf("top pick: mode %v topic %d", c.mode, c.store.topic)
+	}
+	drawMu.Unlock()
+	waitFor(t, "store settled", func() bool { return c.store.pending == 0 })
 }
 
 func TestMergeAndKeys(t *testing.T) {

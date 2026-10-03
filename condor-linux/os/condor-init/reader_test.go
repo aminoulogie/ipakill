@@ -85,6 +85,7 @@ func readerConsole(t *testing.T) *console {
 	t.Cleanup(func() { bookDirs, wordsPath = oldDirs, oldWords; os.Remove(libraryPath) })
 	c := testConsole(t)
 	c.lib, c.words = loadLibrary(), loadWords()
+	c.lib.Prefs.PageTurn = "none" // turns are animated in TestPageTurns
 	c.rf = c.readerFontsNow()
 	// Hold the screen lock like the touch loop does: lookups and the contents finish in the
 	// background and take it. Tests release it around waitFor.
@@ -160,20 +161,35 @@ func TestReadingSession(t *testing.T) {
 	if pg[0].word > word || pg[len(pg)-1].last() < word {
 		t.Fatalf("after A+: page shows words %d-%d, lost word %d", pg[0].word, pg[len(pg)-1].last(), word)
 	}
+	tapButton(t, c, "r:set:theme:4") // Calm
+	tapButton(t, c, "r:custom")
+	shot(t, c, "reader-customize")
 	for _, f := range readerFontList {
 		tapButton(t, c, "r:set:font:"+f.id)
 		if c.lib.Prefs.Font != f.id || c.rf.font != f.id {
 			t.Fatalf("font %s not applied", f.id)
 		}
 	}
-	tapButton(t, c, "r:set:theme:1")
+	tapButton(t, c, "r:set:font:serif")
 	tapButton(t, c, "r:set:lh:+")
 	tapButton(t, c, "r:set:margin:+")
-	if p := c.lib.Prefs; p.Theme != 1 || p.LineHeight != 1.8 || p.Margin != 96 {
+	tapButton(t, c, "r:set:turn:slide")
+	if p := c.lib.Prefs; p.Theme != 4 || p.LineHeight != 1.8 || p.Margin != 96 || p.PageTurn != "slide" {
 		t.Fatalf("prefs %+v", p)
 	}
+	tapButton(t, c, "r:custom")      // back to the themes
+	tapButton(t, c, "r:set:theme:3") // Bold: the text in the bold face, laid out again
+	if c.rf.body != newReaderFontsB(c.lib.Prefs.Font, c.lib.Prefs.Size, c.lib.Prefs.LineHeight, true).body {
+		t.Fatal("Bold should lay the book out in the bold face")
+	}
+	tapButton(t, c, "r:set:appearance") // the half moon: dark
+	if c.lib.Prefs.Theme != themeNight {
+		t.Fatalf("appearance: theme %d", c.lib.Prefs.Theme)
+	}
+	tapButton(t, c, "r:set:theme:0")
 	tapButton(t, c, "settings") // closes it
-	shot(t, c, "reader-paper")
+	c.lib.Prefs.PageTurn = "none"
+	shot(t, c, "reader-original")
 
 	// Into chapter two and back.
 	for i := 0; i < 80 && c.book.chapter == 0; i++ {
@@ -203,7 +219,7 @@ func TestReadingSession(t *testing.T) {
 	c2 := testConsole(t)
 	c2.lib, c2.words = loadLibrary(), loadWords()
 	c2.openBookAt(c.book.path)
-	if c2.book.chapter != saved.Chapter || c2.book.pages[c2.book.page][0].word != saved.Word || c2.lib.Prefs.Theme != 1 {
+	if c2.book.chapter != saved.Chapter || c2.book.pages[c2.book.page][0].word != saved.Word || c2.lib.Prefs.Theme != 0 {
 		t.Fatalf("reopened at ch %d word %d, saved %+v", c2.book.chapter, c2.book.pages[c2.book.page][0].word, saved)
 	}
 }
@@ -713,5 +729,58 @@ func TestGestures(t *testing.T) {
 	drawMu.Lock()
 	if c.rd.sel != nil {
 		t.Error("a tap turned into a hold")
+	}
+}
+
+func TestPageTurnsAndBookmarks(t *testing.T) {
+	c := readerConsole(t)
+	openFirstBook(t, c)
+	old := turnDuration
+	turnDuration = map[string]time.Duration{"slide": 60 * time.Millisecond, "curl": 60 * time.Millisecond}
+	defer func() { turnDuration = old }()
+	for _, style := range []string{"slide", "curl"} {
+		c.lib.Prefs.PageTurn = style
+		before := turnFrames
+		c.turn(1)
+		c.turn(-1)
+		if turnFrames == before {
+			t.Errorf("%s: no frames drawn", style)
+		}
+		end := append([]byte(nil), c.s.buf...)
+		c.showPage()
+		if !bytes.Equal(end, c.s.buf) {
+			t.Errorf("%s: the turn didn't end on the page", style)
+		}
+	}
+	// A frame of the curl, to look at.
+	c.lib.Prefs.PageTurn = "curl"
+	from := c.turnFrom()
+	c.book.page++
+	c.invalidatePage()
+	c.page = c.readerPage()
+	curlFrame(c.turnFrame, from, c.page.img, 0.45, c.theme())
+	c.s.blitRGBA(c.turnFrame, 0, c.barH)
+	shot(t, c, "reader-curl")
+	c.lib.Prefs.PageTurn = "none"
+	c.showPage()
+
+	// Bookmarks: the ribbon, the list, a jump back.
+	tapChrome(t, c, "r:bookmark")
+	if c.bookmarked() == nil || len(c.lib.Bookmarks[c.book.path]) != 1 {
+		t.Fatal("bookmark not added")
+	}
+	shot(t, c, "reader-bookmarked")
+	c.turn(1)
+	c.turn(1)
+	tapChrome(t, c, "contents")
+	tapButton(t, c, "r:list:bookmarks")
+	shot(t, c, "reader-bookmarks")
+	tapButton(t, c, "r:bm:"+c.lib.Bookmarks[c.book.path][0].ID)
+	if c.book.page != 1 || c.bookmarked() == nil {
+		t.Fatalf("jump to bookmark: page %d", c.book.page)
+	}
+	tapChrome(t, c, "r:bookmark")
+	if c.bookmarked() != nil {
+		t.Fatal("bookmark not removed")
 	}
 }

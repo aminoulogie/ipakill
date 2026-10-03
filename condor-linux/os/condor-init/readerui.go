@@ -49,6 +49,7 @@ type readerUI struct {
 	panel      *lookupPanel
 	settings   bool
 	chrome     bool   // Apple Books' controls, shown by a tap in the middle of the page
+	custom     bool   // the settings popover is on its Customize page
 	view       string // "", "contents", "marks"
 	listFrom   int
 	toast      string
@@ -244,16 +245,17 @@ func (c *console) selBands() (first, last image.Rectangle, ok bool) {
 	return
 }
 
-// sheetColours are an Apple sheet's background, text and secondary text on a theme.
+// sheetColours are a sheet's or popover's background, text, secondary text and separators
+// on a theme: white on light paper, dark grey on dark.
 func sheetColours(th readerTheme) (bg, label, secondary, sep color.RGBA) {
 	if th.dark {
-		return apCard, apLabel, apSecondary, apSeparator
+		return rgb(0x2c2c2e), rgb(0xffffff), rgb(0x98989d), rgb(0x48484a)
 	}
-	return rgb(0xf2f2f7), rgb(0x000000), rgb(0x6c6c70), rgb(0xd1d1d6)
+	return rgb(0xffffff), rgb(0x000000), rgb(0x8a8a8e), rgb(0xe0e0e4)
 }
 
-// drawOverlays draws the selection's callout menu, the Look Up / Translate sheet, the Themes
-// & Settings sheet and a toast, registering their buttons first.
+// drawOverlays draws the selection's menu, the Look Up / Translate sheet, the Themes &
+// Settings popover and a toast, registering their buttons first.
 func (c *console) drawOverlays(p *page, th readerTheme) {
 	if c.rd.settings {
 		c.drawSettings(p, th)
@@ -261,7 +263,7 @@ func (c *console) drawOverlays(p *page, th readerTheme) {
 	}
 	first, last, ok := c.selBands()
 	if c.rd.menu != menuNone && ok {
-		c.drawCallout(p, first, last)
+		c.drawCallout(p, th, first, last)
 	}
 	if pn := c.rd.panel; pn != nil {
 		c.drawPanel(p, th, pn)
@@ -270,82 +272,91 @@ func (c *console) drawOverlays(p *page, th readerTheme) {
 		f := apple()
 		w := ui.TextWidth(f.callout, c.rd.toast) + 80
 		r := image.Rect((c.s.W-w)/2, 120, (c.s.W+w)/2, 196)
-		ui.RoundRect(p.img, r, 38, apCallout)
-		apTextCenter(p.img, f.callout, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apLabel, c.rd.toast)
+		shadow(p.img, r, 38, 0.12)
+		ui.RoundRect(p.img, r, 38, rgb(0x1c1c1e))
+		apTextCenter(p.img, f.callout, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, rgb(0xffffff), c.rd.toast)
 	}
 }
 
-// drawCallout is the dark menu over a selection, with its arrow pointing at the words.
-func (c *console) drawCallout(p *page, first, last image.Rectangle) {
+// drawCallout is iPadOS's edit menu: a white panel of rows (an icon and a label each), set
+// beside the selection; Highlight swaps the rows for the five inks.
+func (c *console) drawCallout(p *page, th readerTheme, first, last image.Rectangle) {
 	f := apple()
 	ph := c.s.H - c.barH
-	const mh = 104
+	bg, label, secondary, sep := sheetColours(th)
+	if !th.dark {
+		bg = apMenuBG
+	}
 	text := c.selText()
 	onMark := markAt(c.lib.Marks[c.book.path], c.book.chapter, c.rd.sel.from) != nil
-	type item struct{ id, label string }
-	var items []item
-	if c.rd.menu == menuInk {
-		for _, m := range markColours {
-			items = append(items, item{"r:ink:" + m.id, ""})
+	type row struct {
+		id, label string
+		icon      func(cx, cy int, c color.RGBA)
+		red       bool
+		groupEnd  bool
+	}
+	var rows []row
+	if c.rd.menu == menuMain {
+		rows = append(rows, row{"r:hl", "Highlight", func(x, y int, col color.RGBA) { iconPen(p.img, x, y, col) }, false, !isCapturable(text)})
+		if isCapturable(text) {
+			rows = append(rows, row{"r:lookup", "Look Up", func(x, y int, col color.RGBA) { iconBook(p.img, x, y, col) }, false, true})
+		}
+		rows = append(rows, row{"r:translate", "Translate", func(x, y int, col color.RGBA) { iconGlobe(p.img, x, y, col) }, false, isCapturable(text)})
+		if isCapturable(text) {
+			rows = append(rows, row{"r:keep", "Keep Word", func(x, y int, col color.RGBA) { iconBookmark(p.img, x, y, col, false) }, false, onMark})
 		}
 		if onMark {
-			items = append(items, item{"r:unmark", "Remove"})
-		}
-	} else {
-		items = append(items, item{"r:hl", "Highlight"})
-		if isCapturable(text) {
-			items = append(items, item{"r:lookup", "Look Up"})
-		}
-		items = append(items, item{"r:translate", "Translate"})
-		if isCapturable(text) {
-			items = append(items, item{"r:keep", "Keep"})
+			rows = append(rows, row{"r:unmark", "Remove Highlight", func(x, y int, col color.RGBA) { iconTrash(p.img, x, y, col) }, true, false})
 		}
 	}
-	widths := make([]int, len(items))
-	total := 0
-	for i, it := range items {
-		widths[i] = 96
-		if it.label != "" {
-			widths[i] = ui.TextWidth(f.callout, it.label) + 64
+	const w, rh = 470, 84
+	h := len(rows)*rh + 24
+	if c.rd.menu == menuInk {
+		h = 124
+	}
+	// Beside the selection: under its last line if there's room, else above its first.
+	x := min(max(first.Min.X, 30), c.s.W-30-w)
+	y := last.Max.Y + 30
+	if y+h > ph-40 {
+		y = first.Min.Y - 30 - h
+	}
+	y = max(y, 140)
+	r := image.Rect(x, y, x+w, y+h)
+	shadow(p.img, r, 28, 0.16)
+	ui.RoundRect(p.img, r.Inset(-1), 29, sep)
+	ui.RoundRect(p.img, r, 28, bg)
+	if c.rd.menu == menuInk {
+		n := len(markColours) + 1
+		cw := (w - 40) / n
+		for i, m := range markColours {
+			cx := r.Min.X + 20 + i*cw + cw/2
+			ui.Circle(p.img, cx, r.Min.Y+62, 31, m.chip)
+			p.buttons = append(p.buttons, button{"r:ink:" + m.id, image.Rect(cx-cw/2, r.Min.Y, cx+cw/2, r.Max.Y)})
 		}
-		total += widths[i]
-	}
-	cx := (first.Min.X + first.Max.X) / 2
-	x0 := min(max(cx-total/2, 24), c.s.W-24-total)
-	above := first.Min.Y-mh-30 > 150
-	y := first.Min.Y - mh - 24
-	if !above {
-		y = min(last.Max.Y+24, ph-mh-20)
-	}
-	r := image.Rect(x0, y, x0+total, y+mh)
-	ui.RoundRect(p.img, r, 22, apCallout)
-	// The arrow.
-	ax := min(max(cx, r.Min.X+40), r.Max.X-40)
-	for i := 0; i < 18; i++ {
-		if above {
-			ui.Fill(p.img, image.Rect(ax-18+i, r.Max.Y+i, ax+18-i, r.Max.Y+i+1), apCallout)
+		cx := r.Min.X + 20 + len(markColours)*cw + cw/2
+		if onMark {
+			iconTrash(p.img, cx, r.Min.Y+62, apRed)
+			p.buttons = append(p.buttons, button{"r:unmark", image.Rect(cx-cw/2, r.Min.Y, cx+cw/2, r.Max.Y)})
 		} else {
-			ui.Fill(p.img, image.Rect(ax-18+i, r.Min.Y-i-1, ax+18-i, r.Min.Y-i), apCallout)
+			iconBack(p.img, cx-8, r.Min.Y+62, secondary)
+			p.buttons = append(p.buttons, button{"r:inkback", image.Rect(cx-cw/2, r.Min.Y, cx+cw/2, r.Max.Y)})
 		}
+		return
 	}
-	x := r.Min.X
-	for i, it := range items {
-		ir := image.Rect(x, r.Min.Y, x+widths[i], r.Max.Y)
-		if it.label == "" { // an ink
-			mc := markColour(strings.TrimPrefix(it.id, "r:ink:"))
-			ui.Circle(p.img, (ir.Min.X+ir.Max.X)/2, (ir.Min.Y+ir.Max.Y)/2, 28, mc.chip)
-		} else {
-			col := apLabel
-			if it.id == "r:unmark" {
-				col = rgb(0xff453a)
-			}
-			apTextCenter(p.img, f.callout, (ir.Min.X+ir.Max.X)/2, (ir.Min.Y+ir.Max.Y)/2, col, it.label)
+	ry := r.Min.Y + 12
+	for i, rw := range rows {
+		rr := image.Rect(r.Min.X, ry, r.Max.X, ry+rh)
+		col := label
+		if rw.red {
+			col = apRed
 		}
-		if i > 0 && it.label != "" || i > 0 && items[i-1].label != "" {
-			ui.Fill(p.img, image.Rect(x, r.Min.Y+20, x+2, r.Max.Y-20), rgb(0x48484a))
+		rw.icon(rr.Min.X+52, (rr.Min.Y+rr.Max.Y)/2, col)
+		apText(p.img, f.body, rr.Min.X+100, (rr.Min.Y+rr.Max.Y)/2+12, col, rw.label)
+		if rw.groupEnd && i < len(rows)-1 {
+			ui.Fill(p.img, image.Rect(rr.Min.X+28, rr.Max.Y-1, rr.Max.X-28, rr.Max.Y+1), sep)
 		}
-		p.buttons = append(p.buttons, button{it.id, ir})
-		x += widths[i]
+		p.buttons = append(p.buttons, button{rw.id, rr})
+		ry += rh
 	}
 }
 
@@ -452,9 +463,6 @@ func (c *console) drawPanel(p *page, th readerTheme, pn *lookupPanel) {
 	p.buttons = append(p.buttons, button{"r:panel", r})
 }
 
-// readerThemeNames: Apple Books' names for the three papers.
-var readerThemeNames = []string{"Night", "Original", "Calm"}
-
 // iosSwitch draws an on/off switch with its right edge at right.
 func iosSwitch(img *image.RGBA, right, cy int, on, dark bool) image.Rectangle {
 	r := image.Rect(right-102, cy-31, right, cy+31)
@@ -463,129 +471,163 @@ func iosSwitch(img *image.RGBA, right, cy int, on, dark bool) image.Rectangle {
 		track = rgb(0x39393d)
 	}
 	if on {
-		track = rgb(0x30d158)
+		track = rgb(0x34c759)
 	}
 	ui.RoundRect(img, r, 31, track)
 	kx := r.Min.X + 31
 	if on {
 		kx = r.Max.X - 31
 	}
+	ui.Circle(img, kx, cy+2, 28, blend(track, rgb(0x000000), 0.12))
 	ui.Circle(img, kx, cy, 27, rgb(0xffffff))
 	return r
 }
 
-// drawSettings is Apple Books' Themes & Settings sheet, with Soma's extra controls.
+// drawSettings is Apple Books' Themes & Settings popover (under the Aa button): text size,
+// light/dark, the six themes, and Customize (Soma's controls and the page turn).
 func (c *console) drawSettings(p *page, th readerTheme) {
 	f := apple()
-	ph := c.s.H - c.barH
 	pr := c.lib.Prefs
 	bg, label, secondary, sep := sheetColours(th)
 	acc := th.accent()
-	r := sheet(p.img, ph-1500, bg)
-	p.buttons = append(p.buttons, button{"settings", image.Rect(0, 0, c.s.W, r.Min.Y)}) // tap above: close
-	x, w := 40, c.s.W-80
-	y := r.Min.Y + 90
-	apText(p.img, f.headline, x, y, label, "Themes & Settings")
-	apTextRight(p.img, f.headline, x+w, y, acc, "Done")
-	p.buttons = append(p.buttons, button{"settings", image.Rect(c.s.W-220, r.Min.Y, c.s.W, r.Min.Y+130)})
-	y += 40
-	pill := blend(bg, label, 0.08)
+	fill := blend(bg, label, 0.07)
+	const w = 760
+	x0 := c.s.W - 24 - w
+	h := 780
+	if c.rd.custom {
+		h = 1480
+	}
+	r := image.Rect(x0, 140, x0+w, 140+h)
+	p.buttons = append(p.buttons, button{"settings", image.Rect(0, 0, c.s.W, r.Min.Y)},
+		button{"settings", image.Rect(0, r.Min.Y, r.Min.X, c.s.H)}) // tap outside: close
+	shadow(p.img, r, 34, 0.18)
+	ui.RoundRect(p.img, r.Inset(-1), 35, sep)
+	ui.RoundRect(p.img, r, 34, bg)
+	x, iw := r.Min.X+30, w-60
+	y := r.Min.Y + 56
 
-	// Text size and brightness: two capsules split down the middle.
-	capsule := func(cr image.Rectangle, lid, rid string, drawL, drawR func(cx, cy int)) {
-		ui.RoundRect(p.img, cr, 26, pill)
+	if !c.rd.custom {
+		apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, y, secondary, "Themes & Settings")
+		y += 40
+		// [A | A]   [half moon]
+		capW := iw - 130
+		cr := image.Rect(x, y, x+capW, y+92)
+		ui.RoundRect(p.img, cr, 46, fill)
 		mid := (cr.Min.X + cr.Max.X) / 2
-		ui.Fill(p.img, image.Rect(mid-1, cr.Min.Y+18, mid+1, cr.Max.Y-18), sep)
-		drawL((cr.Min.X+mid)/2, (cr.Min.Y+cr.Max.Y)/2)
-		drawR((mid+cr.Max.X)/2, (cr.Min.Y+cr.Max.Y)/2)
-		p.buttons = append(p.buttons, button{lid, image.Rect(cr.Min.X, cr.Min.Y, mid, cr.Max.Y)},
-			button{rid, image.Rect(mid, cr.Min.Y, cr.Max.X, cr.Max.Y)})
-	}
-	half := (w - 24) / 2
-	capsule(image.Rect(x, y, x+half, y+100), "r:set:size:-", "r:set:size:+",
-		func(cx, cy int) { apTextCenter(p.img, f.caption, cx, cy, label, "A") },
-		func(cx, cy int) { apTextCenter(p.img, f.title, cx, cy, label, "A") })
-	sun := func(rad int) func(cx, cy int) {
-		return func(cx, cy int) {
-			ui.Circle(p.img, cx, cy, rad, label)
-			for a := 0; a < 8; a++ {
-				t := float64(a) * math.Pi / 4
-				line(p.img, cx+int(float64(rad+6)*math.Cos(t)), cy+int(float64(rad+6)*math.Sin(t)),
-					cx+int(float64(rad+12)*math.Cos(t)), cy+int(float64(rad+12)*math.Sin(t)), 4, label)
+		ui.Fill(p.img, image.Rect(mid-1, cr.Min.Y+20, mid+1, cr.Max.Y-20), sep)
+		apTextCenter(p.img, f.caption, (cr.Min.X+mid)/2, (cr.Min.Y+cr.Max.Y)/2, label, "A")
+		apTextCenter(p.img, f.title, (mid+cr.Max.X)/2, (cr.Min.Y+cr.Max.Y)/2, label, "A")
+		p.buttons = append(p.buttons, button{"r:set:size:-", image.Rect(cr.Min.X, cr.Min.Y, mid, cr.Max.Y)},
+			button{"r:set:size:+", image.Rect(mid, cr.Min.Y, cr.Max.X, cr.Max.Y)})
+		mr := image.Rect(cr.Max.X+20, y, x+iw, y+92)
+		ui.RoundRect(p.img, mr, 46, fill)
+		iconHalfMoon(p.img, (mr.Min.X+mr.Max.X)/2, (mr.Min.Y+mr.Max.Y)/2, label)
+		p.buttons = append(p.buttons, button{"r:set:appearance", mr})
+		y += 124
+
+		// Six themes, two rows of three: "Aa" in the theme's ink on its paper.
+		tw, thh, gap := (iw-2*20)/3, 190, 20
+		for i, t := range readerThemes[:6] {
+			col, row := i%3, i/3
+			tr := image.Rect(x+col*(tw+gap), y+row*(thh+gap), x+col*(tw+gap)+tw, y+row*(thh+gap)+thh)
+			if i == pr.Theme || (pr.Theme == themeNight && i == 0) {
+				ui.RoundRect(p.img, tr.Inset(-5), 31, label)
+				ui.RoundRect(p.img, tr.Inset(-2), 28, bg)
+			} else {
+				ui.RoundRect(p.img, tr.Inset(-1), 27, sep)
 			}
+			ui.RoundRect(p.img, tr, 26, t.bg)
+			aa := newReaderFontsB(pr.Font, 56, 1.4, t.bold).body
+			ui.DrawTextCentered(p.img, aa, (tr.Min.X+tr.Max.X)/2, (tr.Min.Y+tr.Max.Y)/2-14, t.fg, "Aa")
+			nf := f.caption
+			if t.bold {
+				nf = f.captionBold
+			}
+			apTextCenter(p.img, nf, (tr.Min.X+tr.Max.X)/2, tr.Max.Y-34, t.fg, t.name)
+			p.buttons = append(p.buttons, button{fmt.Sprintf("r:set:theme:%d", i), tr})
 		}
+		y += 2*thh + gap + 34
+		// Customize.
+		cu := image.Rect(x, y, x+iw, y+92)
+		ui.RoundRect(p.img, cu, 46, fill)
+		ring(p.img, cu.Min.X+iw/2-110, (cu.Min.Y+cu.Max.Y)/2, 12, 4, 1, label, label)
+		ui.Circle(p.img, cu.Min.X+iw/2-110, (cu.Min.Y+cu.Max.Y)/2, 4, label)
+		apTextCenter(p.img, f.headline, cu.Min.X+iw/2+20, (cu.Min.Y+cu.Max.Y)/2, label, "Customize")
+		p.buttons = append(p.buttons, button{"r:custom", cu})
+		p.buttons = append(p.buttons, button{"r:panel", r})
+		return
 	}
-	capsule(image.Rect(x+half+24, y, x+w, y+100), "r:set:bright:-", "r:set:bright:+", sun(6), sun(11))
-	y += 130
 
-	// Themes as tiles of their own paper and ink.
-	tw := (w - 2*24) / 3
-	for i, t := range readerThemes {
-		tr := image.Rect(x+i*(tw+24), y, x+i*(tw+24)+tw, y+200)
-		if i == pr.Theme {
-			ui.RoundRect(p.img, tr.Inset(-6), 30, acc)
-		} else {
-			ui.RoundRect(p.img, tr.Inset(-2), 26, sep)
-		}
-		ui.RoundRect(p.img, tr, 24, t.bg)
-		ui.DrawTextCentered(p.img, newReaderFonts(pr.Font, 64, 1.4).body, (tr.Min.X+tr.Max.X)/2, (tr.Min.Y+tr.Max.Y)/2, t.fg, "Aa")
-		apTextCenter(p.img, f.callout, (tr.Min.X+tr.Max.X)/2, tr.Max.Y+36, label, readerThemeNames[i])
-		p.buttons = append(p.buttons, button{fmt.Sprintf("r:set:theme:%d", i), image.Rect(tr.Min.X, tr.Min.Y, tr.Max.X, tr.Max.Y+56)})
-	}
-	y += 280
+	// Customize.
+	iconBack(p.img, x, y-12, acc)
+	apText(p.img, f.body, x+28, y, acc, "Themes")
+	p.buttons = append(p.buttons, button{"r:custom", image.Rect(r.Min.X, r.Min.Y, r.Min.X+260, r.Min.Y+110)})
+	apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, y-12, secondary, "Customize")
+	y += 44
 
-	// Fonts: each name in its own face, a check on the one in use.
-	group := image.Rect(x, y, x+w, y+len(readerFontList)*84)
-	ui.RoundRect(p.img, group, 24, pill)
+	// Font.
+	apText(p.img, f.captionBold, x+8, y, secondary, "FONT")
+	y += 16
+	grp := image.Rect(x, y, x+iw, y+len(readerFontList)*78)
+	ui.RoundRect(p.img, grp, 22, fill)
 	for i, rf := range readerFontList {
-		rr := image.Rect(x, y+i*84, x+w, y+(i+1)*84)
+		rr := image.Rect(x, y+i*78, x+iw, y+(i+1)*78)
 		if i > 0 {
-			ui.Fill(p.img, image.Rect(x+30, rr.Min.Y, x+w, rr.Min.Y+2), sep)
+			ui.Fill(p.img, image.Rect(x+28, rr.Min.Y, x+iw, rr.Min.Y+1), sep)
 		}
-		face := newReaderFonts(rf.id, 36, 1.4).body
-		ui.DrawText(p.img, face, x+30, rr.Min.Y+56, label, rf.label)
+		ui.DrawText(p.img, newReaderFonts(rf.id, 34, 1.4).body, x+28, rr.Min.Y+52, label, rf.label)
 		if rf.id == pr.Font {
-			iconCheck(p.img, x+w-70, (rr.Min.Y+rr.Max.Y)/2, acc)
+			iconCheck(p.img, x+iw-60, (rr.Min.Y+rr.Max.Y)/2, acc)
 		}
 		p.buttons = append(p.buttons, button{"r:set:font:" + rf.id, rr})
 	}
-	y = group.Max.Y + 50
+	y = grp.Max.Y + 50
 
-	// Soma's controls.
-	apText(p.img, f.captionBold, x+10, y, secondary, "CUSTOMIZE")
-	y += 20
-	rows := 5
-	group = image.Rect(x, y, x+w, y+rows*92)
-	ui.RoundRect(p.img, group, 24, pill)
-	row := func(i int, name string) (int, int) { // returns the row's centre y and right edge
-		top := y + i*92
+	// Page turn: Slide, Curl, None.
+	apText(p.img, f.captionBold, x+8, y, secondary, "PAGE TURN")
+	y += 16
+	segmented(p, image.Rect(x, y, x+iw, y+76), []string{"r:set:turn:slide", "r:set:turn:curl", "r:set:turn:none"},
+		[]string{"Slide", "Curl", "None"}, "r:set:turn:"+pr.PageTurn, bg, label)
+	y += 116
+
+	// Text and reading.
+	apText(p.img, f.captionBold, x+8, y, secondary, "TEXT & READING")
+	y += 16
+	const rows, rh = 6, 88
+	grp = image.Rect(x, y, x+iw, y+rows*rh)
+	ui.RoundRect(p.img, grp, 22, fill)
+	row := func(i int, name string) (cy, right int) {
+		top := y + i*rh
 		if i > 0 {
-			ui.Fill(p.img, image.Rect(x+30, top, x+w, top+2), sep)
+			ui.Fill(p.img, image.Rect(x+28, top, x+iw, top+1), sep)
 		}
-		apText(p.img, f.body, x+30, top+60, label, name)
-		return top + 46, x + w - 24
+		apText(p.img, f.body, x+28, top+56, label, name)
+		return top + rh/2, x + iw - 22
 	}
 	stepper := func(i int, name, id, value string) {
 		cy, right := row(i, name)
-		sr := image.Rect(right-320, cy-34, right, cy+34)
-		ui.RoundRect(p.img, sr, 20, blend(pill, label, 0.08))
-		apTextCenter(p.img, f.headline, sr.Min.X+50, cy, label, "−")
+		sr := image.Rect(right-300, cy-32, right, cy+32)
+		ui.RoundRect(p.img, sr, 18, blend(fill, label, 0.07))
+		apTextCenter(p.img, f.headline, sr.Min.X+46, cy, label, "−")
 		apTextCenter(p.img, f.callout, (sr.Min.X+sr.Max.X)/2, cy, label, value)
-		apTextCenter(p.img, f.headline, sr.Max.X-50, cy, label, "+")
-		p.buttons = append(p.buttons, button{id + ":-", image.Rect(sr.Min.X, sr.Min.Y-12, sr.Min.X+110, sr.Max.Y+12)},
-			button{id + ":+", image.Rect(sr.Max.X-110, sr.Min.Y-12, sr.Max.X, sr.Max.Y+12)})
+		apTextCenter(p.img, f.headline, sr.Max.X-46, cy, label, "+")
+		p.buttons = append(p.buttons, button{id + ":-", image.Rect(sr.Min.X, sr.Min.Y-12, sr.Min.X+100, sr.Max.Y+12)},
+			button{id + ":+", image.Rect(sr.Max.X-100, sr.Min.Y-12, sr.Max.X, sr.Max.Y+12)})
 	}
 	stepper(0, "Line Spacing", "r:set:lh", fmt.Sprintf("%.1f", pr.LineHeight))
 	stepper(1, "Margins", "r:set:margin", fmt.Sprintf("%d", pr.Margin))
-	cy, right := row(2, "Line by Line")
+	stepper(2, "Brightness", "r:set:bright", fmt.Sprintf("%d%%", c.cfg.Brightness))
+	cy, right := row(3, "Line by Line")
 	sw := iosSwitch(p.img, right, cy, pr.LineFocus, th.dark)
 	p.buttons = append(p.buttons, button{map[bool]string{true: "r:set:line:off", false: "r:set:line:on"}[pr.LineFocus], sw.Inset(-14)})
-	cy, right = row(3, "Translate To")
-	apTextRight(p.img, f.body, right-30, cy+12, acc, languageLabel(pr.TranslateTo))
-	line(p.img, right-14, cy-12, right-2, cy, 4, secondary)
-	line(p.img, right-2, cy, right-14, cy+12, 4, secondary)
-	p.buttons = append(p.buttons, button{"r:set:trnext", image.Rect(x+w/2, cy-46, x+w, cy+46)})
-	stepper(4, fmt.Sprintf("Daily Goal  (today %d)", c.lib.readingToday()), "r:set:goal", fmt.Sprintf("%d min", pr.GoalMinutes))
+	cy, right = row(4, "Translate To")
+	apTextRight(p.img, f.body, right-26, cy+12, secondary, languageLabel(pr.TranslateTo))
+	iconChevronRight(p.img, right-12, cy, secondary)
+	p.buttons = append(p.buttons, button{"r:set:trnext", image.Rect(x+iw/2, cy-rh/2, x+iw, cy+rh/2)})
+	stepper(5, "Daily Goal", "r:set:goal", fmt.Sprintf("%d min", pr.GoalMinutes))
+	y = grp.Max.Y + 34
+	drawParagraphs(p.img, f.caption, fmt.Sprintf("Line by line: tap for the next line, the left edge to go back, hold a line to jump to it. Today you read %d of %d minutes.",
+		c.lib.readingToday(), pr.GoalMinutes), x+8, y-26, iw-16, 34, r.Max.Y-10, secondary)
 	p.buttons = append(p.buttons, button{"r:panel", r})
 }
 
@@ -764,7 +806,7 @@ func (c *console) readerTap(id string) bool {
 		var at int
 		fmt.Sscanf(id, "r:seek:%d", &at)
 		c.seek(at)
-	case id == "contents" || id == "marks" || id == "r:list:contents" || id == "r:list:marks":
+	case id == "contents" || id == "marks" || id == "r:list:contents" || id == "r:list:marks" || id == "r:list:bookmarks":
 		c.closeOverlays()
 		c.rd.chrome = false
 		c.rd.view, c.rd.listFrom = strings.TrimPrefix(id, "r:list:"), -1
@@ -777,7 +819,11 @@ func (c *console) readerTap(id string) bool {
 	case id == "settings":
 		open := !c.rd.settings
 		c.closeOverlays()
-		c.rd.settings, c.rd.chrome = open, false
+		c.rd.settings, c.rd.chrome, c.rd.custom = open, false, false
+	case id == "r:custom":
+		c.rd.custom = !c.rd.custom
+	case id == "r:bookmark":
+		c.toggleBookmark()
 	case id == "r:hl":
 		c.rd.menu = menuInk
 	case id == "r:inkback":
@@ -807,7 +853,7 @@ func (c *console) readerTap(id string) bool {
 	case strings.HasPrefix(id, "r:set:"):
 		relayout = c.applySetting(strings.TrimPrefix(id, "r:set:"))
 	case strings.HasPrefix(id, "r:list:") || strings.HasPrefix(id, "r:toc:") || strings.HasPrefix(id, "r:mark:") ||
-		strings.HasPrefix(id, "r:del:"):
+		strings.HasPrefix(id, "r:del:") || strings.HasPrefix(id, "r:bm:") || strings.HasPrefix(id, "r:bmdel:"):
 		c.listTap(id)
 	default:
 		return false
@@ -841,10 +887,24 @@ func (c *console) applySetting(s string) bool {
 	}
 	step := map[string]int{"-": -1, "+": 1}[arg]
 	switch what {
-	case "theme":
-		fmt.Sscan(arg, &pr.Theme)
-		pr.Theme = min(max(pr.Theme, 0), len(readerThemes)-1)
+	case "theme", "appearance":
+		wasBold := c.theme().bold
+		if what == "appearance" { // the half moon: Original's dark version and back
+			if c.theme().dark {
+				pr.Theme = 0
+			} else {
+				pr.Theme = themeNight
+			}
+		} else {
+			fmt.Sscan(arg, &pr.Theme)
+			pr.Theme = min(max(pr.Theme, 0), len(readerThemes)-1)
+		}
 		c.invalidatePage()
+		return c.theme().bold != wasBold // Bold sets the text in another face: lay it out again
+	case "turn":
+		if arg == "slide" || arg == "curl" || arg == "none" {
+			pr.PageTurn = arg
+		}
 	case "font":
 		pr.Font = readerFontList[fontIndex(arg)].id
 		return true
@@ -888,7 +948,7 @@ const listPerPage = 10
 
 func (c *console) readerListPage() *page {
 	ob := c.book
-	th := readerThemes[c.lib.Prefs.Theme]
+	th := c.theme()
 	f := apple()
 	h := c.s.H - c.barH
 	img := canvas(c.s.W, h)
@@ -901,8 +961,8 @@ func (c *console) readerListPage() *page {
 	apTextCenter(img, f.headline, c.s.W/2, 70, label, clip(f.headline, ob.b.Title, c.s.W-480))
 	apTextRight(img, f.headline, c.s.W-48, 82, acc, "Done")
 	p.buttons = append(p.buttons, button{"r:list:back", image.Rect(c.s.W-240, 0, c.s.W, 130)})
-	segmented(p, image.Rect(c.s.W/2-330, 120, c.s.W/2+330, 196), []string{"r:list:contents", "r:list:marks"},
-		[]string{"Contents", "Highlights"}, "r:list:"+c.rd.view, th.bg, label)
+	segmented(p, image.Rect(c.s.W/2-420, 120, c.s.W/2+420, 196), []string{"r:list:contents", "r:list:bookmarks", "r:list:marks"},
+		[]string{"Contents", "Bookmarks", "Highlights"}, "r:list:"+c.rd.view, th.bg, label)
 
 	type row struct {
 		id, text, sub, right string
@@ -918,6 +978,21 @@ func (c *console) readerListPage() *page {
 		}
 		for i, t := range ob.titles {
 			rows = append(rows, row{id: fmt.Sprintf("r:toc:%d", i), text: t, right: fmt.Sprint(i + 1), current: i == ob.chapter})
+		}
+	} else if c.rd.view == "bookmarks" {
+		for _, b := range c.lib.Bookmarks[ob.path] {
+			sub := fmt.Sprintf("Chapter %d", b.Chapter+1)
+			if ob.titles != nil && b.Chapter < len(ob.titles) {
+				sub = ob.titles[b.Chapter]
+			}
+			red := inkColour{chip: apRed}
+			rows = append(rows, row{id: "r:bm:" + b.ID, text: b.Text, sub: sub + "  ·  " + b.Added, chip: &red, del: "r:bmdel:" + b.ID})
+		}
+		if len(rows) == 0 {
+			apTextCenter(img, f.title, c.s.W/2, 480, label, "No Bookmarks")
+			apTextCenter(img, f.callout, c.s.W/2, 550, secondary, "Tap the bookmark button at the top of a page")
+			apTextCenter(img, f.callout, c.s.W/2, 596, secondary, "to come back to it later.")
+			return p
 		}
 	} else {
 		for _, m := range c.lib.Marks[ob.path] {
@@ -1033,5 +1108,30 @@ func (c *console) listTap(id string) {
 		}
 	case strings.HasPrefix(id, "r:del:"):
 		c.unmark(strings.TrimPrefix(id, "r:del:"))
+	case strings.HasPrefix(id, "r:bm:"):
+		bid := strings.TrimPrefix(id, "r:bm:")
+		for _, b := range c.lib.Bookmarks[ob.path] {
+			if b.ID == bid {
+				c.rd.view = ""
+				if b.Chapter != ob.chapter {
+					c.loadChapter(b.Chapter, b.Word)
+				} else {
+					ob.page, ob.line = findWord(ob.pages, b.Word)
+				}
+				c.invalidatePage()
+				c.saveProgress()
+			}
+		}
+	case strings.HasPrefix(id, "r:bmdel:"):
+		bid := strings.TrimPrefix(id, "r:bmdel:")
+		var kept []bookmark
+		for _, b := range c.lib.Bookmarks[ob.path] {
+			if b.ID != bid {
+				kept = append(kept, b)
+			}
+		}
+		c.lib.Bookmarks[ob.path] = kept
+		c.lib.save()
+		c.marksVersion++
 	}
 }

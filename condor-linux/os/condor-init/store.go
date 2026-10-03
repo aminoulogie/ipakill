@@ -322,7 +322,7 @@ func (c *console) storeSearch() {
 
 // Layout of the store (page coordinates; the screen is 1200 wide), after Apple's Book Store.
 const (
-	gridTop   = 590
+	gridTop   = 620
 	gridCols  = 4
 	gridRows  = 2
 	gridGap   = 36
@@ -333,8 +333,8 @@ const (
 )
 
 var (
-	storeSearchR = image.Rect(48, 236, 1200-48-180, 326)
-	storeGoR     = image.Rect(1200-48-170, 236, 1200-48, 326)
+	storeSearchR = image.Rect(48, 262, 1200-48-180, 350)
+	storeGoR     = image.Rect(1200-48-170, 262, 1200-48, 350)
 )
 
 // drawSearchBox redraws just the search field (fast, for each key). Caller holds drawMu.
@@ -403,7 +403,7 @@ func capsules(p *page, x, y, right int, ids, labels []string, on string) int {
 		r := image.Rect(px, y, px+w, y+66)
 		bg, fg := apCard2, apLabel
 		if id == on {
-			bg, fg = apOrange, apBG
+			bg, fg = apBlue, apBG
 		}
 		ui.RoundRect(p.img, r, 33, bg)
 		apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
@@ -439,16 +439,15 @@ func (c *console) storePage() *page {
 	p := &page{img: img}
 	mx := 48
 
-	iconBack(img, mx, 64, apOrange)
-	apText(img, f.body, mx+30, 76, apOrange, "Home")
-	p.buttons = append(p.buttons, button{"home", image.Rect(0, 10, 260, 120)})
+	c.booksTabs(p, "tab:store")
+	apText(img, f.serifLarge, mx, 228, apLabel, "Book Store")
 	lang := "All Languages"
 	if l := storeLangs[st.lang]; l != "" {
 		lang = languageLabel(l)
 	}
-	apTextRight(img, f.body, c.s.W-mx, 76, apOrange, lang)
-	p.buttons = append(p.buttons, button{"s:lang", image.Rect(c.s.W-420, 10, c.s.W, 120)})
-	apText(img, f.largeTitle, mx, 200, apLabel, "Book Store")
+	apTextRight(img, f.body, c.s.W-mx-28, 222, apBlue, lang)
+	iconChevronRight(img, c.s.W-mx-14, 210, apBlue)
+	p.buttons = append(p.buttons, button{"s:lang", image.Rect(c.s.W-440, 150, c.s.W, 250)})
 
 	c.searchBox(img)
 	p.buttons = append(p.buttons, button{"s:search", storeSearchR})
@@ -456,7 +455,7 @@ func (c *console) storePage() *page {
 	if st.query != "" && !st.typing {
 		goLabel = "Cancel"
 	}
-	apTextCenter(img, f.body, (storeGoR.Min.X+storeGoR.Max.X)/2, (storeGoR.Min.Y+storeGoR.Max.Y)/2, apOrange, goLabel)
+	apTextCenter(img, f.body, (storeGoR.Min.X+storeGoR.Max.X)/2, (storeGoR.Min.Y+storeGoR.Max.Y)/2, apBlue, goLabel)
 	p.buttons = append(p.buttons, button{"s:go", storeGoR})
 
 	head := ""
@@ -466,7 +465,7 @@ func (c *console) storePage() *page {
 			ids = append(ids, fmt.Sprintf("s:topic%d", i))
 			labels = append(labels, strings.ToUpper(tp.label[:1])+tp.label[1:])
 		}
-		capsules(p, mx, 352, c.s.W-mx, ids, labels, fmt.Sprintf("s:topic%d", st.topic))
+		capsules(p, mx, 376, c.s.W-mx, ids, labels, fmt.Sprintf("s:topic%d", st.topic))
 		head = strings.ToUpper(storeTopics[st.topic].label[:1]) + storeTopics[st.topic].label[1:] + " on Project Gutenberg"
 	} else { // searching: how each library did
 		var parts []string
@@ -481,11 +480,11 @@ func (c *console) storePage() *page {
 				parts = append(parts, sourceShort[s]+" "+v)
 			}
 		}
-		apText(img, f.caption, mx, 400, apSecondary, clip(f.caption, strings.Join(parts, "  ·  "), c.s.W-2*mx))
-		apText(img, f.caption, mx, 444, apSecondary, "Free full books first, then books to look at before buying")
+		apText(img, f.caption, mx, 420, apSecondary, clip(f.caption, strings.Join(parts, "  ·  "), c.s.W-2*mx))
+		apText(img, f.caption, mx, 464, apSecondary, "Free full books first, then books to look at before buying")
 		head = "Results for “" + st.query + "”"
 	}
-	apText(img, f.headline, mx, gridTop-30, apLabel, clip(f.headline, head, c.s.W-2*mx))
+	apText(img, f.serifTitle, mx, gridTop-34, apLabel, clip(f.serifTitle, head, c.s.W-2*mx))
 
 	switch {
 	case len(st.results) == 0 && st.pending > 0:
@@ -501,7 +500,7 @@ func (c *console) storePage() *page {
 			y = drawParagraphs(img, f.caption, e, mx, y+10, c.s.W-2*mx, 38, y+200, apSecondary)
 		}
 		r := image.Rect(mx, y+40, mx+300, y+136)
-		ui.RoundRect(img, r, 48, apOrange)
+		ui.RoundRect(img, r, 48, apBlue)
 		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Try Again")
 		p.buttons = append(p.buttons, button{"s:retry", r})
 	}
@@ -519,7 +518,7 @@ func (c *console) storePage() *page {
 		badge, free := it.badge()
 		bc := apSecondary
 		if free {
-			bc = apOrange
+			bc = apBlue
 		}
 		apText(img, f.captionBold, x, cr.Max.Y+112, bc, clip(f.captionBold, badge, gridCellW))
 		p.buttons = append(p.buttons, button{fmt.Sprintf("s:item%d", i), image.Rect(x, y, x+gridCellW, y+gridCellH)})
@@ -531,11 +530,11 @@ func (c *console) storePage() *page {
 		if st.hasMore || st.pending > 0 {
 			more = "+"
 		}
-		apText(img, f.body, mx, by+48, apOrange, "‹ Previous")
+		apText(img, f.body, mx, by+48, apBlue, "‹ Previous")
 		p.buttons = append(p.buttons, button{"s:prev", image.Rect(0, by, 360, by+90)})
 		apTextCenter(img, f.caption, c.s.W/2, by+38, apSecondary,
 			fmt.Sprintf("%d–%d of %d%s", st.view+1, min(st.view+perView, len(st.results)), len(st.results), more))
-		apTextRight(img, f.body, c.s.W-mx, by+48, apOrange, "Next ›")
+		apTextRight(img, f.body, c.s.W-mx, by+48, apBlue, "Next ›")
 		p.buttons = append(p.buttons, button{"s:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
 	}
 	return p
@@ -551,8 +550,8 @@ func (c *console) storeBookPage() *page {
 	ui.Fill(img, img.Rect, apBG)
 	p := &page{img: img}
 	mx := 48
-	iconBack(img, mx, 64, apOrange)
-	apText(img, f.body, mx+30, 76, apOrange, "Book Store")
+	iconBack(img, mx, 64, apBlue)
+	apText(img, f.body, mx+30, 76, apBlue, "Book Store")
 	p.buttons = append(p.buttons, button{"s:back", image.Rect(0, 10, 340, 120)})
 
 	cr := image.Rect(mx, 150, mx+420, 150+630)
@@ -568,7 +567,7 @@ func (c *console) storeBookPage() *page {
 		drawWords(img, f.title, l, x, y, apLabel)
 	}
 	y += 50
-	apText(img, f.body, x, y, apOrange, clip(f.body, it.author, w))
+	apText(img, f.body, x, y, apBlue, clip(f.body, it.author, w))
 	var meta []string
 	if it.year > 0 {
 		meta = append(meta, fmt.Sprint(it.year))
@@ -584,7 +583,7 @@ func (c *console) storeBookPage() *page {
 	badge, free := it.badge()
 	bc := apSecondary
 	if free {
-		bc = apOrange
+		bc = apBlue
 	}
 	y += 44
 	apText(img, f.captionBold, x, y, bc, badge)
@@ -605,12 +604,12 @@ func (c *console) storeBookPage() *page {
 		}
 		half := (c.s.W - 2*mx - 24) / 2
 		gr := image.Rect(mx, y, mx+half, y+100)
-		ui.RoundRect(img, gr, 50, apOrange)
+		ui.RoundRect(img, gr, 50, apBlue)
 		apTextCenter(img, f.headline, (gr.Min.X+gr.Max.X)/2, (gr.Min.Y+gr.Max.Y)/2, apBG, get)
 		p.buttons = append(p.buttons, button{"s:dl", gr})
 		sr := image.Rect(mx+half+24, y, c.s.W-mx, y+100)
 		ui.RoundRect(img, sr, 50, apCard2)
-		apTextCenter(img, f.headline, (sr.Min.X+sr.Max.X)/2, (sr.Min.Y+sr.Max.Y)/2, apOrange, "Sample")
+		apTextCenter(img, f.headline, (sr.Min.X+sr.Max.X)/2, (sr.Min.Y+sr.Max.Y)/2, apBlue, "Sample")
 		p.buttons = append(p.buttons, button{"s:preview", sr})
 		note := "Sample opens the whole book now, without adding it to your library."
 		if state != "" && state != "saved" {

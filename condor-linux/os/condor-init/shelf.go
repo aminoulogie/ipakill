@@ -113,13 +113,8 @@ func (c *console) shelfPage() *page {
 	p := &page{img: img}
 	mx := 48
 
-	// Top: back to home, and the store.
-	iconBack(img, mx, 64, apOrange)
-	apText(img, f.body, mx+30, 76, apOrange, "Home")
-	p.buttons = append(p.buttons, button{"home", image.Rect(0, 10, 260, 120)})
-	apTextRight(img, f.body, c.s.W-mx, 76, apOrange, "Book Store")
-	p.buttons = append(p.buttons, button{"store", image.Rect(c.s.W-320, 10, c.s.W, 120)})
-	apText(img, f.largeTitle, mx, 200, apLabel, "Library")
+	c.booksTabs(p, "tab:library")
+	apText(img, f.serifLarge, mx, 228, apLabel, "Library")
 
 	c.shelf = findBooks()
 	if len(c.shelf) == 0 {
@@ -127,7 +122,7 @@ func (c *console) shelfPage() *page {
 		y := drawParagraphs(img, f.body, "Get free books from the Book Store, or copy EPUB files to the Books folder from your PC.",
 			mx, 460, c.s.W-2*mx, 48, 700, apSecondary)
 		r := image.Rect(mx, y+30, mx+420, y+130)
-		ui.RoundRect(img, r, 50, apOrange)
+		ui.RoundRect(img, r, 50, apBlue)
 		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Book Store")
 		p.buttons = append(p.buttons, button{"store", r})
 		return p
@@ -137,7 +132,7 @@ func (c *console) shelfPage() *page {
 	}
 
 	// Continue reading: the book opened last.
-	y := 250
+	y := 270
 	last, lastAt := -1, ""
 	for i, b := range c.shelf {
 		if pr, ok := c.lib.Progress[b.path]; ok && pr.Opened > lastAt && c.lib.Finished[b.path] == "" {
@@ -147,12 +142,12 @@ func (c *console) shelfPage() *page {
 	if last >= 0 {
 		b := c.shelf[last]
 		card := image.Rect(mx, y, c.s.W-mx, y+460)
-		ui.RoundRect(img, card, 30, apCard)
+		ui.RoundRect(img, card, 30, apGrouped)
 		cr := image.Rect(card.Min.X+30, card.Min.Y+30, card.Min.X+30+267, card.Min.Y+30+400)
 		shadowRect(img, cr)
 		c.drawCover(img, cr, item(b))
 		x, w := cr.Max.X+40, card.Max.X-cr.Max.X-70
-		apText(img, f.captionBold, x, card.Min.Y+70, apOrange, "CONTINUE READING")
+		apText(img, f.captionBold, x, card.Min.Y+70, apSecondary, "CONTINUE READING")
 		ty := card.Min.Y + 130
 		for i, l := range layoutWords(f.headline, strings.Fields(b.title), 0, w, false) {
 			if i == 2 {
@@ -174,7 +169,7 @@ func (c *console) shelfPage() *page {
 		// Reading goal ring.
 		mins, goal := c.lib.readingToday(), c.lib.Prefs.GoalMinutes
 		gy := card.Max.Y - 90
-		ring(img, x+44, gy, 38, 12, float64(mins)/float64(max(goal, 1)), apSeparator, apOrange)
+		ring(img, x+44, gy, 38, 12, float64(mins)/float64(max(goal, 1)), rgb(0xd7eef8), apRingBlue)
 		apText(img, f.captionBold, x+110, gy-8, apLabel, "Reading Goal")
 		apText(img, f.caption, x+110, gy+30, apSecondary,
 			fmt.Sprintf("%d of %d min today · %d of %d books this year", mins, goal, c.lib.booksThisYear(), c.lib.Prefs.BooksPerYear))
@@ -183,7 +178,7 @@ func (c *console) shelfPage() *page {
 	}
 
 	// All books.
-	apText(img, f.headline, mx, y+40, apLabel, "All Books")
+	apText(img, f.serifTitle, mx, y+44, apLabel, "All Books")
 	apTextRight(img, f.caption, c.s.W-mx, y+40, apSecondary, map[bool]string{true: "1 book", false: fmt.Sprintf("%d books", len(c.shelf))}[len(c.shelf) == 1])
 	y += 76
 	per := libCols * libRows
@@ -198,7 +193,7 @@ func (c *console) shelfPage() *page {
 		cr := image.Rect(x, cy, x+libCellW, cy+libCover)
 		shadowRect(img, cr)
 		c.drawCover(img, cr, item(b))
-		status, col2 := "NEW", rgb(0x0a84ff)
+		status, col2 := "NEW", apNewBadge
 		if pr, ok := c.lib.Progress[b.path]; ok {
 			status, col2 = fmt.Sprintf("%d%%", pr.Pct), apSecondary
 		}
@@ -210,11 +205,11 @@ func (c *console) shelfPage() *page {
 	}
 	if len(c.shelf) > per {
 		by := h - 100
-		apText(img, f.body, mx, by+48, apOrange, "‹ Previous")
+		apText(img, f.body, mx, by+48, apBlue, "‹ Previous")
 		p.buttons = append(p.buttons, button{"shelf:prev", image.Rect(0, by, 360, by+90)})
 		apTextCenter(img, f.caption, c.s.W/2, by+38, apSecondary,
 			fmt.Sprintf("%d–%d of %d", c.shelfFrom+1, min(c.shelfFrom+per, len(c.shelf)), len(c.shelf)))
-		apTextRight(img, f.body, c.s.W-mx, by+48, apOrange, "Next ›")
+		apTextRight(img, f.body, c.s.W-mx, by+48, apBlue, "Next ›")
 		p.buttons = append(p.buttons, button{"shelf:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
 		c.shelfPer = per
 	}
