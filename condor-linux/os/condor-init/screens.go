@@ -75,7 +75,7 @@ func (c *console) launcherPage() *page {
 	apps := []struct{ id, name, desc string }{
 		{"terminal", "terminal", "Alpine shell with keyboard"},
 		{"settings", "settings", "display, wi-fi, battery, power"},
-		{"", "books", "coming soon"},
+		{"books", "books", "read EPUB books"},
 	}
 	for _, a := range apps {
 		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)
@@ -152,9 +152,14 @@ func (c *console) showPage() {
 	if !c.screenOn {
 		return
 	}
-	if c.mode == modeSettings {
+	switch {
+	case c.mode == modeSettings:
 		c.page = c.settingsPage()
-	} else {
+	case c.mode == modeBooks:
+		c.page = c.shelfPage()
+	case c.mode == modeReader && c.book != nil:
+		c.page = c.readerPage()
+	default:
 		c.page = c.launcherPage()
 	}
 	c.s.blitRGBA(c.page.img, 0, c.barH)
@@ -178,6 +183,9 @@ func (c *console) pageTap(x, y int) {
 	}
 	if id != c.confirm {
 		c.confirm = ""
+	}
+	if c.readerTap(id) {
+		return
 	}
 	switch id {
 	case "terminal":

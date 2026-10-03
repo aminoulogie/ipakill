@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"image"
 	"io"
 	"os"
 	"strconv"
@@ -208,4 +209,36 @@ func (s *Screen) TestPattern() {
 		}
 	}
 	s.Fill(24, 24, 104, 104, 255, 0, 0)
+}
+
+// blitRGBA copies img onto the logical screen at (ox, oy). It's Set unrolled: the colour
+// packing and the dirty-row range are worked out once instead of per pixel, which matters for
+// full-screen pages (2.2 million pixels).
+func (s *Screen) blitRGBA(img *image.RGBA, ox, oy int) {
+	b := img.Rect
+	x0, y0 := max(ox, 0), max(oy, 0)
+	x1, y1 := min(ox+b.Dx(), s.W), min(oy+b.Dy(), s.H)
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	rs, gs, bs := s.red.offset, s.green.offset, s.blue.offset
+	rl, gl, bl := 8-s.red.length, 8-s.green.length, 8-s.blue.length
+	px := s.bpp / 8
+	lo, hi := s.fbH, -1
+	for y := y0; y < y1; y++ {
+		row := img.Pix[img.PixOffset(b.Min.X+x0-ox, b.Min.Y+y-oy):]
+		for x := x0; x < x1; x++ {
+			i := 4 * (x - x0)
+			v := uint32(row[i])>>rl<<rs | uint32(row[i+1])>>gl<<gs | uint32(row[i+2])>>bl<<bs
+			fx, fy := s.rot.toFB(x, y, s.fbW, s.fbH)
+			o := fy*s.stride + fx*px
+			if px == 4 {
+				s.buf[o], s.buf[o+1], s.buf[o+2], s.buf[o+3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+			} else {
+				s.buf[o], s.buf[o+1] = byte(v), byte(v>>8)
+			}
+			lo, hi = min(lo, fy), max(hi, fy)
+		}
+	}
+	s.markRows(lo, hi)
 }

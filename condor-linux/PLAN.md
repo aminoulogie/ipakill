@@ -57,12 +57,12 @@ on it; Alpine's musl and busybox are fine. It's minimal and "build it yourself" 
 | 14 | On-screen keyboard under the console (hide/show, resizes the shell) | `keyboard.go` |
 | 15 | Status bar, power button (screen off/on), volume = brightness, glyph cache, NTP | `bar.go`, `power.go`, `glyphs.go` |
 | 16 | Launcher + settings (brightness, auto screen-off, Wi-Fi, battery, power) | `pages.go`, `screens.go` |
+| 17 | Books: EPUB shelf + paged reader, ported from Soma's reader | `reader.go`, `epub/` |
 
 ## Next
 
 | # | Step | Done when | Notes |
 |---|---|---|---|
-| E | **Books app** (the original goal) | open an EPUB from /data/alpine/root/books or the microSD, page through it by tap/volume keys | Go: EPUB = zip + XHTML; render with the `ui` text code; remember the page. |
 | G | microSD in Alpine | the card mounted at /mnt/sd | It's `/storage/sdcard_ext` in Android's namespace; bind it in. |
 
 ## Fallback ladder (if something breaks)

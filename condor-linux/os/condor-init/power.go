@@ -33,6 +33,14 @@ func (c *console) key(code uint16, value int32) {
 		if !c.screenOn {
 			return
 		}
+		if c.mode == modeReader { // in a book the volume keys turn pages
+			if code == keyVolumeDown {
+				c.turn(+1)
+			} else {
+				c.turn(-1)
+			}
+			return
+		}
 		step := 10
 		if code == keyVolumeDown {
 			step = -10

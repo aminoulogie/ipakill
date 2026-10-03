@@ -57,6 +57,10 @@ type console struct {
 	confirm     string        // power button waiting for its second tap
 	wifiBusy    bool
 	lastInput   time.Time // for the screen-off timeout
+	lib         *library  // reader prefs + progress per book
+	rf          *readerFonts
+	book        *openBook
+	shelf       []shelfBook
 	clients     map[net.Conn]bool
 }
 
@@ -86,6 +90,8 @@ func newConsole(s *Screen) (*console, error) {
 	if c.pf, err = loadPageFonts(); err != nil {
 		return nil, err
 	}
+	c.lib = loadLibrary()
+	c.rf = newReaderFonts(c.lib.Prefs.Size)
 	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
 	c.offX, c.offY = (s.W-cols*c.cw)/2, c.barH+consolePad/2
 	c.t = vt.New(cols, rows)

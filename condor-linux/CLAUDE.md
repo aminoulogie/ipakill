@@ -207,7 +207,14 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       power off, android = autostart off + reboot; two taps; via `setprop sys.powerctl`).
       Saved in /data/condor/settings.json. Ready-made launchers don't fit: they need X/Wayland
       or a GPU, and fbdev mmap is shifted 299 rows on this panel.
-- [ ] Books app (EPUB reader)
+- [x] **Books** (reader.go, epub/): EPUB parsing ported from Soma's reader
+      (aminoulogie/kite-bay-otter-topaz src/lib/epub.ts: container.xml → OPF, percent-decoded
+      paths, linear="no" skipped, dc: metadata, 3 cover conventions; Soma's resolvePath tests
+      ported). Shelf scans /data/media/0/Books, microSD Books, /data/alpine/root/books,
+      /data/condor/books. Paged reader: Soma's themes (night default, paper, sepia), A-/A+,
+      line height 1.7, tap left third = back, else forward, volume keys turn pages; progress
+      per book as (chapter, first word) in /data/condor/books.json. Soma itself can't run here
+      (React web app; no browser engine on the framebuffer).
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

@@ -408,14 +408,3 @@ func (kb *keyboard) stopRepeat(slot int) {
 	}
 	delete(kb.repeated, slot)
 }
-
-// blitRGBA copies img onto the logical screen at (ox, oy).
-func (s *Screen) blitRGBA(img *image.RGBA, ox, oy int) {
-	b := img.Rect
-	for y := 0; y < b.Dy(); y++ {
-		row := img.Pix[img.PixOffset(b.Min.X, b.Min.Y+y):]
-		for x := 0; x < b.Dx(); x++ {
-			s.Set(ox+x, oy+y, row[4*x], row[4*x+1], row[4*x+2])
-		}
-	}
-}

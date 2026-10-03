@@ -23,6 +23,8 @@ const (
 	modeLauncher mode = iota
 	modeTerminal
 	modeSettings
+	modeBooks  // the shelf
+	modeReader // a book open
 )
 
 type button struct {
