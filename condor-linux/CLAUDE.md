@@ -75,7 +75,7 @@ anything about OS options, firmware or flashing).
 - Fallback ladder in PLAN.md if a phase is blocked.
 
 ## Current status
-- [x] Phase 0: `condor` CLI built (doctor, info, books, install, apps, shell, screenshot, recon, reboot, setup)
+- [x] Phase 0: `condor` CLI built (doctor, info, books, install, apps, shell, screenshot, recon, reboot, setup, term)
 - [x] Tablet charges and boots to Android
 - [x] USB data works (needed reseating/another cable; first tries gave "Device Descriptor Request Failed")
 - [x] adb already enabled + PC authorized, works through the pattern lock; **su root available**
