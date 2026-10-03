@@ -18,6 +18,8 @@ anything about OS options, firmware or flashing).
 - Condor TRA-901G, made in Algeria, ~2014. Intel Atom **Z2580** (Clover Trail+, 32-bit x86
   Android build), PowerVR SGX544MP2, 2 GB RAM, 16 GB eMMC + microSD, 8.9" 1920×1200 IPS,
   micro-USB, DC 5V 2A. Ships Android **4.2.2**. Likely an OEM twin of the **Ramos i9**.
+- Root: setuid `/system/bin/su` (mgyun, "16 com.mgyun.shua.su") + manager app
+  `/data/app/Superuser.apk` (com.mgyun.superuser). Defender blocks the APK on the PC.
 - Battery is old; it showed the "battery too low" screen and needed a long charge.
   It boots (Condor logo → Android). Screen is protected by a **pattern lock**.
 
@@ -60,7 +62,9 @@ anything about OS options, firmware or flashing).
   **"terminal first, then write our own code from scratch"**: our own `/init`, our own
   framebuffer UI and EPUB reader in **Go** (`GOOS=linux GOARCH=386`), developed first on the
   PC with a fake-screen window, then on `/dev/fb0` + `/dev/input/event*` on the tablet.
-- Our Linux image goes in the **recovery** partition; Android stays in **boot** (safe dual boot).
+- ~~Our Linux image goes in the recovery slot~~: impossible, the firmware rejects any
+  modified boot/recovery image. New route: keep the signed kernel + ramdisk, hook early boot
+  from **/system**, stop Android's zygote/surfaceflinger, start our own userspace.
 - Fallback ladder in PLAN.md if a phase is blocked.
 
 ## Current status
@@ -77,8 +81,13 @@ anything about OS options, firmware or flashing).
       root-only init*.rc/fstab via su; not re-run yet.
 - [x] `condor bootimg info|unpack|pack`: byte-identical repacks verified
 - [x] `fastboot boot`: not available on this droidboot
-- [ ] Signature test: same-size 1-byte cmdline change written to the recovery OSIP slot with
-      `dd` from Android (never sector 0, boot or fastboot), then `condor reboot recovery`
+- [x] Signature test (2026-10-03): **signatures are enforced.** Recovery slot (sector 26050)
+      overwritten via `dd` with a 1-byte-changed cmdline (same size): `reboot recovery` fell
+      back to droidboot ("RESULT: OKAY", no error text). Control with the original image:
+      stock recovery booted ("Aucune commande"). Original restored and verified; sector 0,
+      boot and fastboot verified unchanged before and after. → No custom kernel/ramdisk.
+- [ ] Factory reset via /cache/recovery/command (recovery menu ignores volume keys)
+- [ ] /system takeover route: stock signed kernel + ramdisk, early hook in /system
 - [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
 
 Update this checklist as things are done.

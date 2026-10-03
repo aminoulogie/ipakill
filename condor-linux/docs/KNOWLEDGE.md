@@ -79,9 +79,13 @@ chip ROM → IFWI (firmware, SCU/PMIC) → OSIP header on eMMC → droidboot (fa
   byte-identical on this tablet's and the Ramos i9 images). Layout and OSIP slot map: CLAUDE.md.
 - `fastboot boot`: **not supported** (droidboot 0.5: "boot command stubbed on this platform").
 - Signatures: every image carries a signed Intel manifest covering the exact payload size
-  (header + bootstub + kernel + ramdisk). Whether the firmware enforces it is the open
-  question; hints toward yes: OSIP attribute 0x00 = "signed kernel", Ramos twin ships a
-  PROD IFWI, `fastboot boot` deliberately stubbed. Test: modified recovery slot via dd.
+  (header + bootstub + kernel + ramdisk). **Enforced (tested 2026-10-03)**: a recovery with
+  one cmdline byte changed (newline → space, same size), written to its OSIP slot with dd,
+  makes `reboot recovery` fall back to droidboot silently; the original image boots stock
+  recovery. Consistent with OSIP attribute 0x00 "signed kernel", PROD IFWI, stubbed
+  `fastboot boot`. Consequence: no custom kernel, cmdline or ramdisk; only /system and
+  /data are ours to change (they're not verified: dm-verity doesn't exist on 4.2).
+- Stock recovery menu ignores the volume keys; use /cache/recovery/command instead.
 - The Ramos i9 factory package (Intel flash tool: IFWI, FW/OS DnX, droidboot, boot, recovery,
   system, partition.tbl) matches this tablet's GPT exactly. Its flash.xml erases `factory`.
 - Boot menu keys (unconfirmed): power off, then **Vol Up + Power** or **Vol Down + Power**.
@@ -112,7 +116,7 @@ chip ROM → IFWI (firmware, SCU/PMIC) → OSIP header on eMMC → droidboot (fa
 | Milestone | Chance |
 |---|---|
 | Own EPUB reader working on the PC | ~95% |
-| Bootloader accepts our images | ~60–70% |
+| Bootloader accepts our images | **no** (signatures enforced, tested) |
 | Our code running on tablet, terminal over USB | ~55–65% |
 | Our reader on the tablet screen with touch | ~35–45% |
 | Full Kindle-like system incl. Wi-Fi | ~20–30% |

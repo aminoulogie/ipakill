@@ -48,8 +48,8 @@ Each phase has a clear "done when" test. We don't move on until it passes.
 |---|---|---|---|
 | 0 | **Tools**: `condor.exe` CLI | `condor doctor` says OK | none ✅ built |
 | 1 | **Recon**: read hardware + back up | `condor recon` SUMMARY.txt collected | none |
-| 2 | **Boot gate**: can we boot our own images? | repacked *unchanged* boot.img boots Android | low |
-| 3 | **Hello initramfs**: tiny Linux in RAM | PC can `ping`/`telnet` the tablet over USB | low |
+| 2 | **Boot gate**: can we boot our own images? | ❌ **no**: signatures enforced (see below) | done |
+| 3 | **Hello userspace** via /system hook (replaces "hello initramfs") | shell over USB from our own process, test pattern on fb0, Android stopped | low–medium |
 | 4 | **Root filesystem**: Alpine on microSD | `ssh user@172.16.42.1` gives an Alpine shell | low |
 | 5 | **Display**: framebuffer, then Xorg | text console and an xterm visible on screen | medium |
 | 6 | **Touch + buttons** | tapping moves the pointer correctly, power/volume keys work | medium |
@@ -75,6 +75,20 @@ Each phase has a clear "done when" test. We don't move on until it passes.
    Options would be Ramos i9 firmware, whose bootloader may be unlocked, or Linux-inside-Android.
 
 New CLI commands: `condor bootimg unpack|pack`, `condor testboot <img>`.
+
+**Result (2026-10-03): blocked.** `fastboot boot` is stubbed in droidboot, and the firmware
+verifies the signed manifest of boot/recovery: a recovery with a single changed cmdline byte,
+written to its OSIP slot with dd, silently falls back to droidboot, while the original boots.
+So the kernel, its cmdline and the ramdisk (`/init`, `init.rc`) are fixed. The recovery-slot
+dual boot is off the table.
+
+### New route: take over from /system (stock kernel kept)
+Android's signed ramdisk mounts `/system` (ext4, not verified on 4.2) and starts services
+from it. We add an early hook there, guarded by a trigger so Android still boots normally
+without it. When triggered, the hook stops zygote/surfaceflinger and starts our own
+userspace: first a shell over USB and a test pattern on `/dev/fb0`, later Alpine on the
+microSD (chroot instead of switch_root) and our reader. Details and exact writes get
+planned and approved before anything is changed; `/system` is backed up first.
 
 ### Phase 3: Hello initramfs
 A ~2 MB initramfs: busybox and a hand-written `/init` script that:
@@ -139,7 +153,7 @@ If we get stuck, each lower option is easier and still gives something useful:
 
 | Blocker | Found in |
 |---|---|
-| Bootloader rejects modified images | Phase 2 |
+| Bootloader rejects modified images | Phase 2: **confirmed**, route changed to /system hook |
 | No root and no stock firmware package available to get boot.img | Phase 1 |
 | Display driver needs Android's graphics stack | Phase 5 |
 | Wi-Fi driver needs Android-only services | Phase 7 |
