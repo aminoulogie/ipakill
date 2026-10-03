@@ -415,7 +415,41 @@ func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": app, "log": log.String()})
 }
 
+// download fetches src to dst, retrying network failures (a connection that
+// times out or drops) a few times before giving up.
 func download(src, dst string) error {
+	var err error
+	for attempt := 1; attempt <= 4; attempt++ {
+		if err = downloadOnce(src, dst); err == nil {
+			return nil
+		}
+		if strings.HasPrefix(err.Error(), "server said 4") || attempt == 4 {
+			break // a missing file won't appear by retrying
+		}
+		msg := fmt.Sprintf("Download failed (%v) - retrying in %ds (%d/4)", shortNetErr(err), attempt*5, attempt+1)
+		fmt.Println("[ipakill] " + msg)
+		progLine(msg)
+		progBytes(0, 0)
+		time.Sleep(time.Duration(attempt*5) * time.Second)
+	}
+	return err
+}
+
+// shortNetErr turns Go's long dial errors into a few words.
+func shortNetErr(err error) string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "connectex") || strings.Contains(s, "timeout") || strings.Contains(s, "timed out"):
+		return "no answer from the server"
+	case strings.Contains(s, "no such host"):
+		return "no internet / DNS"
+	case strings.Contains(s, "reset"):
+		return "connection dropped"
+	}
+	return s
+}
+
+func downloadOnce(src, dst string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(src)
 	if err != nil {

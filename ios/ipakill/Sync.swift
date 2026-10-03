@@ -63,6 +63,7 @@ struct InstallProgress: Equatable {
         switch stage {
         case "download", "upload":
             let verb = stage == "download" ? "Downloading" : "Uploading"
+            if done == 0 && total == 0 { return stage == "download" ? "Connecting…" : "Starting upload…" }
             return total > 0 ? "\(verb) \(f.string(fromByteCount: done)) of \(f.string(fromByteCount: total))"
                              : "\(verb) \(f.string(fromByteCount: done))"
         case "sign": return "Signing with your Apple ID…"
@@ -437,7 +438,10 @@ final class Sync: ObservableObject {
                 }
             }
             progress?.stage = r.ok ? "done" : "failed"
-            if !r.ok { say("! \(r.error ?? "install failed")") }
+            // The PC's log already ends with its error; don't print it twice.
+            if !r.ok, !(log.last ?? "").contains(r.error ?? "install failed") {
+                say("! \(r.error ?? "install failed")")
+            }
             installResult = r.ok
         } catch {
             say("! \(error.localizedDescription)")
