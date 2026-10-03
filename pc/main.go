@@ -263,13 +263,15 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 		if err == nil {
 			break
 		}
-		if why == "" || attempt == 3 {
+		if why == "" || attempt == 5 {
 			return App{}, fmt.Errorf("install failed: %v (full log: %s)", err, logFile)
 		}
-		msg := fmt.Sprintf("%s - retrying in 20s (%d/3)", why, attempt+1)
+		// Connections here can drop for a minute or two; back off further each time.
+		wait := time.Duration(15*attempt) * time.Second
+		msg := fmt.Sprintf("%s - retrying in %ds (%d/5)", why, int(wait.Seconds()), attempt+1)
 		fmt.Fprintln(out, "  "+msg)
 		progLine(msg)
-		time.Sleep(20 * time.Second)
+		time.Sleep(wait)
 	}
 
 	base := strings.TrimSuffix(filepath.Base(ipa), filepath.Ext(ipa))
@@ -475,18 +477,18 @@ func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 // times out or drops) a few times before giving up.
 func download(src, dst string) error {
 	var err error
-	for attempt := 1; attempt <= 4; attempt++ {
+	for attempt := 1; attempt <= 5; attempt++ {
 		if err = downloadOnce(src, dst); err == nil {
 			return nil
 		}
-		if strings.HasPrefix(err.Error(), "server said 4") || attempt == 4 {
+		if strings.HasPrefix(err.Error(), "server said 4") || attempt == 5 {
 			break // a missing file won't appear by retrying
 		}
-		msg := fmt.Sprintf("Download failed (%v) - retrying in %ds (%d/4)", shortNetErr(err), attempt*5, attempt+1)
+		msg := fmt.Sprintf("Download failed (%v) - retrying in %ds (%d/5)", shortNetErr(err), attempt*10, attempt+1)
 		fmt.Println("[ipakill] " + msg)
 		progLine(msg)
 		progBytes(0, 0)
-		time.Sleep(time.Duration(attempt*5) * time.Second)
+		time.Sleep(time.Duration(attempt*10) * time.Second)
 	}
 	return err
 }
