@@ -234,18 +234,18 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	logf, _ := os.Create(logFile)
 	defer logf.Close()
 	var bundle string
-	// SideStore's anisette server (Apple login helper codes) sometimes answers
-	// with garbage for a minute; that is worth waiting out instead of failing.
+	// Network trouble (SideStore's anisette server answering garbage, Apple's
+	// or GitHub's servers not answering) is worth waiting out instead of failing.
 	for attempt := 1; ; attempt++ {
-		var anisette bool
-		bundle, anisette, err = runPlumesign(args, out, logf)
+		var why string
+		bundle, why, err = runPlumesign(args, out, logf)
 		if err == nil {
 			break
 		}
-		if !anisette || attempt == 3 {
+		if why == "" || attempt == 3 {
 			return App{}, fmt.Errorf("install failed: %v (full log: %s)", err, logFile)
 		}
-		msg := fmt.Sprintf("Apple's login helper server didn't answer properly - retrying in 20s (%d/3)", attempt+1)
+		msg := fmt.Sprintf("%s - retrying in 20s (%d/3)", why, attempt+1)
 		fmt.Fprintln(out, "  "+msg)
 		progLine(msg)
 		time.Sleep(20 * time.Second)
@@ -271,16 +271,16 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	return app, nil
 }
 
-// runPlumesign runs one sign + install, streaming its output; anisette
-// reports whether it failed on the anisette server.
-func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, anisette bool, err error) {
+// runPlumesign runs one sign + install, streaming its output. why is set
+// when it failed on something temporary that a retry may get past.
+func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, why string, err error) {
 	var reason string
 	cmd := exec.Command(plumesign, args...)
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
 	pipe, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	sc := bufio.NewScanner(pipe)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
@@ -288,8 +288,15 @@ func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, 
 		line := sc.Text()
 		fmt.Fprintln(logf, line)
 		progLine(line)
-		if strings.Contains(line, "Anisette error") {
-			anisette = true
+		switch {
+		case strings.Contains(line, "Anisette error"):
+			why = "Apple's login helper server didn't answer properly"
+		case strings.Contains(line, "tcp connect error"), strings.Contains(line, "os error 10060"),
+			strings.Contains(line, "timed out"), strings.Contains(line, "connection reset"),
+			strings.Contains(line, "error sending request"):
+			if why == "" {
+				why = "The PC lost its connection to Apple"
+			}
 		}
 		if strings.HasPrefix(line, "Error: ") && reason == "" {
 			reason = strings.TrimPrefix(line, "Error: ")
@@ -306,11 +313,11 @@ func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, 
 	}
 	if err := cmd.Wait(); err != nil {
 		if reason != "" {
-			return bundle, anisette, fmt.Errorf("%s", reason)
+			return bundle, why, fmt.Errorf("%s", reason)
 		}
-		return bundle, anisette, err
+		return bundle, why, err
 	}
-	return bundle, anisette, nil
+	return bundle, why, nil
 }
 
 func keyFor(a App) string {
