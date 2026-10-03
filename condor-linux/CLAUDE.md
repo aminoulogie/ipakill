@@ -114,6 +114,15 @@ anything about OS options, firmware or flashing).
       Y 0..1200 in native fb orientation, mapped through the same Rot90 → strokes follow the
       finger. Follow-up: some touch-downs arrive with raw Y=0 in their first frame (logged as
       logical x=1199) → stray dot at the right edge; wait for both axes before drawing.
+- [x] `condor term` (2026-10-03): bridges to condor-init's root shell (127.0.0.1:2323) via
+      `adb forward`; requires takeover mode (condor-init running). Windows sends CRLF; term.go
+      strips `\r` from stdin or every command arrives as "id\r" (": not found"). `cli/term.go`.
+- [x] Clock sync (2026-10-03): tablet boots at **2013** (no RTC battery), breaking apk/TLS.
+      `condor shell "su -c 'date -s YYYYMMDD.HHMMSS'"` with the arg as **local** time (tablet is
+      fixed CET = UTC+1, no DST), so feed UTC+1h. Verify with `date +%s` (CLOCK_REALTIME, == PC)
+      or the `date -u` string; **`date -u +%s` is a toolbox bug** (double-applies the offset, reads
+      1h off). Resets on every reboot → re-run each takeover (candidate to automate in condor-init).
+- [ ] Alpine next: minirootfs (x86) onto microSD, chroot from takeover (apk needs the clock set).
 - [ ] Milestone 3: real text with a font
 - [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
 
