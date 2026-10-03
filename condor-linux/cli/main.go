@@ -11,7 +11,8 @@
 //	condor recon                   read-only inspection + backup for the Linux project
 //	condor backup [folder]         copy the tablet's internal storage (/sdcard) to the PC
 //	condor reboot [bootloader|recovery]
-//	condor setup                   install so 'condor' works in any cmd window (also runs on double-click)
+//	condor bootimg info|unpack|pack  Intel OSIP boot images (files on the PC only)
+//	condor setup                  install so 'condor' works in any cmd window (also runs on double-click)
 package main
 
 import (
@@ -73,6 +74,12 @@ func main() {
 		}
 		return
 	}
+	if cmd == "bootimg" { // works on files only, no tablet needed
+		if err := bootimg(args); err != nil {
+			fail(err)
+		}
+		return
+	}
 	var err error
 	if adbPath, err = findADB(); err != nil {
 		fail(err)
@@ -120,6 +127,9 @@ func usage() {
   condor recon                   read-only inspection + backup (Linux project)
   condor backup [folder]         copy the tablet's files (/sdcard) to the PC
   condor reboot [bootloader|recovery]
+  condor bootimg info <img>              show an Intel boot image's layout
+  condor bootimg unpack <img> [dir]      split it into cmdline, kernel, ramdisk...
+  condor bootimg pack <dir> <out.img>    rebuild an image from an unpacked folder
   condor setup                   make 'condor' work in any cmd window
 `)
 }
@@ -565,10 +575,13 @@ func recon() error {
 	save("storage/mounts.txt", "cat /proc/mounts")
 	links := save("storage/dev-block-links.txt", asRoot("ls -lR /dev/block"))
 	uevents := save("storage/partition-uevents.txt", "cat /sys/block/mmcblk0/mmcblk0p*/uevent")
+	geom := save("storage/partition-geometry.txt", `for p in /sys/block/mmcblk0/mmcblk0p*; do echo ${p##*/} $(cat $p/start) $(cat $p/size); done`)
 	parts := partitionNames(uevents, links)
+	addGeometry(parts, geom)
 	var ptable strings.Builder
+	fmt.Fprintf(&ptable, "%-10s %-22s %10s %9s\n", "name", "device", "start", "size MB")
 	for _, p := range parts {
-		fmt.Fprintf(&ptable, "%-14s %s\n", p.name, p.dev)
+		fmt.Fprintf(&ptable, "%-10s %-22s %10d %9d\n", p.name, p.dev, p.start, p.sectors/2048)
 	}
 	save("storage/fstab-rootfs.txt", "cat /fstab.*")
 	save("storage/df.txt", "df")
@@ -600,39 +613,61 @@ func recon() error {
 	if _, err := adb("pull", "/proc/config.gz", filepath.Join(out, "kernel", "config.gz")); err == nil {
 		fmt.Println("    pulled /proc/config.gz (full kernel config)")
 	}
+	// The init scripts and fstab are root-only (0640), so 'adb pull' would save empty files.
 	for _, f := range strings.Fields(sh("ls /")) {
 		if strings.HasSuffix(f, ".rc") || strings.HasPrefix(f, "fstab") || strings.HasPrefix(f, "ueventd") {
-			os.MkdirAll(filepath.Join(out, "pulled", "rootfs"), 0o755)
-			adb("pull", "/"+f, filepath.Join(out, "pulled", "rootfs", f))
+			save("pulled/rootfs/"+f, asRoot("cat /"+f))
 		}
 	}
 
+	var osipTable strings.Builder
 	if root != "no root" {
-		step("backing up boot partitions (read-only dd from the tablet)")
+		step("backing up boot images and partitions (read-only dd from the tablet)")
+		dumped := map[string]bool{}
 		dump := func(name, ddArgs string) {
+			if dumped[name] {
+				name = name + "-2"
+			}
+			dumped[name] = true
 			tmp := "/sdcard/condor-" + name + ".img"
-			sh(asRoot("dd " + ddArgs + " of=" + tmp + " bs=4096"))
+			sh(asRoot("dd " + ddArgs + " of=" + tmp))
 			dst := filepath.Join(out, "dumps", name+".img")
 			os.MkdirAll(filepath.Dir(dst), 0o755)
 			if _, err := adb("pull", tmp, dst); err == nil {
 				if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
 					fmt.Printf("    %-12s -> dumps/%s.img (%d KB)\n", name, name, fi.Size()/1024)
 				}
+			} else {
+				fmt.Printf("    %-12s FAILED\n", name)
 			}
 			sh("rm " + tmp)
 		}
-		// The first 4 MB of the eMMC hold the partition table and Intel's OSIP boot header.
-		dump("mmcblk0-head", "if=/dev/block/mmcblk0 count=1024")
-		found := 0
-		for _, p := range parts {
-			switch strings.ToLower(p.name) {
-			case "boot", "recovery", "fastboot", "droidboot", "misc", "osloader", "esp", "panic":
-				dump(strings.ToLower(p.name), "if="+p.dev)
-				found++
+		// The first 4 MB of the eMMC hold the GPT and Intel's OSIP header (sector 0).
+		dump("mmcblk0-head", "if=/dev/block/mmcblk0 bs=4096 count=1024")
+		// On Clover Trail+ boot, recovery and droidboot aren't partitions: the OSIP header
+		// points at them by sector, inside the 'reserved' partition.
+		head, _ := os.ReadFile(filepath.Join(out, "dumps", "mmcblk0-head.img"))
+		if entries, err := parseOSIP(head); err != nil {
+			fmt.Println("    OSIP:", err)
+		} else {
+			fmt.Fprintf(&osipTable, "%-10s %6s %10s %9s %10s %10s\n", "image", "attr", "start", "size KB", "load", "entry")
+			for _, e := range entries {
+				fmt.Fprintf(&osipTable, "%-10s %#6x %10d %9d %#10x %#10x\n", e.name(), e.attr, e.start, e.blocks/2, e.load, e.entry)
+				dump(e.name(), fmt.Sprintf("if=/dev/block/mmcblk0 bs=512 skip=%d count=%d", e.start, e.blocks))
 			}
 		}
-		if found == 0 {
-			fmt.Println("    no named boot partitions found; send storage/partition-uevents.txt and dev-block-links.txt")
+		for _, p := range parts {
+			switch strings.ToLower(p.name) {
+			case "boot", "recovery", "fastboot", "droidboot", "osloader", "esp",
+				"reserved", "panic", "factory", "misc":
+				dump(strings.ToLower(p.name), "if="+p.dev+" bs=4096")
+			}
+		}
+		// eMMC hardware boot areas: on Intel MID they hold the IFWI firmware.
+		for _, b := range []string{"mmcblk0boot0", "mmcblk0boot1"} {
+			if !strings.Contains(sh("ls /dev/block/"+b), "No such") {
+				dump(b, "if=/dev/block/"+b+" bs=4096")
+			}
 		}
 	} else {
 		fmt.Println("    no root: skipping partition dumps (boot.img can come from the stock firmware instead)")
@@ -643,7 +678,8 @@ func recon() error {
 	fmt.Fprintf(&sum, "Kernel:   %s\nAndroid:  %s\nBuild:    %s\nPlatform: %s\nRoot:     %s\nCmdline:  %s\n",
 		kver, propOf(props, "ro.build.version.release"), propOf(props, "ro.build.display.id"),
 		propOf(props, "ro.board.platform"), root, cmdline)
-	fmt.Fprintf(&sum, "\n-- Partitions --\n%s\n-- Framebuffers --\n%s\n\n-- Input devices --\n", ptable.String(), fb)
+	fmt.Fprintf(&sum, "\n-- Partitions (start in 512-byte sectors) --\n%s\n-- OSIP boot images (sector 0) --\n%s\n-- Framebuffers --\n%s\n\n-- Input devices --\n",
+		ptable.String(), osipTable.String(), fb)
 	for _, l := range strings.Split(inputs, "\n") {
 		if strings.HasPrefix(l, "N:") || strings.HasPrefix(l, "H:") {
 			sum.WriteString(l + "\n")
@@ -666,7 +702,26 @@ func recon() error {
 	return nil
 }
 
-type partition struct{ name, dev string }
+type partition struct {
+	name, dev      string
+	start, sectors int64 // in 512-byte sectors, from sysfs
+}
+
+// addGeometry fills start/size from "mmcblk0pN <start> <size>" lines.
+func addGeometry(parts []partition, geom string) {
+	for _, l := range strings.Split(geom, "\n") {
+		var dev string
+		var start, size int64
+		if n, _ := fmt.Sscan(l, &dev, &start, &size); n != 3 {
+			continue
+		}
+		for i := range parts {
+			if filepath.Base(parts[i].dev) == dev {
+				parts[i].start, parts[i].sectors = start, size
+			}
+		}
+	}
+}
 
 // partitionNames maps partition names to /dev/block nodes, from sysfs uevents
 // (PARTNAME=/DEVNAME= pairs) and, failing that, from by-name/by-label symlinks.
@@ -676,7 +731,7 @@ func partitionNames(uevents, links string) []partition {
 	add := func(name, dev string) {
 		if name != "" && dev != "" && !seen[name] {
 			seen[name] = true
-			parts = append(parts, partition{name, dev})
+			parts = append(parts, partition{name: name, dev: dev})
 		}
 	}
 	var name, dev string

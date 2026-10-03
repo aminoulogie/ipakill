@@ -75,9 +75,15 @@ chip ROM → IFWI (firmware, SCU/PMIC) → OSIP header on eMMC → droidboot (fa
         → boot.img (Intel format: OSIP + cmdline + bootstub + bzImage + initrd) → /init
         └ key combo → recovery.img
 ```
-- Standard `mkbootimg`/`abootimg` won't handle Intel images; need Intel-aware unpack/pack.
-- Unknowns to test in Phase 2: does droidboot support `fastboot boot`? Does it verify
-  signatures on boot/recovery?
+- Standard `mkbootimg`/`abootimg` won't handle Intel images; `condor bootimg` does (verified
+  byte-identical on this tablet's and the Ramos i9 images). Layout and OSIP slot map: CLAUDE.md.
+- `fastboot boot`: **not supported** (droidboot 0.5: "boot command stubbed on this platform").
+- Signatures: every image carries a signed Intel manifest covering the exact payload size
+  (header + bootstub + kernel + ramdisk). Whether the firmware enforces it is the open
+  question; hints toward yes: OSIP attribute 0x00 = "signed kernel", Ramos twin ships a
+  PROD IFWI, `fastboot boot` deliberately stubbed. Test: modified recovery slot via dd.
+- The Ramos i9 factory package (Intel flash tool: IFWI, FW/OS DnX, droidboot, boot, recovery,
+  system, partition.tbl) matches this tablet's GPT exactly. Its flash.xml erases `factory`.
 - Boot menu keys (unconfirmed): power off, then **Vol Up + Power** or **Vol Down + Power**.
 - Android 4.2 has no Factory Reset Protection: reset → straight to setup.
 
