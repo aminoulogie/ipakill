@@ -21,6 +21,19 @@ anything about OS options, firmware or flashing).
 - Battery is old; it showed the "battery too low" screen and needed a long charge.
   It boots (Condor logo → Android). Screen is protected by a **pattern lock**.
 
+## Recon findings (2026-10-03)
+- Serial CLV13E2A6BD, build `Condor_TRA-901G_20151127`, platform `clovertrail`, ABI x86, API 17.
+- Kernel **3.4.34** SMP PREEMPT (built 2015-11-27, gcc 4.6) → Go (needs ≥3.2) and Alpine OK.
+- Root: `su` works over adb. `/proc/cmdline` and dmesg need su.
+- Display: framebuffer `psbfb` (fb0, Intel MID PowerVR/psb driver), GPU module `sgx`.
+- Touch: **Goodix Capacitive TouchScreen** (event2). Keys: `gpio-keys` (event1, volume),
+  `mid_powerbtn` (event3). Accelerometer `bma250` (event0). Audio jack event4.
+- Wi-Fi/BT: Broadcom **bcmdhd** (SDIO, mmc2, wlan0 + p2p0), `cfg80211`, `bcm_bt_lpm`.
+  Modules live in `/lib/modules` (ramdisk); firmware in `/system/etc/firmware`, `/system/etc/wifi`.
+- Cameras: ov5645 (rear), ov2675 (front) via atomisp.
+- Storage: ~11 GB /data (internal storage shares /data). No `/dev/block/by-name`.
+- Windows adb returns `\r\r\n` from this tablet; the CLI strips every `\r`.
+
 ## Decisions already made (don't re-litigate)
 - Windows 8/10, Kindle OS, Android 5+: **impossible** on this chip (see KNOWLEDGE.md §2).
 - Plan: keep Condor's kernel + drivers, replace everything above it. Current direction is
@@ -33,9 +46,12 @@ anything about OS options, firmware or flashing).
 ## Current status
 - [x] Phase 0: `condor` CLI built (doctor, info, books, install, apps, shell, screenshot, recon, reboot, setup)
 - [x] Tablet charges and boots to Android
-- [ ] Back up user files (MTP / microSD), since the pattern lock blocks adb
-- [ ] Factory reset (recovery menu), photograph the boot/droidboot menu
-- [ ] Enable USB debugging → `condor doctor` → `condor recon` → read SUMMARY.txt
+- [x] USB data works (needed reseating/another cable; first tries gave "Device Descriptor Request Failed")
+- [x] adb already enabled + PC authorized, works through the pattern lock; **su root available**
+- [x] First `condor recon` (2026-10-03): kernel, modules, firmware pulled. Partition dumps
+      were skipped because /dev/block/by-name doesn't exist. Fixed in CLI; re-run recon.
+- [ ] `condor backup` user files, then optional factory reset
+- [ ] Re-run `condor recon` with the fixed CLI → boot/recovery/fastboot dumps + partition table
 - [ ] Phase 2 boot gate: unpack/repack boot.img, `fastboot boot` unchanged image
 - [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
 

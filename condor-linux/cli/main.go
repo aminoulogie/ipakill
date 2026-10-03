@@ -9,6 +9,7 @@
 //	condor shell [command...]      open a shell on the tablet, or run one command
 //	condor screenshot [out.png]    save the tablet's screen to a PNG
 //	condor recon                   read-only inspection + backup for the Linux project
+//	condor backup [folder]         copy the tablet's internal storage (/sdcard) to the PC
 //	condor reboot [bootloader|recovery]
 //	condor setup                   install so 'condor' works in any cmd window (also runs on double-click)
 package main
@@ -93,6 +94,8 @@ func main() {
 		err = screenshot(args)
 	case "recon":
 		err = recon()
+	case "backup":
+		err = backup(args)
 	case "reboot":
 		err = reboot(args)
 	default:
@@ -115,6 +118,7 @@ func usage() {
   condor shell [command...]      shell on the tablet (or run one command)
   condor screenshot [out.png]    save the tablet's screen
   condor recon                   read-only inspection + backup (Linux project)
+  condor backup [folder]         copy the tablet's files (/sdcard) to the PC
   condor reboot [bootloader|recovery]
   condor setup                   make 'condor' work in any cmd window
 `)
@@ -246,7 +250,7 @@ func downloadTools() error {
 // adb runs adb and returns its output with Android 4.2's CRLF line endings normalized.
 func adb(args ...string) (string, error) {
 	out, err := exec.Command(adbPath, args...).CombinedOutput()
-	return strings.ReplaceAll(string(out), "\r\n", "\n"), err
+	return strings.ReplaceAll(string(out), "\r", ""), err
 }
 
 // sh runs a command in the tablet's shell. Android 4.2 doesn't pass exit codes through adb.
@@ -479,6 +483,23 @@ func screenshot(args []string) error {
 	return nil
 }
 
+func backup(args []string) error {
+	if err := needDevice(); err != nil {
+		return err
+	}
+	dst := "condor-files-" + time.Now().Format("20060102-150405")
+	if len(args) > 0 {
+		dst = args[0]
+	}
+	os.MkdirAll(dst, 0o755)
+	fmt.Println("copying /sdcard to", dst, "(this can take a while)...")
+	if err := adbLive("pull", "/sdcard/", dst); err != nil {
+		return fmt.Errorf("backup incomplete: %w (re-run to retry)", err)
+	}
+	fmt.Println("done:", dst)
+	return nil
+}
+
 func reboot(args []string) error {
 	if err := needDevice(); err != nil {
 		return err
@@ -509,14 +530,30 @@ func recon() error {
 	}
 	step := func(s string) { fmt.Println("==>", s) }
 
+	step("root check")
+	root := "no root"
+	if strings.Contains(sh("id"), "uid=0") {
+		root = "adb runs as root"
+	} else if strings.Contains(sh("su -c id"), "uid=0") {
+		root = "su"
+	}
+	fmt.Println("    " + root)
+	// asRoot wraps a command in su when that's how we get root; some files are root-only.
+	asRoot := func(cmd string) string {
+		if root == "su" {
+			return "su -c '" + cmd + "'"
+		}
+		return cmd
+	}
+
 	step("system and kernel")
 	props := save("system/getprop.txt", "getprop")
 	save("system/build.prop", "cat /system/build.prop")
 	kver := save("kernel/version.txt", "cat /proc/version")
-	cmdline := save("kernel/cmdline.txt", "cat /proc/cmdline")
+	cmdline := save("kernel/cmdline.txt", asRoot("cat /proc/cmdline"))
 	for name, cmd := range map[string]string{
 		"kernel/cpuinfo.txt": "cat /proc/cpuinfo", "kernel/meminfo.txt": "cat /proc/meminfo",
-		"kernel/dmesg.txt": "dmesg", "kernel/modules-loaded.txt": "cat /proc/modules",
+		"kernel/dmesg.txt": asRoot("dmesg"), "kernel/modules-loaded.txt": "cat /proc/modules",
 		"kernel/filesystems.txt": "cat /proc/filesystems", "kernel/devices.txt": "cat /proc/devices",
 		"kernel/iomem.txt": "cat /proc/iomem", "kernel/interrupts.txt": "cat /proc/interrupts",
 	} {
@@ -526,8 +563,14 @@ func recon() error {
 	step("storage and partitions")
 	save("storage/partitions.txt", "cat /proc/partitions")
 	save("storage/mounts.txt", "cat /proc/mounts")
-	byName := save("storage/by-name.txt", "ls -l /dev/block/by-name")
-	byPlat := save("storage/by-name-platform.txt", "ls -lR /dev/block/platform")
+	links := save("storage/dev-block-links.txt", asRoot("ls -lR /dev/block"))
+	uevents := save("storage/partition-uevents.txt", "cat /sys/block/mmcblk0/mmcblk0p*/uevent")
+	parts := partitionNames(uevents, links)
+	var ptable strings.Builder
+	for _, p := range parts {
+		fmt.Fprintf(&ptable, "%-14s %s\n", p.name, p.dev)
+	}
+	save("storage/fstab-rootfs.txt", "cat /fstab.*")
 	save("storage/df.txt", "df")
 
 	step("display, touch, sound, wifi, buses")
@@ -564,31 +607,32 @@ func recon() error {
 		}
 	}
 
-	step("root check")
-	root := "no root"
-	if strings.Contains(sh("id"), "uid=0") {
-		root = "adb runs as root"
-	} else if strings.Contains(sh("su -c id"), "uid=0") {
-		root = "su"
-	}
 	if root != "no root" {
-		step("backing up boot partitions (" + root + ")")
-		for _, p := range []string{"boot", "recovery", "fastboot", "droidboot", "misc"} {
-			dev := findPartition(p, byName+"\n"+byPlat)
-			if dev == "" {
-				continue
-			}
-			dd := "dd if=" + dev + " of=/sdcard/condor-" + p + ".img bs=4096"
-			if root == "su" {
-				dd = "su -c '" + dd + "'"
-			}
-			sh(dd)
-			dst := filepath.Join(out, "dumps", p+".img")
+		step("backing up boot partitions (read-only dd from the tablet)")
+		dump := func(name, ddArgs string) {
+			tmp := "/sdcard/condor-" + name + ".img"
+			sh(asRoot("dd " + ddArgs + " of=" + tmp + " bs=4096"))
+			dst := filepath.Join(out, "dumps", name+".img")
 			os.MkdirAll(filepath.Dir(dst), 0o755)
-			if _, err := adb("pull", "/sdcard/condor-"+p+".img", dst); err == nil {
-				fmt.Printf("    %s (%s) -> dumps/%s.img\n", p, dev, p)
+			if _, err := adb("pull", tmp, dst); err == nil {
+				if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
+					fmt.Printf("    %-12s -> dumps/%s.img (%d KB)\n", name, name, fi.Size()/1024)
+				}
 			}
-			sh("rm /sdcard/condor-" + p + ".img")
+			sh("rm " + tmp)
+		}
+		// The first 4 MB of the eMMC hold the partition table and Intel's OSIP boot header.
+		dump("mmcblk0-head", "if=/dev/block/mmcblk0 count=1024")
+		found := 0
+		for _, p := range parts {
+			switch strings.ToLower(p.name) {
+			case "boot", "recovery", "fastboot", "droidboot", "misc", "osloader", "esp", "panic":
+				dump(strings.ToLower(p.name), "if="+p.dev)
+				found++
+			}
+		}
+		if found == 0 {
+			fmt.Println("    no named boot partitions found; send storage/partition-uevents.txt and dev-block-links.txt")
 		}
 	} else {
 		fmt.Println("    no root: skipping partition dumps (boot.img can come from the stock firmware instead)")
@@ -599,7 +643,7 @@ func recon() error {
 	fmt.Fprintf(&sum, "Kernel:   %s\nAndroid:  %s\nBuild:    %s\nPlatform: %s\nRoot:     %s\nCmdline:  %s\n",
 		kver, propOf(props, "ro.build.version.release"), propOf(props, "ro.build.display.id"),
 		propOf(props, "ro.board.platform"), root, cmdline)
-	fmt.Fprintf(&sum, "\n-- Partitions by name --\n%s\n\n-- Framebuffers --\n%s\n\n-- Input devices --\n", byName, fb)
+	fmt.Fprintf(&sum, "\n-- Partitions --\n%s\n-- Framebuffers --\n%s\n\n-- Input devices --\n", ptable.String(), fb)
 	for _, l := range strings.Split(inputs, "\n") {
 		if strings.HasPrefix(l, "N:") || strings.HasPrefix(l, "H:") {
 			sum.WriteString(l + "\n")
@@ -622,14 +666,42 @@ func recon() error {
 	return nil
 }
 
-// findPartition finds /dev/block/... for a partition name in `ls -l` symlink listings.
-func findPartition(name, listing string) string {
-	for _, l := range strings.Split(listing, "\n") {
-		if i := strings.Index(l, " "+name+" -> "); i >= 0 {
-			return strings.TrimSpace(l[i+len(name)+5:])
+type partition struct{ name, dev string }
+
+// partitionNames maps partition names to /dev/block nodes, from sysfs uevents
+// (PARTNAME=/DEVNAME= pairs) and, failing that, from by-name/by-label symlinks.
+func partitionNames(uevents, links string) []partition {
+	var parts []partition
+	seen := map[string]bool{}
+	add := func(name, dev string) {
+		if name != "" && dev != "" && !seen[name] {
+			seen[name] = true
+			parts = append(parts, partition{name, dev})
 		}
 	}
-	return ""
+	var name, dev string
+	for _, l := range strings.Split(uevents+"\n", "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(l), "=")
+		switch k {
+		case "PARTNAME":
+			name = v
+		case "DEVNAME":
+			dev = "/dev/block/" + strings.TrimPrefix(v, "block/")
+		case "MAJOR", "":
+			add(name, dev)
+			name, dev = "", ""
+		}
+	}
+	add(name, dev)
+	for _, l := range strings.Split(links, "\n") {
+		if i := strings.Index(l, " -> /dev/block/"); i >= 0 {
+			f := strings.Fields(l[:i])
+			if len(f) > 0 {
+				add(f[len(f)-1], strings.TrimSpace(l[i+4:]))
+			}
+		}
+	}
+	return parts
 }
 
 func propOf(getprop, key string) string {
