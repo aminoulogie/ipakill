@@ -233,6 +233,23 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       /data/media/0/Books. HTTPS via condor-init's proxy with Alpine's CA bundle. Gutenberg OPFs
       have `<meta property>text</meta>`: no xml.HTMLAutoClose in the epub package. Paid-book
       page previews (Google's viewer) need a browser: we show description + price instead.
+- [x] **Reader = Soma's reader** (reader.go core/layout/cache, readerui.go gestures+overlays,
+      marks.go, lookup.go, wordbook.go, rtext.go, shelf.go): themes night/paper/sepia with Soma's
+      colours and mark inks; 5 fonts (Liberation Serif, Latin Modern, DejaVu Serif/Sans, Go,
+      all with DejaVu Sans fallback for Arabic), size, line spacing 1.2-2.2, margins, justified
+      text. Line by line (Soma's lineFocus): page dimmed at 0.8 except the lit line in the
+      theme's mark colour; tap = next line, left sixth = previous, past the ends turns the
+      page; long press = jump to that line + select the word; volume keys step lines; a step
+      only redraws two strips (refreshLines, pixel-identical to a full redraw, test). Long
+      press selects (hold 350 ms), drag extends; menu: highlight (5 Soma inks, overlapping marks
+      merge, remove), look up (Wiktionary keyed by the book's dc:language, Datamuse fallback
+      for English), translate (MyMemory, AR FR EN ES DE IT PT TR RU; Arabic shaped with
+      presentation forms + right to left, no tashkeel), keep (word book with sentence; meaning
+      filled in by a background lookup). Contents (chapter titles read in the background),
+      highlights list (jump/delete), reading clock (gaps < 2 min count) + daily goal on the shelf,
+      books finished per year. Words app: list, word page (type a meaning), review at 2/7/30
+      days (Soma's review-queue). Arabic books lay out right to left. No copy (no clipboard here).
+      Tests hold drawMu like the touch loop (key() takes it itself: pressKey helper).
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

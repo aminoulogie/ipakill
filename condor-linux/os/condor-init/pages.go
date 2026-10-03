@@ -10,6 +10,10 @@ import (
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
+
+	"github.com/go-fonts/dejavu/dejavusans"
+	"github.com/go-fonts/dejavu/dejavusansbold"
 
 	"condor-init/ui"
 )
@@ -26,6 +30,7 @@ const (
 	modeBooks  // the shelf
 	modeReader // a book open
 	modeStore  // free books to download
+	modeWords  // the word book
 )
 
 type button struct {
@@ -71,9 +76,16 @@ func loadPageFonts() (*pageFonts, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Go Mono, with DejaVu Sans for what it lacks (Arabic titles in the store and on the shelf).
+	sans, sansBold := parseFont("dejavusans", dejavusans.TTF), parseFont("dejavusansbold", dejavusansbold.TTF)
 	mk := func(f *opentype.Font, size float64) font.Face {
+		fb := sans
+		if f == bold {
+			fb = sansBold
+		}
 		face, _ := opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-		return ui.Cache(face)
+		fbFace, _ := opentype.NewFace(fb, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
+		return ui.Cache(ui.Fallback([]font.Face{face, fbFace}, []*sfnt.Font{f, fb}))
 	}
 	return &pageFonts{title: mk(bold, 64), body: mk(reg, 36), bold: mk(bold, 38), small: mk(reg, 28)}, nil
 }
@@ -105,7 +117,7 @@ func newPen(w, h int, f *pageFonts) *pen {
 }
 
 func (pn *pen) text(face font.Face, c color.Color, x, baseline int, s string) {
-	ui.DrawText(pn.p.img, face, x, baseline, c, s)
+	ui.DrawText(pn.p.img, face, x, baseline, c, visual(s))
 }
 
 // heading writes a section title and moves down.
@@ -124,7 +136,7 @@ func (pn *pen) line(face font.Face, c color.Color, s string) {
 // btn draws a button at r with a centred label and registers it.
 func (pn *pen) btn(id, label string, r image.Rectangle, bg, fg color.RGBA) {
 	ui.RoundRect(pn.p.img, r, 18, bg)
-	ui.DrawTextCentered(pn.p.img, pn.f.bold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, label)
+	ui.DrawTextCentered(pn.p.img, pn.f.bold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, visual(label))
 	pn.p.buttons = append(pn.p.buttons, button{id, r})
 }
 

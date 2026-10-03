@@ -164,7 +164,7 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 			break
 		}
 		y += lh
-		ui.DrawText(img, face, r.Min.X+pad, y, pgText, l)
+		ui.DrawText(img, face, r.Min.X+pad, y, pgText, visual(l))
 	}
-	ui.DrawText(img, c.pf.small, r.Min.X+pad, r.Max.Y-36, blend(pgText, bg, 0.3), clip(c.pf.small, it.author, r.Dx()-pad-18))
+	ui.DrawText(img, c.pf.small, r.Min.X+pad, r.Max.Y-36, blend(pgText, bg, 0.3), visual(clip(c.pf.small, it.author, r.Dx()-pad-18)))
 }

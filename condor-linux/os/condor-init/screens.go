@@ -77,6 +77,7 @@ func (c *console) launcherPage() *page {
 		{"settings", "settings", "display, wi-fi, battery, power"},
 		{"books", "books", "read EPUB books"},
 		{"store", "store", "free books from 4 libraries, with covers"},
+		{"words", "words", "your word book and today's review"},
 	}
 	for _, a := range apps {
 		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)
@@ -162,11 +163,13 @@ func (c *console) showPage() {
 		c.page = c.readerPage()
 	case c.mode == modeStore:
 		c.page = c.storePage()
+	case c.mode == modeWords:
+		c.page = c.wordsPage()
 	default:
 		c.page = c.launcherPage()
 	}
 	c.s.blitRGBA(c.page.img, 0, c.barH)
-	if c.mode == modeStore && c.store.typing {
+	if (c.mode == modeStore && c.store.typing) || (c.mode == modeWords && c.wui.edit) {
 		c.skb.draw()
 	}
 	c.s.Flush()
@@ -190,7 +193,7 @@ func (c *console) pageTap(x, y int) {
 	if id != c.confirm {
 		c.confirm = ""
 	}
-	if c.storeTap(id) || c.readerTap(id) {
+	if c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) {
 		return
 	}
 	switch id {

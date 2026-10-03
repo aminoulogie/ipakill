@@ -31,7 +31,8 @@ func TestConsoleRunsAShell(t *testing.T) {
 	c.kb.draw()
 	go c.run()
 	deadline := time.Now().Add(5 * time.Second)
-	for c.master == nil && time.Now().Before(deadline) {
+	started := func() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.master != nil }
+	for !started() && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	c.input([]byte("echo hello from condor; printf '\\033[32mgreen\\033[0m\\n'; ls /\n"))

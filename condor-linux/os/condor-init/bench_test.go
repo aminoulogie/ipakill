@@ -54,3 +54,37 @@ func BenchmarkBlit(b *testing.B) {
 		s.blitRGBA(img, 0, 64)
 	}
 }
+
+func BenchmarkReaderTurn(b *testing.B) {
+	dir := b.TempDir()
+	writeLongEPUB(&testing.T{}, filepath.Join(dir, "long.epub"))
+	old := bookDirs
+	bookDirs = []string{dir}
+	defer func() { bookDirs = old; os.Remove(libraryPath) }()
+	c := benchConsole(b)
+	c.openBookAt(filepath.Join(dir, "long.epub"))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c.book.page = i % 3
+		c.invalidatePage()
+		c.showPage()
+	}
+}
+
+func BenchmarkLineStep(b *testing.B) {
+	dir := b.TempDir()
+	writeLongEPUB(&testing.T{}, filepath.Join(dir, "long.epub"))
+	old := bookDirs
+	bookDirs = []string{dir}
+	defer func() { bookDirs = old; os.Remove(libraryPath) }()
+	c := benchConsole(b)
+	c.lib.Prefs.LineFocus = true
+	c.openBookAt(filepath.Join(dir, "long.epub"))
+	c.showPage()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		old := c.book.line
+		c.book.line = (old + 1) % 10
+		c.refreshLines(old, c.book.line)
+	}
+}

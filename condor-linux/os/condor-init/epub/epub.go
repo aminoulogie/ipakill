@@ -34,6 +34,7 @@ type Chapter struct {
 // Book is an opened EPUB.
 type Book struct {
 	Title, Author string
+	Language      string // e.g. "en", "fr" (lower case, region dropped); "" if unknown
 	CoverPath     string
 	Chapters      []Chapter
 	files         map[string]*zip.File
@@ -142,6 +143,7 @@ func ParseOPF(opfXML []byte, opfPath string) (*Book, error) {
 		}
 	}
 	b.Title, b.Author = dcText(d.Metadata.Inner, "title"), dcText(d.Metadata.Inner, "creator")
+	b.Language = strings.ToLower(strings.SplitN(strings.SplitN(dcText(d.Metadata.Inner, "language"), "-", 2)[0], "_", 2)[0])
 	// Cover: EPUB 3 properties, then EPUB 2 <meta name="cover">, then an item called "cover".
 	for _, id := range order {
 		if strings.Contains(" "+byID[id].properties+" ", " cover-image ") {

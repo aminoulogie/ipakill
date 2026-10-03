@@ -11,6 +11,7 @@ func TestGutenbergStyleOPF(t *testing.T) {
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>Frankenstein</dc:title>
+    <dc:language>en-GB</dc:language>
     <meta property="dcterms:modified">2024-01-01T00:00:00Z</meta>
     <meta name="cover" content="item1"/>
   </metadata>
@@ -24,7 +25,7 @@ func TestGutenbergStyleOPF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Chapters) != 1 || b.Title != "Frankenstein" || b.CoverPath != "OEBPS/cover.jpg" {
+	if len(b.Chapters) != 1 || b.Title != "Frankenstein" || b.CoverPath != "OEBPS/cover.jpg" || b.Language != "en" {
 		t.Fatalf("got %+v", b)
 	}
 	// The same with an opf: prefix on every element, which some generators write.
