@@ -45,6 +45,9 @@ enum SourceLoader {
         var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         for p in ["https://", "http://", "www."] where t.hasPrefix(p) { t.removeFirst(p.count) }
         guard t.lowercased().hasPrefix("github.com/") else { return nil }
+        // A source file hosted on GitHub (e.g. a release asset apps.json) is a
+        // source, not a repo to read releases from.
+        if t.lowercased().hasSuffix(".json") || t.contains("/releases/download/") { return nil }
         let parts = t.dropFirst("github.com/".count).split(separator: "/")
         guard parts.count >= 2 else { return nil }
         var repo = String(parts[1])
