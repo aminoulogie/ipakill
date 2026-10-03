@@ -4,7 +4,9 @@
 # Android's linker (/system/bin/linker) binds them to the real /system/lib libraries.
 set -e
 cd "$(dirname "$0")"
-T="-target i686-linux-android17 -fno-pic -fno-stack-protector -O2"
+# -mstackrealign: Android 4.2's libc calls main with the stack aligned to 4 bytes only, but
+# clang assumes 16 and uses aligned SSE moves (movaps) on it.
+T="-target i686-linux-android17 -fno-pic -fno-stack-protector -O2 -mstackrealign"
 mkdir -p stubs
 cat > stubs/libc.c <<'S'
 void __libc_init(){} int snprintf(){return 0;} long write(){return 0;} void *malloc(){return 0;}
