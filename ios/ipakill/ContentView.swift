@@ -1108,7 +1108,10 @@ struct IpakillPairView: View {
                             .foregroundColor(sync.online ? .green : .red)
                     }
                     TextField("PC address (192.168.1.20)", text: $sync.host)
-                        .keyboardType(.decimalPad)
+                        .keyboardType(.numbersAndPunctuation)  // decimalPad has a comma in many regions
+                        .onChange(of: sync.host) { h in
+                            if h.contains(",") { sync.host = h.replacingOccurrences(of: ",", with: ".") }
+                        }
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     TextField("Pairing code", text: $sync.code)

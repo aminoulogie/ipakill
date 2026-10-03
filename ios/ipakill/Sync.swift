@@ -201,7 +201,7 @@ final class Sync: ObservableObject {
     }
 
     private func url(_ path: String) -> URL? {
-        var h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        var h = host.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
         if h.hasPrefix("http://") { h.removeFirst(7) }
         if !h.contains(":") { h += ":7777" }
         return URL(string: "http://\(h)\(path)")
