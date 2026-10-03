@@ -10,5 +10,5 @@ if ($Ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { Write-Host "Which IP? condor-linux\g
 $ssh = @('-o', 'ConnectTimeout=8', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new')
 $bin = Join-Path $PSScriptRoot 'os\condor-gl\gltest'
 & scp @ssh $bin "root@${Ip}:/tmp/gltest"
-if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at $Ip?" -ForegroundColor Red; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at ${Ip}?" -ForegroundColor Red; exit 1 }
 & ssh @ssh "root@$Ip" "chmod 755 /tmp/gltest; /system/bin/stop surfaceflinger; sleep 1; /tmp/gltest 2>&1; echo exit code `$?"
