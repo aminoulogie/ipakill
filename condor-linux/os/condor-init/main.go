@@ -107,11 +107,15 @@ func main() {
 			go runHome(s)
 		} else {
 			drawMu.Lock()
+			c.drawBar()
 			c.kb.draw()
 			drawMu.Unlock()
 			go c.run()
 			go c.serve()
 			go c.touchLoop()
+			go c.statusLoop()
+			go c.keysLoop("mid_powerbtn")
+			go c.keysLoop("gpio-keys")
 		}
 	}
 	go runTunnel()

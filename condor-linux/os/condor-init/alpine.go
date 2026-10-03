@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // alpineRoot is where `condor alpine install` unpacks Alpine Linux. When it's there, the
@@ -31,6 +32,7 @@ var alpineConfig = map[string]string{
 	"/etc/profile.d/condor.sh": `PS1='[\u@\h \W]\$ '
 alias ll='ls -l'
 alias la='ls -la'
+export TZ=WAT-1
 export http_proxy=http://` + proxyAddr + ` https_proxy=http://` + proxyAddr + `
 export HTTP_PROXY=$http_proxy HTTPS_PROXY=$https_proxy no_proxy=localhost,127.0.0.1
 `,
@@ -67,6 +69,7 @@ func alpineBoot() {
 		log.Printf("wifi boot: %v", err)
 	}
 	log.Printf("wifi boot done")
+	syncClock()
 	startSSHD()
 }
 
@@ -85,3 +88,16 @@ func startSSHD() {
 
 // sshdStart makes host keys on first use and starts sshd unless it's already running.
 const sshdStart = "ssh-keygen -A >/dev/null 2>&1; pgrep -x sshd >/dev/null || /usr/sbin/sshd"
+
+// syncClock sets the real time from the internet (busybox ntpd, one shot). The tablet has no
+// clock battery, so without this the time is only roughly right (see fixClock).
+func syncClock() {
+	for try := 1; try <= 3; try++ {
+		if err := runInAlpine("/bin/sh", "-c", "ntpd -n -q -p pool.ntp.org"); err == nil {
+			log.Printf("clock set from pool.ntp.org: %s", time.Now().UTC().Format(time.RFC3339))
+			return
+		}
+		time.Sleep(time.Duration(try) * 10 * time.Second)
+	}
+	log.Printf("ntp: no answer; clock stays approximate")
+}

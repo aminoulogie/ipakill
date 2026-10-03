@@ -94,3 +94,18 @@ func setBacklight(percent int) {
 	}
 	log.Printf("backlight %d/%d", v, max)
 }
+
+// blankScreen powers the panel down (FB_BLANK_POWERDOWN) or back up.
+func blankScreen(s *Screen, off bool) {
+	f, ok := s.dev.(*os.File)
+	if !ok {
+		return
+	}
+	mode := uintptr(fbBlankUnblank)
+	if off {
+		mode = 4 // FB_BLANK_POWERDOWN
+	}
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioBlank, mode); e != 0 {
+		log.Printf("FBIOBLANK %d: %v", mode, e)
+	}
+}

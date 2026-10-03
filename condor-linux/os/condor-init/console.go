@@ -15,7 +15,6 @@ import (
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
 
 	"condor-init/vt"
 )
@@ -48,6 +47,10 @@ type console struct {
 	mu          sync.Mutex
 	master      *os.File // the shell's pty, nil between shells
 	kb          *keyboard
+	glyphs      map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
+	barH        int                      // status bar height at the top
+	screenOn    bool
+	brightness  int // percent
 	clients     map[net.Conn]bool
 }
 
@@ -71,8 +74,11 @@ func newConsole(s *Screen) (*console, error) {
 	m := reg.Metrics()
 	c := &console{s: s, reg: reg, bold: bold, cw: adv.Ceil(),
 		ch: (m.Ascent + m.Descent).Ceil() + 2, asc: m.Ascent.Ceil() + 1, clients: map[net.Conn]bool{}}
+	c.glyphs = map[glyphKey]*image.RGBA{}
+	c.barH = c.ch + 8
+	c.screenOn, c.brightness = true, 80
 	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
-	c.offX, c.offY = (s.W-cols*c.cw)/2, consolePad
+	c.offX, c.offY = (s.W-cols*c.cw)/2, c.barH+consolePad/2
 	c.t = vt.New(cols, rows)
 	c.t.Reply = c.input
 	if c.kb, err = newKeyboard(s, c.input, c.keyboardShown); err != nil {
@@ -85,7 +91,7 @@ func newConsole(s *Screen) (*console, error) {
 const consolePad = 16
 
 // rowsFor is how many text rows fit in a console area h pixels tall.
-func (c *console) rowsFor(h int) int { return (h - 2*consolePad) / c.ch }
+func (c *console) rowsFor(h int) int { return (h - c.barH - consolePad) / c.ch }
 
 // keyboardShown resizes the console around the on-screen keyboard (shown or hidden): the
 // grid, the shell's window size (programs get SIGWINCH), and a full redraw.
@@ -101,13 +107,7 @@ func (c *console) keyboardShown(visible bool) {
 		setWinsize(c.master, c.t.Cols, c.t.Rows)
 	}
 	c.mu.Unlock()
-	clear(c.s.buf)
-	c.s.markRows(0, c.s.fbH-1)
-	c.render()
-	if visible {
-		c.kb.draw()
-	}
-	c.s.Flush()
+	c.redrawAll()
 }
 
 // touchLoop feeds touches to the on-screen keyboard. It doesn't return.
@@ -116,6 +116,9 @@ func (c *console) touchLoop() {
 		err := readTouch("Goodix", c.s.fbW, c.s.fbH, c.s.rot, func(string, ...any) {}, func(pts []TouchPoint) {
 			drawMu.Lock()
 			defer drawMu.Unlock()
+			if !c.screenOn {
+				return // only the power button wakes the screen
+			}
 			for _, p := range pts {
 				c.kb.touch(p)
 			}
@@ -137,6 +140,9 @@ func colorOf(i uint8, def color.RGBA, bold bool) color.RGBA {
 
 // render draws the rows that changed and writes them to the screen. Callers hold drawMu.
 func (c *console) render() {
+	if !c.screenOn {
+		return // dirty marks stay; setScreen(true) redraws everything
+	}
 	rows := c.t.TakeDirty()
 	if len(rows) == 0 {
 		return
@@ -149,20 +155,7 @@ func (c *console) render() {
 			if x == cursor {
 				fg, bg = bg, consoleFG
 			}
-			r := image.Rect(x*c.cw, 0, (x+1)*c.cw, c.ch)
-			for py := r.Min.Y; py < r.Max.Y; py++ {
-				for px := r.Min.X; px < r.Max.X; px++ {
-					line.SetRGBA(px, py, bg)
-				}
-			}
-			if cell.Ch != ' ' && cell.Ch != 0 {
-				face := c.reg
-				if cell.Bold {
-					face = c.bold
-				}
-				d := font.Drawer{Dst: line, Src: image.NewUniform(fg), Face: face, Dot: fixed.P(x*c.cw, c.asc)}
-				d.DrawString(string(cell.Ch))
-			}
+			c.putGlyph(line, x*c.cw, cell.Ch, fg, bg, cell.Bold)
 		}
 		oy := c.offY + y*c.ch
 		for py := 0; py < c.ch; py++ {

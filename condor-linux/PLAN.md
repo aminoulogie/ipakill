@@ -55,16 +55,13 @@ on it; Alpine's musl and busybox are fine. It's minimal and "build it yourself" 
 | 12 | SSH over Wi-Fi (keys only), sshd at boot | `cli/ssh.go`, `alpine.go` |
 | 13 | One-step dev loop: `dev.cmd` builds, pushes, restarts | `dev.ps1` |
 | 14 | On-screen keyboard under the console (hide/show, resizes the shell) | `keyboard.go` |
+| 15 | Status bar, power button (screen off/on), volume = brightness, glyph cache, NTP | `bar.go`, `power.go`, `glyphs.go` |
 
 ## Next
 
 | # | Step | Done when | Notes |
 |---|---|---|---|
-| B | Glyph cache in the console renderer | `htop` doesn't make condor-init use much CPU | Render each (rune, colour, bold) once, reuse the pixels. |
-| C | Power button + backlight | power button blanks/unblanks the screen; brightness keys | `mid_powerbtn` is event3, `gpio-keys` (volume) event1; real suspend is unreliable on Intel MID, so blank instead. |
-| D | Battery and clock in a status line | always-visible battery % and time | `/sys/class/power_supply`; time zone is fixed WAT (UTC+1). |
 | E | **Books app** (the original goal) | open an EPUB from /data/alpine/root/books or the microSD, page through it by tap/volume keys | Go: EPUB = zip + XHTML; render with the `ui` text code; remember the page. |
-| F | Real clock | correct time after every boot | NTP over Wi-Fi at boot (`ntpd -q -p pool.ntp.org` in Alpine). |
 | G | microSD in Alpine | the card mounted at /mnt/sd | It's `/storage/sdcard_ext` in Android's namespace; bind it in. |
 
 ## Fallback ladder (if something breaks)

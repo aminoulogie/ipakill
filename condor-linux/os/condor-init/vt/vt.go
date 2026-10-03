@@ -491,3 +491,10 @@ func (t *Term) Resize(cols, rows int) {
 	t.dirty = make([]bool, rows)
 	t.markAll()
 }
+
+// MarkAll marks every row changed, so the next TakeDirty redraws the whole screen.
+func (t *Term) MarkAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.markAll()
+}

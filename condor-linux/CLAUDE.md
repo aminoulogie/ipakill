@@ -195,8 +195,13 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       layout (esc tab ctrl alt arrows / numbers / letters / sym layer), one-shot shift/ctrl/alt,
       commits on finger lift, bksp/arrows repeat; `hide` gives the console the full screen
       (73x56), any tap brings it back; the pty is resized (SIGWINCH) both ways.
-- [ ] Glyph cache in the console renderer (CPU)
-- [ ] Books app (EPUB reader), power button (screen off), backlight and battery in the UI
+- [x] Daily-use basics (2026-10-03): glyph cache (glyphs.go), status bar with time, Wi-Fi
+      address and battery (bar.go; battery = cw2015_battery, charger = smb347-mains/usb),
+      power button toggles the screen (backlight 0 + FBIOBLANK powerdown; touches ignored
+      while off), volume keys = brightness (power.go), NTP at boot after Wi-Fi (busybox ntpd),
+      shell TZ=WAT-1.
+- [ ] Books app (EPUB reader)
+- [ ] Auto screen-off after idle; microSD bind into Alpine
 
 Update this checklist as things are done.
 

@@ -27,6 +27,7 @@ func TestConsoleRunsAShell(t *testing.T) {
 	if c.t.Cols < 60 || c.t.Rows < 30 {
 		t.Fatalf("grid too small: %dx%d", c.t.Cols, c.t.Rows)
 	}
+	c.drawBar()
 	c.kb.draw()
 	go c.run()
 	deadline := time.Now().Add(5 * time.Second)

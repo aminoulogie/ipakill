@@ -74,3 +74,31 @@ func readTouch(name string, fbW, fbH int, rot Rotation, logf func(string, ...any
 		}
 	}
 }
+
+// readKeys reports every key event (EV_KEY) from the named input device.
+func readKeys(name string, handle func(code uint16, value int32)) error {
+	path, err := findInput(name)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	const evSize, evKey = 16, 1 // struct input_event on 32-bit x86
+	buf := make([]byte, evSize*16)
+	le := binary.LittleEndian
+	for {
+		n, err := f.Read(buf)
+		if err != nil {
+			return err
+		}
+		for o := 0; o+evSize <= n; o += evSize {
+			e := buf[o : o+evSize]
+			if le.Uint16(e[8:]) == evKey {
+				handle(le.Uint16(e[10:]), int32(le.Uint32(e[12:])))
+			}
+		}
+	}
+}

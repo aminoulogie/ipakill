@@ -11,3 +11,5 @@ func openScreen(rot Rotation) (*Screen, error) {
 }
 
 func setBacklight(percent int) {}
+
+func blankScreen(s *Screen, off bool) {}
