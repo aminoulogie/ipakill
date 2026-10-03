@@ -10,6 +10,14 @@ if ($Ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { Write-Host "Which IP? condor-linux\g
 $ssh = @('-o', 'ConnectTimeout=8', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new')
 $bin = Join-Path $PSScriptRoot 'os\condor-gl\gltest'
 $ErrorActionPreference = 'Continue'
+# The latest test first (GitHub is often slow to answer from this PC: a few tries).
+Set-Location (Split-Path $PSScriptRoot)
+for ($i = 1; $i -le 10; $i++) {
+    git pull --no-edit 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { break }
+    Write-Host "git pull failed, trying again ($i)" -ForegroundColor Yellow
+    Start-Sleep 5
+}
 & scp @ssh $bin (Join-Path $PSScriptRoot 'os\condor-gl\gl-run.sh') "root@${Ip}:/tmp/"
 if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at ${Ip}?" -ForegroundColor Red; exit 1 }
 # The run itself is os/condor-gl/gl-run.sh (in Alpine): gltest runs in Android's root

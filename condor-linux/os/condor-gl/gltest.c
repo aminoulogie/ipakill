@@ -100,7 +100,7 @@ static void diagnose(void) {
 }
 
 int main(int argc, char **argv) {
-	(void)argv;
+	if (argc > 1 && argv[1][0] == 'u') { unpan(); return 0; } /* "unpan": only fix the screen */
 	/* With any argument, the GPU driver starts before the framebuffer window is opened
 	   (the driver may want to open the framebuffer itself). */
 	int eglFirst = argc > 1;

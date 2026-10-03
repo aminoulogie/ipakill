@@ -20,4 +20,8 @@ for mode in "" eglfirst; do
 		echo "--- crash report $t"
 		head -n 70 "$t"
 	done
+# A crash can leave the display panned away from where condor draws (a grey screen).
+printf '/data/local/tmp/gltest unpan; exit\n' | nc 127.0.0.1 2324 | grep framebuffer
 done
+# A crash can leave the display panned away from where condor draws (a grey screen).
+printf '/data/local/tmp/gltest unpan; exit\n' | nc 127.0.0.1 2324 | grep framebuffer

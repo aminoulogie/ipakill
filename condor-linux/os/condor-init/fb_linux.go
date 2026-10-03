@@ -16,6 +16,7 @@ import (
 const (
 	fbioGetVScreenInfo = 0x4600
 	fbioGetFScreenInfo = 0x4602
+	fbioPanDisplay     = 0x4606
 	fbioBlank          = 0x4611
 	fbBlankUnblank     = 0
 
@@ -73,6 +74,15 @@ func openScreen(rot Rotation) (*Screen, error) {
 	// Unblank: SurfaceFlinger normally does this, and it's gone now.
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, fbioBlank, fbBlankUnblank); e != 0 {
 		log.Printf("FBIOBLANK unblank: %v (continuing)", e)
+	}
+	// Show the framebuffer from its top (where condor draws): a GPU test that crashed may
+	// have left the display panned to another buffer.
+	if le.Uint32(vinfo[16:]) != 0 || le.Uint32(vinfo[20:]) != 0 {
+		binary.LittleEndian.PutUint32(vinfo[16:], 0)
+		binary.LittleEndian.PutUint32(vinfo[20:], 0)
+		if err := ioctl(fd, fbioPanDisplay, unsafe.Pointer(&vinfo[0])); err != nil {
+			log.Printf("FBIOPAN_DISPLAY: %v", err)
+		}
 	}
 	s := newScreen(f, fbW, fbH, stride, bpp, bf(32), bf(44), bf(56), rot)
 	log.Printf("screen: logical %dx%d", s.W, s.H)
