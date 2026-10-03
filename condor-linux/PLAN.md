@@ -59,7 +59,7 @@ on it; Alpine's musl and busybox are fine. It's minimal and "build it yourself" 
 | 16 | Launcher + settings (brightness, auto screen-off, Wi-Fi, battery, power) | `pages.go`, `screens.go` |
 | 17 | Books: EPUB shelf + paged reader, ported from Soma's reader | `reader.go`, `epub/` |
 | 18 | Pages drawn ~5x faster (rotated blit, glyph cache, reused canvas) | `screen.go`, `ui/fast.go` |
-| 19 | Store: search/download free Project Gutenberg books via Gutendex, summaries, preview | `store.go` |
+| 19 | Store: Kindle-style cover grid; one search across Gutenberg, Google Books, Internet Archive, Open Library; full books first | `store.go`, `storesrc.go`, `covers.go` |
 
 ## Next
 

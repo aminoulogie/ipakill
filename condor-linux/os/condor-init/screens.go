@@ -76,7 +76,7 @@ func (c *console) launcherPage() *page {
 		{"terminal", "terminal", "Alpine shell with keyboard"},
 		{"settings", "settings", "display, wi-fi, battery, power"},
 		{"books", "books", "read EPUB books"},
-		{"store", "store", "75,000 free books from Project Gutenberg"},
+		{"store", "store", "free books from 4 libraries, with covers"},
 	}
 	for _, a := range apps {
 		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)

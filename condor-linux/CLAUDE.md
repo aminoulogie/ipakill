@@ -219,18 +219,20 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       Rot90 blit in 8x8 tiles, word-sized, across 4 threads; ui.Fill copies rows; RoundRect
       anti-aliases corners only; ui.CachedFace glyph cache; one reused page canvas; shelf
       metadata cached. `go test -bench Page` (bench_test.go) to measure.
-- [x] **Store** (store.go): Project Gutenberg's 75,000+ free books through Gutendex
-      (github.com/garethbjohnson/gutendex, https://gutendex.com/books/). Search with the
-      on-screen keyboard (second `keyboard` instance), topics, language, pages; a book's page
-      shows the catalogue summary; "read preview" opens it in the reader without saving
-      (/data/condor/previews, newest 5 kept), "download" saves to /data/media/0/Books.
-      HTTPS through condor-init's proxy 127.0.0.1:3128 with Alpine's CA bundle (Android 4.2's
-      roots are too old). gutendex.com is a free hosted instance and was very slow on the
-      tablet: searches give up after 25 s and fall back to gutenberg.org's own OPDS feed
-      (opds.go), which then stays first. Downloads take the `.epub.noimages` edition first
-      (text-only reader, much smaller). Gutenberg OPFs have `<meta property>text</meta>`:
-      the epub package must not use xml.HTMLAutoClose (it broke every Gutenberg book). Paid-book previews (Google Books) are page images in a web viewer
-      with DRM: not possible without a browser.
+- [x] **Store** (store.go UI, storesrc.go sources, covers.go, opds.go): Kindle-style cover
+      grid (3x2 per screen) and a book page (big cover, where to get it, summary). Browsing =
+      Project Gutenberg's popular books by topic; a search asks 4 libraries at once and merges
+      the same book (normKey: title up to ;:(, + surname; one library's separate editions stay
+      apart; the preferred library's title/cover win): Project Gutenberg (gutendex.com, falling
+      back after 25 s to gutenberg.org's OPDS feed, which then stays first), Google Books
+      (public-domain EPUB downloads; for-sale books = price + description), Internet Archive
+      (advancedsearch, EPUB found through /metadata/<id>), Open Library ("public" = IA item;
+      lending-only = info; description fetched on demand). Full books first. Covers cached in
+      /data/condor/covers, 3 loads at a time, 40 scaled in memory. Downloads try the no-images
+      Gutenberg EPUB first; "read preview" = /data/condor/previews (newest 5), "download" =
+      /data/media/0/Books. HTTPS via condor-init's proxy with Alpine's CA bundle. Gutenberg OPFs
+      have `<meta property>text</meta>`: no xml.HTMLAutoClose in the epub package. Paid-book
+      page previews (Google's viewer) need a browser: we show description + price instead.
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

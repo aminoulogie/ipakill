@@ -4,16 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"image"
-	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -21,79 +18,18 @@ import (
 
 	"golang.org/x/image/font"
 
-	"condor-init/epub"
 	"condor-init/ui"
 )
 
-// The Store app: free EPUBs from Project Gutenberg (75,000+ public-domain books), searched
-// through Gutendex (github.com/garethbjohnson/gutendex), the open-source JSON API for
-// Gutenberg's catalogue. A book's page shows its summary; "preview" opens it in the reader
-// without putting it on the shelf, "download" saves it to Books.
+// The Store app, laid out like a Kindle store: a grid of covers, and a page per book with a
+// big cover, where it can be had (storesrc.go), and its summary. Browsing lists Project
+// Gutenberg's most read books (by topic); a search asks every source at once, merges the
+// same book found in several places, and puts the books you can read in full first.
+// "read preview" opens a book without putting it on the shelf; "download" saves it to Books.
 //
 // Everything goes through condor-init's own proxy (127.0.0.1:3128), so it works over Wi-Fi
 // and over USB with `condor net` alike. Certificates come from Alpine's bundle: Android
 // 4.2's store is from 2013 and misses today's roots.
-
-var (
-	gutendexURL   = "https://gutendex.com/books/"
-	gutenbergBase = "https://www.gutenberg.org"
-	storeDir      = "/data/media/0/Books" // the first of bookDirs: internal storage
-	previewDir    = condorHome + "/previews"
-)
-
-type gbook struct {
-	ID      int    `json:"id"`
-	Title   string `json:"title"`
-	Authors []struct {
-		Name string `json:"name"`
-	} `json:"authors"`
-	Summaries []string          `json:"summaries"`
-	Subjects  []string          `json:"subjects"`
-	Languages []string          `json:"languages"`
-	Formats   map[string]string `json:"formats"`
-	Downloads int               `json:"download_count"`
-}
-
-// author is "First Last" (Gutenberg stores "Last, First").
-func (b *gbook) author() string {
-	var names []string
-	for _, a := range b.Authors {
-		n := a.Name
-		if last, first, ok := strings.Cut(n, ", "); ok {
-			n = first + " " + last
-		}
-		names = append(names, n)
-	}
-	if len(names) == 0 {
-		return "unknown author"
-	}
-	return strings.Join(names, ", ")
-}
-
-// epubURLs are where to get the book, best first. The reader shows text only, so the
-// no-images edition (often a tenth of the size) comes first; the catalogue's own EPUB link
-// and the EPUB 3 edition are fallbacks.
-func (b *gbook) epubURLs() []string {
-	urls := []string{fmt.Sprintf("%s/ebooks/%d.epub.noimages", gutenbergBase, b.ID)}
-	for mt, u := range b.Formats {
-		if strings.HasPrefix(mt, "application/epub") {
-			urls = append(urls, u)
-		}
-	}
-	return append(urls, fmt.Sprintf("%s/ebooks/%d.epub3.images", gutenbergBase, b.ID))
-}
-
-var unsafeName = regexp.MustCompile(`[^\pL\pN .,'()-]+`)
-
-// fileName is "Title - Author.epub", safe on every filesystem.
-func (b *gbook) fileName() string {
-	title, _, _ := strings.Cut(b.Title, ";") // "Frankenstein; Or, The Modern Prometheus"
-	n := strings.TrimSpace(unsafeName.ReplaceAllString(title+" - "+b.author(), " "))
-	if r := []rune(n); len(r) > 100 {
-		n = string(r[:100])
-	}
-	return n + ".epub"
-}
 
 type storeTopic struct{ label, topic string }
 
@@ -108,18 +44,21 @@ var storeLangs = []string{"", "en", "fr", "es", "de", "it", "ar"}
 type storeState struct {
 	query, editing string // the search in use, and the one being typed
 	topic, lang    int    // indexes into storeTopics, storeLangs
-	page           int    // 1-based
-	results        []gbook
-	count          int
-	hasNext        bool
-	loaded         bool
-	loading        bool
-	status         string // error or progress line
-	gen            int    // drops answers to searches that were replaced
-	preferSecond   bool   // gutendex failed: ask gutenberg.org first
-	sel            *gbook // the book whose page is open, or nil for the list
-	typing         bool   // keyboard up
-	dl             map[int]string
+	results        []*storeItem
+	view           int  // index of the first result on screen
+	remotePage     int  // Gutenberg pages loaded while browsing
+	hasMore        bool // Gutenberg has more pages
+	started        bool
+	pending        int                // sources still answering
+	srcState       [numSources]string // per source: "", "...", "12 books", "failed"
+	errs           []string
+	gen            int  // drops answers to searches that were replaced
+	preferOPDS     bool // gutendex failed: ask gutenberg.org first
+	sel            *storeItem
+	typing         bool // keyboard up
+	dl             map[string]string
+	redrawQueued   bool
+	lastRedraw     time.Time
 }
 
 // webClient talks to the internet through condor-init's proxy. Tests replace it.
@@ -129,6 +68,7 @@ var webClient = sync.OnceValue(func() *http.Client {
 		TLSClientConfig:       &tls.Config{RootCAs: alpineRoots()},
 		TLSHandshakeTimeout:   20 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConnsPerHost:   4,
 	}}
 })
 
@@ -164,122 +104,6 @@ func webGetCtx(ctx context.Context, u string) (*http.Response, error) {
 	return resp, nil
 }
 
-// storeSearch is what to list: a search, a topic, a language and a page.
-type storeSearch struct {
-	query, topic, lang string
-	page               int
-}
-
-type storeResult struct {
-	books   []gbook
-	count   int // 0 when the source doesn't say
-	hasNext bool
-}
-
-// A storeSource is a catalogue to search. gutendex.com is first (it has summaries), but it
-// is a free hosted instance and sometimes doesn't answer; gutenberg.org's own OPDS feed is
-// the fallback, and becomes the first choice once gutendex has failed.
-type storeSource struct {
-	host   string
-	search func(context.Context, storeSearch) (storeResult, error)
-}
-
-var storeSources = []storeSource{
-	{"gutendex.com", searchGutendex},
-	{"gutenberg.org", searchGutenbergOPDS},
-}
-
-// storeTimeout is how long a search may take before the next source is tried.
-var storeTimeout = 25 * time.Second
-
-func searchGutendex(ctx context.Context, q storeSearch) (storeResult, error) {
-	v := url.Values{}
-	v.Set("mime_type", "application/epub")
-	if q.query != "" {
-		v.Set("search", q.query)
-	}
-	if q.topic != "" {
-		v.Set("topic", q.topic)
-	}
-	if q.lang != "" {
-		v.Set("languages", q.lang)
-	}
-	if q.page > 1 {
-		v.Set("page", fmt.Sprint(q.page))
-	}
-	resp, err := webGetCtx(ctx, gutendexURL+"?"+v.Encode())
-	if err != nil {
-		return storeResult{}, err
-	}
-	defer resp.Body.Close()
-	var res struct {
-		Count   int     `json:"count"`
-		Next    string  `json:"next"`
-		Results []gbook `json:"results"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&res); err != nil {
-		return storeResult{}, err
-	}
-	return storeResult{res.Results, res.Count, res.Next != ""}, nil
-}
-
-// storeLoad fetches the current results in the background. Caller holds drawMu.
-func (c *console) storeLoad() {
-	st := &c.store
-	st.gen++
-	gen := st.gen
-	q := storeSearch{st.query, storeTopics[st.topic].topic, storeLangs[st.lang], max(st.page, 1)}
-	srcs := storeSources
-	if st.preferSecond {
-		srcs = []storeSource{storeSources[1], storeSources[0]}
-	}
-	st.loading, st.status = true, "loading from "+srcs[0].host+"..."
-	go func() {
-		var res storeResult
-		var err error
-		var errs []string
-		for i, src := range srcs {
-			if i > 0 {
-				drawMu.Lock()
-				if gen == st.gen {
-					st.status = srcs[i-1].host + " didn't answer, trying " + src.host + "..."
-					if c.mode == modeStore {
-						c.showPage()
-					}
-				}
-				drawMu.Unlock()
-			}
-			start := time.Now()
-			ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-			res, err = src.search(ctx, q)
-			cancel()
-			log.Printf("store: %s %+v: %d books in %v, err %v", src.host, q, len(res.books), time.Since(start).Round(time.Millisecond), err)
-			if err == nil {
-				drawMu.Lock()
-				st.preferSecond = src.host == storeSources[1].host
-				drawMu.Unlock()
-				break
-			}
-			errs = append(errs, src.host+": "+shortErr(err))
-		}
-		drawMu.Lock()
-		defer drawMu.Unlock()
-		if gen != st.gen {
-			return
-		}
-		st.loading, st.loaded = false, true
-		if err != nil {
-			st.status = "can't reach the library. " + strings.Join(errs, "; ")
-		} else {
-			st.status = ""
-			st.results, st.count, st.hasNext = res.books, res.count, res.hasNext
-		}
-		if c.mode == modeStore {
-			c.showPage()
-		}
-	}()
-}
-
 func shortErr(err error) string {
 	s := err.Error()
 	if i := strings.LastIndex(s, ": "); i >= 0 && len(s)-i < 60 {
@@ -288,95 +112,130 @@ func shortErr(err error) string {
 	return s
 }
 
-// fetchBook downloads b's EPUB to dst (via a temporary file), checking that it opens, trying
-// each of its URLs in turn. progress gets the bytes so far.
-func fetchBook(b *gbook, dst string, progress func(int64)) error {
-	var errs []string
-	for _, u := range b.epubURLs() {
-		err := fetchEPUB(u, dst, progress)
-		if err == nil {
-			return nil
-		}
-		log.Printf("store: %s: %v", u, err)
-		errs = append(errs, shortErr(err))
+// sourceTimeout bounds each source's search.
+var sourceTimeout = 40 * time.Second
+
+// storeLoad starts a search (or, with more, loads Gutenberg's next page while browsing).
+// Sources answer in the background; results are merged as they come. Caller holds drawMu.
+func (c *console) storeLoad(more bool) {
+	st := &c.store
+	st.gen++
+	st.started = true
+	gen := st.gen
+	if more {
+		st.remotePage++
+	} else {
+		st.results, st.view, st.remotePage, st.hasMore, st.errs = nil, 0, 1, false, nil
 	}
-	return fmt.Errorf("%s", strings.Join(errs, "; "))
+	q := storeSearch{query: st.query, lang: storeLangs[st.lang], page: st.remotePage}
+	type source struct {
+		src int
+		f   func(context.Context, storeSearch) (sourceResult, error)
+	}
+	pref := st.preferOPDS
+	gutenberg := func(ctx context.Context, q storeSearch) (sourceResult, error) {
+		res, err := searchGutenberg(ctx, q, &pref)
+		drawMu.Lock()
+		st.preferOPDS = pref
+		drawMu.Unlock()
+		return res, err
+	}
+	srcs := []source{{srcGutenberg, gutenberg}}
+	if q.query == "" {
+		q.topic = storeTopics[st.topic].topic
+	} else {
+		srcs = append(srcs, source{srcGoogle, searchGoogle}, source{srcArchive, searchArchive},
+			source{srcOpenLibrary, searchOpenLibrary})
+	}
+	st.srcState = [numSources]string{}
+	for _, s := range srcs {
+		st.pending++
+		st.srcState[s.src] = "..."
+		go func() {
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), sourceTimeout)
+			res, err := s.f(ctx, q)
+			cancel()
+			log.Printf("store: %s %+v: %d books in %v, err %v", sourceShort[s.src], q, len(res.items),
+				time.Since(start).Round(time.Millisecond), err)
+			drawMu.Lock()
+			defer drawMu.Unlock()
+			if gen != st.gen {
+				return
+			}
+			st.pending--
+			if err != nil {
+				st.srcState[s.src] = "failed"
+				st.errs = append(st.errs, sourceShort[s.src]+": "+shortErr(err))
+			} else {
+				st.srcState[s.src] = fmt.Sprintf("%d", len(res.items))
+				for _, it := range res.items { // later pages come after earlier ones
+					for i := range it.offers {
+						it.offers[i].rank += (q.page - 1) * 100
+					}
+				}
+				st.results = mergeItems(st.results, res.items)
+				if s.src == srcGutenberg {
+					st.hasMore = res.hasNext && q.query == ""
+				}
+			}
+			c.storeRedraw()
+		}()
+	}
 }
 
-func fetchEPUB(u, dst string, progress func(int64)) error {
-	resp, err := webGet(u)
-	if err != nil {
-		return err
+// storeRedraw redraws the store soon, at most every 300 ms (results and covers arrive in
+// bursts). Caller holds drawMu.
+func (c *console) storeRedraw() {
+	st := &c.store
+	if c.mode != modeStore || st.redrawQueued {
+		return
 	}
-	defer resp.Body.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	tmp := dst + ".part"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	var n int64
-	buf := make([]byte, 64<<10)
-	for err == nil {
-		var k int
-		k, err = resp.Body.Read(buf)
-		if k > 0 {
-			if _, werr := f.Write(buf[:k]); werr != nil {
-				err = werr
-				break
+	if wait := 300*time.Millisecond - time.Since(st.lastRedraw); wait > 0 {
+		st.redrawQueued = true
+		time.AfterFunc(wait, func() {
+			drawMu.Lock()
+			defer drawMu.Unlock()
+			st.redrawQueued = false
+			if c.mode == modeStore {
+				st.lastRedraw = time.Now()
+				c.showPage()
 			}
-			n += int64(k)
-			if n > 200<<20 {
-				err = fmt.Errorf("book too big")
-				break
-			}
-			progress(n)
-		}
+		})
+		return
 	}
-	f.Close()
-	if err != io.EOF {
-		os.Remove(tmp)
-		return err
-	}
-	if eb, err := epub.Open(tmp); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("not a readable EPUB: %v", err)
-	} else {
-		eb.Close()
-	}
-	return os.Rename(tmp, dst)
+	st.lastRedraw = time.Now()
+	c.showPage()
 }
 
 // storeFetch downloads the open book, to Books (save) or as a preview, in the background.
 // Caller holds drawMu.
 func (c *console) storeFetch(save bool) {
 	st := &c.store
-	b := st.sel
-	if b == nil || strings.HasPrefix(st.dl[b.ID], "downloading") {
+	it := st.sel
+	if it == nil || !it.full() || strings.HasPrefix(st.dl[it.key], "downloading") {
 		return
 	}
-	dst := filepath.Join(previewDir, fmt.Sprintf("%d.epub", b.ID))
+	dst := filepath.Join(previewDir, hash(it.key)+".epub")
 	if save {
-		dst = filepath.Join(storeDir, b.fileName())
+		dst = filepath.Join(storeDir, it.fileName())
 	}
 	if _, err := os.Stat(dst); err == nil { // already here: read it
 		c.openFromStore(dst)
 		return
 	}
-	st.dl[b.ID] = "downloading..."
+	st.dl[it.key] = "downloading..."
 	c.showPage()
 	go func() {
 		last := time.Now()
-		err := fetchBook(b, dst, func(n int64) {
+		err := fetchItem(it, dst, func(n int64) {
 			if time.Since(last) < time.Second {
 				return
 			}
 			last = time.Now()
 			drawMu.Lock()
-			st.dl[b.ID] = fmt.Sprintf("downloading... %.1f MB", float64(n)/(1<<20))
-			if c.mode == modeStore && st.sel == b {
+			st.dl[it.key] = fmt.Sprintf("downloading... %.1f MB", float64(n)/(1<<20))
+			if c.mode == modeStore && st.sel == it {
 				c.showPage()
 			}
 			drawMu.Unlock()
@@ -385,16 +244,16 @@ func (c *console) storeFetch(save bool) {
 		defer drawMu.Unlock()
 		switch {
 		case err != nil:
-			log.Printf("store: book %d: %v", b.ID, err)
-			st.dl[b.ID] = "failed: " + shortErr(err)
+			log.Printf("store: %s: %v", it.title, err)
+			st.dl[it.key] = "failed: " + err.Error()
 		case save:
 			log.Printf("store: saved %s", dst)
-			st.dl[b.ID] = "saved"
+			st.dl[it.key] = "saved"
 		default:
-			st.dl[b.ID] = ""
+			st.dl[it.key] = ""
 			trimPreviews(5)
 		}
-		if c.mode != modeStore || st.sel != b {
+		if c.mode != modeStore || st.sel != it {
 			return
 		}
 		if err == nil && !save {
@@ -456,15 +315,26 @@ func (c *console) storeKey(b []byte) {
 // storeSearch runs what was typed and puts the keyboard away. Caller holds drawMu.
 func (c *console) storeSearch() {
 	st := &c.store
-	st.typing, st.query, st.page, st.results = false, strings.TrimSpace(st.editing), 1, nil
-	c.storeLoad()
+	st.typing, st.query = false, strings.TrimSpace(st.editing)
+	c.storeLoad(false)
 	c.showPage()
 }
 
-// Layout of the list page (page coordinates).
+// Layout of the grid page (page coordinates; the screen is 1200 wide).
+const (
+	gridTop   = 470
+	gridCols  = 3
+	gridRows  = 2
+	gridGap   = 36
+	gridCellW = (1200 - 2*48 - (gridCols-1)*gridGap) / gridCols // 344
+	gridCover = gridCellW * 7 / 5                               // 481: covers are about 5:7
+	gridCellH = gridCover + 128
+	perView   = gridCols * gridRows
+)
+
 var (
-	storeSearchR = image.Rect(48, 270, 1200-48-200, 370)
-	storeGoR     = image.Rect(1200-48-180, 270, 1200-48, 370)
+	storeSearchR = image.Rect(48, 130, 1200-48-200, 220)
+	storeGoR     = image.Rect(1200-48-180, 130, 1200-48, 220)
 )
 
 // drawSearchBox redraws just the search box (fast, for each key). Caller holds drawMu.
@@ -490,38 +360,65 @@ func (c *console) searchBox(img *image.RGBA) {
 		text = st.editing + "_"
 	}
 	if text == "" {
-		text, col = "search title or author", pgMuted
+		text, col = "search books, authors...", pgMuted
 	}
 	// Show the end of a long search, where the typing is.
 	for text != "" && ui.TextWidth(c.pf.body, text) > r.Dx()-60 {
 		text = string([]rune(text)[1:])
 	}
-	ui.DrawText(img, c.pf.body, r.Min.X+30, r.Min.Y+62, col, text)
+	ui.DrawText(img, c.pf.body, r.Min.X+30, r.Min.Y+58, col, text)
 }
 
-// storePage is the list (search, topics, results) or one book's page.
+// badge is the line under a cover: free and where, or a price, or info only.
+func (it *storeItem) badge() (string, bool) {
+	if it.full() {
+		n := 0
+		for _, o := range it.offers {
+			if o.full {
+				n++
+			}
+		}
+		if n > 1 {
+			return fmt.Sprintf("FREE · %d sources", n), true
+		}
+		return "FREE · " + sourceShort[it.offers[0].src], true
+	}
+	for _, o := range it.offers {
+		if o.price != "" {
+			return o.price + " · info", false
+		}
+	}
+	return "info only", false
+}
+
+// storePage is the cover grid, or one book's page.
 func (c *console) storePage() *page {
 	st := &c.store
 	if st.dl == nil {
-		st.dl = map[int]string{}
+		st.dl = map[string]string{}
 	}
-	st.page = max(st.page, 1)
-	if !st.loaded && !st.loading {
-		c.storeLoad()
+	covers.mu.Lock()
+	covers.loaded = func() {
+		drawMu.Lock()
+		c.storeRedraw()
+		drawMu.Unlock()
+	}
+	covers.mu.Unlock()
+	if !st.started {
+		c.storeLoad(false)
 	}
 	if st.sel != nil {
 		return c.storeBookPage()
 	}
 	h := c.s.H - c.barH
 	pn := newPen(c.s.W, h, c.pf)
-	pn.btn("home", "< home", image.Rect(pn.mx-12, 24, pn.mx+260, 124), pgBtn, pgText)
+	pn.btn("home", "< home", image.Rect(pn.mx-12, 20, pn.mx+240, 110), pgBtn, pgText)
+	pn.text(c.pf.title, pgText, pn.mx+280, 88, "store")
 	lang := storeLangs[st.lang]
 	if lang == "" {
 		lang = "all"
 	}
-	pn.btn("s:lang", "lang: "+lang, image.Rect(c.s.W-pn.mx-300, 24, c.s.W-pn.mx, 124), pgBtn, pgText)
-	pn.text(c.pf.title, pgText, pn.mx, 220, "store")
-	pn.text(c.pf.small, pgMuted, pn.mx+ui.TextWidth(c.pf.title, "store ")+10, 220, "free books · Project Gutenberg")
+	pn.btn("s:lang", "lang: "+lang, image.Rect(c.s.W-pn.mx-280, 20, c.s.W-pn.mx, 110), pgBtn, pgText)
 
 	c.searchBox(pn.p.img)
 	pn.p.buttons = append(pn.p.buttons, button{"s:search", storeSearchR})
@@ -531,68 +428,85 @@ func (c *console) storePage() *page {
 	}
 	pn.btn("s:go", goLabel, storeGoR, pgSel, pgDark)
 
-	// Topics: two rows of five.
-	pn.y = storeGoR.Max.Y - 4
-	for row := 0; row < 2; row++ {
-		var ids, labels []string
-		for i := row * 5; i < row*5+5; i++ {
-			ids = append(ids, fmt.Sprintf("s:topic%d", i))
-			labels = append(labels, storeTopics[i].label)
+	pn.y = storeGoR.Max.Y
+	head := ""
+	if st.query == "" { // browsing: topics
+		for row := 0; row < 2; row++ {
+			var ids, labels []string
+			for i := row * 5; i < row*5+5; i++ {
+				ids = append(ids, fmt.Sprintf("s:topic%d", i))
+				labels = append(labels, storeTopics[i].label)
+			}
+			pn.smallRow(ids, labels, fmt.Sprintf("s:topic%d", st.topic))
 		}
-		pn.smallRow(ids, labels, fmt.Sprintf("s:topic%d", st.topic))
+		head = strings.ToUpper(storeTopics[st.topic].label) + " ON PROJECT GUTENBERG"
+	} else { // searching: how each source did
+		pn.y += 50
+		var parts []string
+		for s := 0; s < numSources; s++ {
+			switch v := st.srcState[s]; v {
+			case "":
+			case "...":
+				parts = append(parts, sourceShort[s]+" ...")
+			case "failed":
+				parts = append(parts, sourceShort[s]+" failed")
+			default:
+				parts = append(parts, sourceShort[s]+" "+v)
+			}
+		}
+		pn.text(c.pf.small, pgMuted, pn.mx, pn.y, clip(c.pf.small, strings.Join(parts, "  ·  "), c.s.W-2*pn.mx))
+		pn.y += 50
+		pn.text(c.pf.small, pgMuted, pn.mx, pn.y, "full free books first, then books to look at before buying")
+		head = fmt.Sprintf("RESULTS FOR \"%s\"", strings.ToUpper(st.query))
 	}
+	pn.text(c.pf.small, pgAccent, pn.mx, gridTop-24, clip(c.pf.small, head, c.s.W-2*pn.mx))
 
-	bottom := h - 130
-	if st.typing {
-		bottom = c.skb.y0 - c.barH - 10
-	}
-	pn.y += 30
-	head := storeTopics[st.topic].label
-	if st.query != "" {
-		head = "\"" + st.query + "\""
-	}
-	if st.loaded && st.status == "" && st.count > 0 {
-		head += fmt.Sprintf("   ·   %d books", st.count)
-	}
-	pn.text(c.pf.small, pgAccent, pn.mx, pn.y+30, head)
-	pn.y += 50
-	if st.status != "" {
-		for _, l := range wrapText(c.pf.small, st.status, c.s.W-2*pn.mx) {
-			pn.y += 42
-			pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
+	switch {
+	case len(st.results) == 0 && st.pending > 0:
+		pn.text(c.pf.body, pgMuted, pn.mx, gridTop+80, "looking for books...")
+	case len(st.results) == 0:
+		msg := "nothing found"
+		if len(st.errs) > 0 {
+			msg = "can't reach the libraries: is Wi-Fi on?"
 		}
-		if !st.loading {
-			pn.row([]string{"s:retry"}, []string{"retry"}, "", false)
+		pn.text(c.pf.body, pgText, pn.mx, gridTop+80, msg)
+		pn.y = gridTop + 100
+		for _, e := range st.errs {
+			for _, l := range wrapText(c.pf.small, e, c.s.W-2*pn.mx) {
+				pn.y += 40
+				pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
+			}
 		}
 		pn.y += 20
+		pn.row([]string{"s:retry"}, []string{"retry"}, "", false)
 	}
-	for i := range st.results {
-		b := &st.results[i]
-		if pn.y+130 > bottom {
-			break
+
+	st.view = min(st.view, max(len(st.results)-1, 0)/perView*perView)
+	for i := st.view; i < len(st.results) && i < st.view+perView; i++ {
+		it := st.results[i]
+		col, row := (i-st.view)%gridCols, (i-st.view)/gridCols
+		x, y := pn.mx+col*(gridCellW+gridGap), gridTop+row*(gridCellH+20)
+		cr := image.Rect(x, y, x+gridCellW, y+gridCover)
+		c.drawCover(pn.p.img, cr, it)
+		pn.text(c.pf.small, pgText, x, cr.Max.Y+40, clip(c.pf.small, it.title, gridCellW))
+		pn.text(c.pf.small, pgMuted, x, cr.Max.Y+78, clip(c.pf.small, it.author, gridCellW))
+		badge, free := it.badge()
+		bc := pgMuted
+		if free {
+			bc = pgAccent
 		}
-		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+120)
-		ui.RoundRect(pn.p.img, r, 20, pgCard)
-		pn.text(c.pf.bold, pgText, r.Min.X+32, r.Min.Y+52, clip(c.pf.bold, b.Title, r.Dx()-64))
-		sub := b.author()
-		if b.Downloads > 0 {
-			sub += fmt.Sprintf("   · %d downloads", b.Downloads)
-		}
-		pn.text(c.pf.small, pgMuted, r.Min.X+32, r.Min.Y+98, clip(c.pf.small, sub, r.Dx()-64))
-		pn.p.buttons = append(pn.p.buttons, button{fmt.Sprintf("s:res%d", i), r})
-		pn.y += 132
+		pn.text(c.pf.small, bc, x, cr.Max.Y+116, clip(c.pf.small, badge, gridCellW))
+		pn.p.buttons = append(pn.p.buttons, button{fmt.Sprintf("s:item%d", i), image.Rect(x, y, x+gridCellW, y+gridCellH)})
 	}
-	if !st.typing && (st.page > 1 || st.hasNext) {
-		pn.y = h - 120
-		ids, labels := []string{}, []string{}
-		if st.page > 1 {
-			ids, labels = append(ids, "s:prev"), append(labels, "< prev")
+
+	if !st.typing && len(st.results) > 0 {
+		pn.y = h - 124
+		more := ""
+		if st.hasMore || st.pending > 0 {
+			more = "+"
 		}
-		ids, labels = append(ids, "s:pageno"), append(labels, fmt.Sprintf("page %d", st.page))
-		if st.hasNext {
-			ids, labels = append(ids, "s:next"), append(labels, "next >")
-		}
-		pn.y -= 24
+		ids := []string{"s:prev", "s:count", "s:next"}
+		labels := []string{"< prev", fmt.Sprintf("%d-%d of %d%s", st.view+1, min(st.view+perView, len(st.results)), len(st.results), more), "next >"}
 		pn.row(ids, labels, "", false)
 	}
 	return pn.p
@@ -609,84 +523,159 @@ func (pn *pen) smallRow(ids, labels []string, selected string) {
 		if ids[i] == selected {
 			bg, fg = pgSel, pgDark
 		}
-		r := image.Rect(x, pn.y, x+w, pn.y+76)
+		r := image.Rect(x, pn.y, x+w, pn.y+70)
 		ui.RoundRect(pn.p.img, r, 16, bg)
 		ui.DrawTextCentered(pn.p.img, pn.f.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
 		pn.p.buttons = append(pn.p.buttons, button{ids[i], r})
 	}
-	pn.y += 76
+	pn.y += 70
 }
 
-// storeBookPage shows one book: title, author, summary, preview and download.
+// storeBookPage shows one book: big cover, title, where to get it, summary.
 func (c *console) storeBookPage() *page {
 	st := &c.store
-	b := st.sel
+	it := st.sel
 	h := c.s.H - c.barH
 	pn := newPen(c.s.W, h, c.pf)
-	pn.btn("s:back", "< back", image.Rect(pn.mx-12, 24, pn.mx+260, 124), pgBtn, pgText)
-	w := c.s.W - 2*pn.mx
-	pn.y = 200
-	for i, l := range wrapText(c.pf.title, b.Title, w) {
-		if i == 3 {
+	pn.btn("s:back", "< back", image.Rect(pn.mx-12, 20, pn.mx+240, 110), pgBtn, pgText)
+
+	cr := image.Rect(pn.mx, 140, pn.mx+440, 140+616)
+	c.drawCover(pn.p.img, cr, it)
+	x, w := cr.Max.X+44, c.s.W-pn.mx-(cr.Max.X+44)
+	y := cr.Min.Y + 10
+	for i, l := range wrapText(c.pf.bold, it.title, w) {
+		if i == 5 {
 			break
 		}
-		pn.text(c.pf.title, pgText, pn.mx, pn.y, l)
-		pn.y += 76
+		y += 50
+		pn.text(c.pf.bold, pgText, x, y, l)
 	}
-	pn.text(c.pf.body, pgAccent, pn.mx, pn.y, clip(c.pf.body, b.author(), w))
-	pn.y += 50
-	meta := fmt.Sprintf("Gutenberg #%d", b.ID)
-	if len(b.Languages) > 0 {
-		meta += "   ·   " + strings.Join(b.Languages, ", ")
+	y += 56
+	for i, l := range wrapText(c.pf.body, it.author, w) {
+		if i == 2 {
+			break
+		}
+		pn.text(c.pf.body, pgAccent, x, y, l)
+		y += 46
 	}
-	if b.Downloads > 0 {
-		meta += fmt.Sprintf("   ·   %d downloads", b.Downloads)
+	var meta []string
+	if it.year > 0 {
+		meta = append(meta, fmt.Sprint(it.year))
 	}
-	pn.text(c.pf.small, pgMuted, pn.mx, pn.y, meta)
+	if len(it.langs) > 0 {
+		meta = append(meta, strings.Join(it.langs[:min(len(it.langs), 3)], ", "))
+	}
+	if it.downloads > 0 {
+		meta = append(meta, fmt.Sprintf("%d downloads", it.downloads))
+	}
+	y += 10
+	pn.text(c.pf.small, pgMuted, x, y, clip(c.pf.small, strings.Join(meta, "  ·  "), w))
+	badge, free := it.badge()
+	bc := pgMuted
+	if free {
+		bc = pgAccent
+	}
+	y += 50
+	pn.text(c.pf.small, bc, x, y, badge)
 
-	state := st.dl[b.ID]
-	saved := state == "saved"
-	if !saved {
-		if _, err := os.Stat(filepath.Join(storeDir, b.fileName())); err == nil {
-			saved = true
+	// Buttons under the cover.
+	pn.y = cr.Max.Y + 10
+	state := st.dl[it.key]
+	if it.full() {
+		saved := state == "saved"
+		if !saved {
+			if _, err := os.Stat(filepath.Join(storeDir, it.fileName())); err == nil {
+				saved = true
+			}
+		}
+		dlLabel := "download"
+		if saved {
+			dlLabel = "open"
+		}
+		pn.row([]string{"s:preview", "s:dl"}, []string{"read preview", dlLabel}, "", false)
+		note := "preview opens the full book now without adding it to your shelf"
+		if state != "" && state != "saved" {
+			note = state
+		} else if saved {
+			note = "saved to Books: it's on your shelf in the books app too"
+		}
+		for _, l := range wrapText(c.pf.small, note, c.s.W-2*pn.mx) {
+			pn.y += 42
+			pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
+		}
+	} else {
+		pn.y += 20
+		pn.text(c.pf.body, pgText, pn.mx, pn.y+30, "not free to read: description below")
+		pn.y += 40
+	}
+
+	pn.heading("WHERE TO GET IT")
+	for _, o := range it.offers {
+		what := "full book, free"
+		if !o.full {
+			what = o.note
+			if o.price != "" {
+				what = o.price + ": " + o.note
+			}
+		}
+		for i, l := range wrapText(c.pf.small, sourceNames[o.src]+": "+what, c.s.W-2*pn.mx) {
+			if i == 2 {
+				break
+			}
+			pn.y += 40
+			pn.text(c.pf.small, pgText, pn.mx, pn.y, l)
 		}
 	}
-	dlLabel := "download"
-	if saved {
-		dlLabel = "open"
-	}
-	pn.y += 10
-	pn.row([]string{"s:preview", "s:dl"}, []string{"read preview", dlLabel}, "", false)
-	note := "preview opens the book now without adding it to your shelf"
-	if state != "" && state != "saved" {
-		note = state
-	} else if saved {
-		note = "saved to Books: it's on your shelf in the books app too"
-	}
-	pn.line(c.pf.small, pgMuted, note)
 
 	pn.heading("ABOUT")
-	about := strings.Join(b.Summaries, " ")
-	if about == "" && len(b.Subjects) > 0 {
-		about = "Subjects: " + strings.Join(b.Subjects, "; ")
+	about := it.summary
+	if about == "" && len(it.subjects) > 0 {
+		about = "Subjects: " + strings.Join(it.subjects, "; ")
 	}
 	if about == "" {
-		about = "No summary from this catalogue: tap read preview to start reading."
-	}
-	about = strings.TrimSuffix(strings.TrimSpace(about), "(This is an automatically generated summary.)")
-	lines := wrapText(c.pf.small, about, w)
-	maxLines := (h - 60 - pn.y) / 42
-	for i, l := range lines {
-		if i == maxLines-1 && len(lines) > maxLines {
-			l = clip(c.pf.small, l+" ...", w)
+		about = "No description from these libraries."
+		if it.full() {
+			about += " Tap read preview to start reading."
 		}
+	}
+	lines := wrapText(c.pf.small, about, c.s.W-2*pn.mx)
+	maxLines := (h - 40 - pn.y) / 40
+	for i, l := range lines {
 		if i == maxLines {
 			break
 		}
-		pn.y += 42
+		if i == maxLines-1 && len(lines) > maxLines {
+			l = clip(c.pf.small, l+" ...", c.s.W-2*pn.mx)
+		}
+		pn.y += 40
 		pn.text(c.pf.small, pgText, pn.mx, pn.y, l)
 	}
 	return pn.p
+}
+
+// fetchSummary fills in an Open Library book's description in the background.
+// Caller holds drawMu.
+func (c *console) fetchSummary(it *storeItem) {
+	if it.summary != "" || it.olWork == "" {
+		return
+	}
+	work := it.olWork
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		s := openLibrarySummary(ctx, work)
+		cancel()
+		if s == "" {
+			return
+		}
+		drawMu.Lock()
+		defer drawMu.Unlock()
+		if it.summary == "" {
+			it.summary = s
+			if c.store.sel == it {
+				c.storeRedraw()
+			}
+		}
+	}()
 }
 
 // wrapText breaks s into lines no wider than width.
@@ -702,6 +691,15 @@ func wrapText(f font.Face, s string, width int) []string {
 			lines = append(lines, cur)
 			next = w
 		}
+		for ui.TextWidth(f, next) > width && len([]rune(next)) > 1 { // one very long word
+			r := []rune(next)
+			cut := len(r) - 1
+			for cut > 1 && ui.TextWidth(f, string(r[:cut])) > width {
+				cut--
+			}
+			lines = append(lines, string(r[:cut]))
+			next = string(r[cut:])
+		}
 		cur = next
 	}
 	if cur != "" {
@@ -716,7 +714,7 @@ func (c *console) storeTap(id string) bool {
 	if !strings.HasPrefix(id, "s:") && id != "store" {
 		return false
 	}
-	if id != "s:search" && st.typing && !strings.HasPrefix(id, "s:go") {
+	if id != "s:search" && st.typing && id != "s:go" {
 		st.typing = false // a tap elsewhere puts the keyboard away
 	}
 	switch {
@@ -733,36 +731,36 @@ func (c *console) storeTap(id string) bool {
 			c.storeSearch()
 			return true
 		}
-		if st.query != "" { // "clear"
-			st.query, st.editing, st.page, st.results = "", "", 1, nil
-			c.storeLoad()
+		if st.query != "" { // "clear": back to browsing
+			st.query, st.editing = "", ""
+			c.storeLoad(false)
 		} else {
 			st.typing, st.editing = true, ""
 			c.skb.visible = true
 		}
 	case id == "s:retry":
-		c.storeLoad()
+		c.storeLoad(false)
 	case id == "s:lang":
 		st.lang = (st.lang + 1) % len(storeLangs)
-		st.page, st.results = 1, nil
-		c.storeLoad()
+		c.storeLoad(false)
 	case strings.HasPrefix(id, "s:topic"):
 		fmt.Sscanf(id, "s:topic%d", &st.topic)
-		st.page, st.results = 1, nil
-		c.storeLoad()
-	case id == "s:prev" || id == "s:next":
-		if id == "s:next" {
-			st.page++
-		} else {
-			st.page = max(st.page-1, 1)
+		c.storeLoad(false)
+	case id == "s:prev":
+		st.view = max(st.view-perView, 0)
+	case id == "s:next":
+		switch {
+		case st.view+perView < len(st.results):
+			st.view += perView
+		case st.hasMore && st.pending == 0:
+			st.view += perView
+			c.storeLoad(true)
 		}
-		st.results = nil
-		c.storeLoad()
-	case strings.HasPrefix(id, "s:res"):
+	case strings.HasPrefix(id, "s:item"):
 		var i int
-		if _, err := fmt.Sscanf(id, "s:res%d", &i); err == nil && i < len(st.results) {
-			b := st.results[i]
-			st.sel = &b
+		if _, err := fmt.Sscanf(id, "s:item%d", &i); err == nil && i < len(st.results) {
+			st.sel = st.results[i]
+			c.fetchSummary(st.sel)
 		}
 	case id == "s:back":
 		st.sel = nil

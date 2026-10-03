@@ -55,7 +55,7 @@ func opdsTerms(q storeSearch) string {
 	return strings.Join(terms, " ")
 }
 
-func searchGutenbergOPDS(ctx context.Context, q storeSearch) (storeResult, error) {
+func searchGutenbergOPDS(ctx context.Context, q storeSearch) (sourceResult, error) {
 	v := url.Values{}
 	if t := opdsTerms(q); t != "" {
 		v.Set("query", t)
@@ -66,21 +66,21 @@ func searchGutenbergOPDS(ctx context.Context, q storeSearch) (storeResult, error
 	}
 	resp, err := webGetCtx(ctx, gutenbergOPDSURL+"?"+v.Encode())
 	if err != nil {
-		return storeResult{}, err
+		return sourceResult{}, err
 	}
 	defer resp.Body.Close()
 	return parseOPDS(io.LimitReader(resp.Body, 8<<20))
 }
 
-func parseOPDS(r io.Reader) (storeResult, error) {
+func parseOPDS(r io.Reader) (sourceResult, error) {
 	var f opdsFeed
 	dec := xml.NewDecoder(r)
 	dec.Strict = false
 	dec.Entity = xml.HTMLEntity
 	if err := dec.Decode(&f); err != nil {
-		return storeResult{}, err
+		return sourceResult{}, err
 	}
-	res := storeResult{count: f.Total}
+	var res sourceResult
 	for _, l := range f.Links {
 		if l.Rel == "next" {
 			res.hasNext = true
@@ -97,21 +97,21 @@ func parseOPDS(r io.Reader) (storeResult, error) {
 		if id == 0 { // "sort alphabetically" and other navigation entries
 			continue
 		}
-		b := gbook{ID: id, Title: strings.Join(strings.Fields(e.Title), " ")}
-		author := strings.TrimSpace(e.Content)
+		author, downloads := strings.TrimSpace(e.Content), 0
 		if m := reDownloads.FindStringSubmatch(author); m != nil {
-			b.Downloads, _ = strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
+			downloads, _ = strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
 			author = ""
 		}
 		if author == "" && len(e.Authors) > 0 {
 			author = e.Authors[0].Name
 		}
+		var authors []string
 		if author != "" {
-			b.Authors = append(b.Authors, struct {
-				Name string `json:"name"`
-			}{author})
+			authors = []string{author}
 		}
-		res.books = append(res.books, b)
+		it := gutenbergItem(id, e.Title, authors, len(res.items))
+		it.downloads = downloads
+		res.items = append(res.items, it)
 	}
 	return res, nil
 }
