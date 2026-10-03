@@ -41,8 +41,8 @@ ipakill-core serve --shell
 ```
 
 Activity → Terminal then runs commands on the PC (cmd.exe), one at a time.
-Built-ins: `cd <dir>` (remembered), `update` (in the ipakill repo folder:
-git pull, rebuild ipakill-core, restart), `restart`. It is only as safe as the
+Built-ins: `cd <dir>` (remembered), `update` (download the latest prebuilt
+ipakill-core.exe from the `pc-core` release and restart), `restart`. It is only as safe as the
 pairing code: ten wrong codes lock the server for five minutes.
 
 ## Apps inside ipakill

@@ -23,7 +23,9 @@ import (
 //
 //	cd <dir>        change directory
 //	restart         swap in ipakill-core.new.exe (if built) and restart serve
-//	update          from the ipakill repo: git pull, build, restart
+//	update          download the latest prebuilt ipakill-core.exe and restart
+
+const coreURL = "https://github.com/aminoulogie/ipakill/releases/download/pc-core/ipakill-core.exe"
 
 var (
 	shellMu  sync.Mutex
@@ -32,7 +34,7 @@ var (
 
 const shellHelp = `ipakill terminal - commands run on the PC (cmd.exe).
   cd <dir>     change directory (remembered)
-  update       in the ipakill repo folder: git pull, rebuild ipakill-core, restart
+  update       download the latest ipakill-core and restart (no git or Go needed)
   restart      restart 'ipakill serve' (uses ipakill-core.new.exe if you built one)`
 
 func shellEnabled() bool {
@@ -115,25 +117,19 @@ func shellHandler(w http.ResponseWriter, r *http.Request) {
 		reply(out+"restarting - reconnects in a few seconds", 0)
 		go restartSoon()
 	case line == "update":
-		out, code := runShell(dir, "git pull", 2*time.Minute)
-		if code != 0 {
-			reply(out, code)
-			return
-		}
+		// Same as pc/update.ps1: fetch the prebuilt ipakill-core.exe, swap, restart.
 		exe, _ := os.Executable()
 		next := filepath.Join(filepath.Dir(exe), "ipakill-core.new.exe")
-		bout, code := runShell(filepath.Join(dir, "pc"), fmt.Sprintf(`go build -o "%s" .`, next), 10*time.Minute)
-		out += bout
-		if code != 0 {
-			reply(out+"build failed - is this the ipakill repo folder? (cd there first)", code)
+		if err := download(coreURL, next); err != nil {
+			reply("download failed: "+err.Error(), 1)
 			return
 		}
-		rout, err := prepareRestart()
+		out, err := prepareRestart()
 		if err != nil {
-			reply(out+rout+err.Error(), 1)
+			reply(out+err.Error(), 1)
 			return
 		}
-		reply(out+rout+"updated - restarting, reconnects in a few seconds", 0)
+		reply(out+"updated - restarting, reconnects in a few seconds", 0)
 		go restartSoon()
 	default:
 		out, code := runShell(dir, line, 10*time.Minute)

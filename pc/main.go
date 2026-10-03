@@ -225,6 +225,8 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	}
 	conn := map[string]string{"USB": "USB", "Network": "Wi-Fi"}[dev.Conn]
 	fmt.Fprintf(out, "[ipakill] Installing to %s over %s\n", dev.UDID, conn)
+	progStage("sign")
+	progLine(fmt.Sprintf("Installing to %s over %s", dev.UDID, conn))
 
 	args := append([]string{"sign", "-p", ipa, "--apple-id", "--register-and-install",
 		"--udid", strconv.Itoa(dev.ID)}, extra...)
@@ -244,6 +246,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	for sc.Scan() {
 		line := sc.Text()
 		fmt.Fprintln(logf, line)
+		progLine(line)
 		if m := bundleRe.FindStringSubmatch(line); m != nil {
 			bundle = m[1] // the main app is signed last, so the last match wins
 		}
@@ -372,6 +375,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	var log bytes.Buffer
 	app, err := install(ipa, io.MultiWriter(os.Stdout, &log), meta)
+	progEnd(err)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "log": log.String()})
 		return
@@ -393,7 +397,7 @@ func download(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(f, io.LimitReader(resp.Body, 4<<30))
+	_, err = io.Copy(f, io.LimitReader(&countingReader{r: resp.Body, total: resp.ContentLength}, 4<<30))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -460,12 +464,14 @@ func serve() error {
 			return
 		}
 		dst := filepath.Join(ipaDir, name)
+		progStart(strings.TrimSuffix(name, filepath.Ext(name)), "upload")
 		f, err := os.Create(dst)
 		if err == nil {
-			_, err = io.Copy(f, http.MaxBytesReader(w, r.Body, 4<<30))
+			_, err = io.Copy(f, &countingReader{r: http.MaxBytesReader(w, r.Body, 4<<30), total: r.ContentLength})
 			f.Close()
 		}
 		if err != nil {
+			progEnd(err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "upload failed: " + err.Error()})
 			return
 		}
@@ -506,8 +512,15 @@ func serve() error {
 			name = "download.ipa"
 		}
 		fmt.Printf("[ipakill] Downloading %s\n", src)
+		display := q.Get("name")
+		if display == "" {
+			display = strings.TrimSuffix(name, filepath.Ext(name))
+		}
+		progStart(display, "download")
+		progLine("Downloading " + src)
 		dst := filepath.Join(ipaDir, name)
 		if err := download(src, dst); err != nil {
+			progEnd(fmt.Errorf("download failed: %v", err))
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "download failed: " + err.Error()})
 			return
 		}
@@ -535,6 +548,8 @@ func serve() error {
 	}))
 
 	http.HandleFunc("/exec", auth(shellHandler))
+	http.HandleFunc("/progress", auth(progressHandler))
+	http.HandleFunc("/appids", auth(appIDsHandler))
 
 	fmt.Println("[ipakill] Wi-Fi sync is running. In the ipakill iPhone app, enter:")
 	for _, ip := range localIPs() {

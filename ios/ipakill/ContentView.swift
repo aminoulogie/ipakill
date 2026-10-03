@@ -25,6 +25,62 @@ struct IpakillLifecycle: ViewModifier {
 
 // MARK: - shared pieces
 
+/// Downloaded images, shrunk to the size they're shown at and kept in
+/// memory. AsyncImage re-downloads every time a list row scrolls back in.
+@MainActor final class ImageCache {
+    static let shared = ImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private var loading: [NSString: Task<UIImage?, Never>] = [:]
+
+    private func key(_ url: URL, _ maxPixel: CGFloat) -> NSString {
+        "\(Int(maxPixel))|\(url.absoluteString)" as NSString
+    }
+
+    func cached(_ url: URL, maxPixel: CGFloat) -> UIImage? {
+        cache.object(forKey: key(url, maxPixel))
+    }
+
+    func load(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
+        let k = key(url, maxPixel)
+        if let img = cache.object(forKey: k) { return img }
+        if let running = loading[k] { return await running.value }
+        let task = Task<UIImage?, Never> {
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let img = UIImage(data: data) else { return nil }
+            let scale = min(1, maxPixel / max(img.size.width * img.scale, img.size.height * img.scale))
+            let target = CGSize(width: img.size.width * img.scale * scale, height: img.size.height * img.scale * scale)
+            return await img.byPreparingThumbnail(ofSize: target) ?? img
+        }
+        loading[k] = task
+        let img = await task.value
+        loading[k] = nil
+        if let img { cache.setObject(img, forKey: k) }
+        return img
+    }
+}
+
+struct CachedImage<Placeholder: View>: View {
+    let url: URL?
+    var maxPixel: CGFloat = 200
+    var mode: ContentMode = .fill
+    @ViewBuilder var placeholder: () -> Placeholder
+    @State private var loaded: UIImage?
+
+    var body: some View {
+        Group {
+            if let img = loaded ?? url.flatMap({ ImageCache.shared.cached($0, maxPixel: maxPixel) }) {
+                Image(uiImage: img).resizable().aspectRatio(contentMode: mode)
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            guard let url else { return }
+            loaded = await ImageCache.shared.load(url, maxPixel: maxPixel)
+        }
+    }
+}
+
 /// An app's real icon; until it loads (or if there is none) a tile with its first letter.
 struct AppIcon: View {
     let url: URL?
@@ -32,17 +88,13 @@ struct AppIcon: View {
     var size: CGFloat = 52
 
     var body: some View {
-        AsyncImage(url: url) { phase in
-            if case .success(let img) = phase {
-                img.resizable().scaledToFill()
-            } else {
-                ZStack {
-                    LinearGradient(colors: [Color(.systemGray4), Color(.systemGray6)],
-                                   startPoint: .top, endPoint: .bottom)
-                    Text(String(name.prefix(1)).uppercased())
-                        .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
-                        .foregroundColor(.secondary)
-                }
+        CachedImage(url: url, maxPixel: size * 3) {
+            ZStack {
+                LinearGradient(colors: [Color(.systemGray4), Color(.systemGray6)],
+                               startPoint: .top, endPoint: .bottom)
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: size * 0.42, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
             }
         }
         .frame(width: size, height: size)
@@ -139,7 +191,7 @@ struct IpakillSourcesView: View {
             List {
                 Section {
                     NavigationLink {
-                        StoreAppsView(title: "All Apps", apps: allApps, picked: $picked)
+                        StoreAppsView(title: "All Apps", apps: sync.storeSorted, picked: $picked)
                     } label: {
                         HStack(spacing: 14) {
                             Image(systemName: "square.grid.3x3.fill")
@@ -201,10 +253,6 @@ struct IpakillSourcesView: View {
         }
         .navigationViewStyle(.stack)
         .modifier(GetActions(app: $picked) { a in Task { await sync.install(a) } })
-    }
-
-    private var allApps: [StoreApp] {
-        sync.store.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -281,29 +329,186 @@ private struct StoreAppsView: View {
     let apps: [StoreApp]
     @Binding var picked: StoreApp?
     @State private var query = ""
+    @State private var results: [StoreApp]?   // nil: not searching
+    @State private var keys: [String] = []
 
     var body: some View {
+        let shown = results ?? apps
         List {
             if shown.isEmpty {
-                Text(sync.loadingStore ? "Loading…" : "No apps")
+                Text(sync.loadingStore ? "Loading…" : results == nil ? "No apps" : "No results")
                     .foregroundColor(.secondary)
             }
             ForEach(shown) { s in
-                StoreAppRow(app: s, picked: $picked)
+                NavigationLink {
+                    AppDetailView(app: s, picked: $picked)
+                } label: {
+                    StoreAppRow(app: s, picked: $picked)
+                }
             }
         }
         .listStyle(.plain)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $query, prompt: "Search apps")
+        .disableAutocorrection(true)
         .refreshable { await sync.refreshStore() }
+        // Search after typing pauses, over text lowercased once per list.
+        .task(id: query) {
+            let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+            guard !q.isEmpty else {
+                results = nil
+                return
+            }
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            if keys.count != apps.count { keys = apps.map(\.searchKey) }
+            results = zip(apps, keys).filter { $0.1.contains(q) }.map(\.0)
+        }
+        .onChange(of: apps.count) { _ in keys = [] }
+    }
+}
+
+/// An app's page: screenshots, description, what's new, details.
+private struct AppDetailView: View {
+    @EnvironmentObject var sync: Sync
+    let app: StoreApp
+    @Binding var picked: StoreApp?
+    @State private var fullDescription = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 16) {
+                    AppIcon(url: sync.icon(for: app), name: app.name, size: 112)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(app.name).font(.title2.weight(.bold)).lineLimit(3)
+                        if let d = app.developer {
+                            Text(d).font(.subheadline).foregroundColor(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 10)
+                        CapsuleButton(title: buttonTitle, filled: true) { picked = app }
+                            .disabled(sync.busy)
+                    }
+                }
+
+                HStack(spacing: 0) {
+                    fact("VERSION", app.version)
+                    Divider()
+                    fact("SIZE", sizeText ?? "–")
+                    Divider()
+                    fact("UPDATED", app.date ?? "–")
+                }
+                .frame(height: 46)
+
+                if !app.screenshots.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 12) {
+                            ForEach(app.screenshots, id: \.self) { link in
+                                CachedImage(url: URL(string: link), maxPixel: 1000, mode: .fit) {
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(Color(.secondarySystemBackground))
+                                        .frame(width: 214)
+                                        .overlay(ProgressView())
+                                }
+                                .frame(height: 460)
+                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5))
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                    }
+                    .padding(.horizontal, -20)
+                }
+
+                if let notes = app.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("What's New").font(.title3.weight(.bold))
+                        Text("Version \(app.version)").font(.footnote).foregroundColor(.secondary)
+                        Text(notes).font(.callout)
+                    }
+                }
+
+                if let about = app.about?.trimmingCharacters(in: .whitespacesAndNewlines), !about.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Description").font(.title3.weight(.bold))
+                        Text(about).font(.callout).lineLimit(fullDescription ? nil : 6)
+                        if !fullDescription && about.count > 280 {
+                            Button("more") { withAnimation { fullDescription = true } }.font(.callout)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Information").font(.title3.weight(.bold)).padding(.bottom, 6)
+                    info("Source", sync.sourceName(app.source))
+                    if let d = app.developer { info("Developer", d) }
+                    if let b = app.bundleID { info("Bundle ID", b) }
+                    info("Version", app.version)
+                    if let s = sizeText { info("Size", s) }
+                    Button { UIPasteboard.general.string = app.url } label: {
+                        Label("Copy IPA Link", systemImage: "link").font(.callout)
+                    }
+                    .padding(.top, 10)
+                }
+            }
+            .padding(20)
+        }
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var shown: [StoreApp] {
-        guard !query.isEmpty else { return apps }
-        return apps.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || ($0.developer ?? "").localizedCaseInsensitiveContains(query)
+    private var buttonTitle: String {
+        guard let have = sync.installed(app) else { return "GET" }
+        if let v = have.version, !v.isEmpty, Version.isNewer(app.version, than: v) { return "UPDATE" }
+        return "SIGN"
+    }
+
+    private var sizeText: String? {
+        app.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+    }
+
+    private func fact(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 4) {
+            Text(title).font(.caption2.weight(.semibold)).foregroundColor(.secondary)
+            Text(value).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func info(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).foregroundColor(.secondary)
+                Spacer(minLength: 16)
+                Text(value).multilineTextAlignment(.trailing).lineLimit(2)
+            }
+            .font(.callout)
+            .padding(.vertical, 9)
+            Divider()
+        }
+    }
+}
+
+/// The install the PC is working on: stage, bytes, and a bar.
+struct InstallProgressCard: View {
+    @EnvironmentObject var sync: Sync
+
+    var body: some View {
+        if let p = sync.progress {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(p.name.isEmpty ? "Installing" : p.name).font(.body.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text("\(Int(p.fraction * 100))%").font(.footnote.monospacedDigit()).foregroundColor(.secondary)
+                }
+                ProgressView(value: p.fraction)
+                    .tint(p.stage == "failed" ? .red : p.stage == "done" ? .green : .accentColor)
+                Text(p.label).font(.footnote.monospacedDigit()).foregroundColor(.secondary)
+            }
+            .padding(.vertical, 4)
+            .animation(.easeInOut(duration: 0.3), value: p)
         }
     }
 }
@@ -359,10 +564,15 @@ struct IpakillLibraryView: View {
     var body: some View {
         NavigationView {
             List {
+                if sync.progress != nil {
+                    Section { InstallProgressCard() }
+                }
+
                 Section {
                     Button { pairing = true } label: { StatusCard() }
                         .buttonStyle(.plain)
                     CertificateRow()
+                    NavigationLink { AppIDsView() } label: { AppIDsRow() }
                 } footer: {
                     Text("Apps you run inside ipakill are in the Apps tab. They need ipakill's certificate, which comes from the PC.")
                 }
@@ -467,6 +677,69 @@ private struct CertificateRow: View {
     }
 }
 
+private struct AppIDsRow: View {
+    @EnvironmentObject var sync: Sync
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "person.badge.key.fill")
+                .font(.title2)
+                .foregroundColor(.accentColor)
+                .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("App IDs").font(.body.weight(.semibold))
+                Group {
+                    if let ids = sync.appIDs {
+                        Text("\(ids.count) of \(sync.appIDLimit) in use · \(max(0, sync.appIDLimit - ids.count)) left")
+                            .foregroundColor(ids.count >= sync.appIDLimit ? .red : .secondary)
+                    } else if sync.loadingAppIDs {
+                        Text("Asking Apple…").foregroundColor(.secondary)
+                    } else {
+                        Text(sync.appIDsError ?? "Tap to check").foregroundColor(.secondary)
+                    }
+                }
+                .font(.footnote)
+                .lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
+        .task { if sync.appIDs == nil && sync.online { await sync.loadAppIDs() } }
+    }
+}
+
+private struct AppIDsView: View {
+    @EnvironmentObject var sync: Sync
+
+    var body: some View {
+        List {
+            Section {
+                if let ids = sync.appIDs {
+                    if ids.isEmpty { Text("None in use").foregroundColor(.secondary) }
+                    ForEach(ids) { a in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(a.name.isEmpty ? a.identifier : a.name).font(.body.weight(.semibold))
+                            Text(a.identifier).font(.footnote.monospaced()).foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } else if sync.loadingAppIDs {
+                    HStack(spacing: 12) { ProgressView(); Text("Asking Apple…").foregroundColor(.secondary) }
+                } else if let err = sync.appIDsError {
+                    Text(err).foregroundColor(.red)
+                }
+            } header: {
+                if let ids = sync.appIDs { Text("\(ids.count) of \(sync.appIDLimit) in use") }
+            } footer: {
+                Text("A free Apple ID can create \(sync.appIDLimit) app IDs per 7 days; each frees up 7 days after it was made. Re-signing the same app reuses its ID. Apps you run inside ipakill use none.")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("App IDs")
+        .refreshable { await sync.loadAppIDs(fresh: true) }
+        .task { await sync.loadAppIDs() }
+    }
+}
+
 private struct LibraryRow: View {
     @EnvironmentObject var sync: Sync
     let app: SignedApp
@@ -567,7 +840,9 @@ private struct LogView: View {
     var body: some View {
         ScrollViewReader { proxy in
             List {
-                if sync.busy {
+                if sync.progress != nil {
+                    Section { InstallProgressCard() }
+                } else if sync.busy {
                     HStack(spacing: 12) {
                         ProgressView()
                         Text("Working on the PC…").foregroundColor(.secondary)

@@ -9,7 +9,16 @@ struct StoreApp: Identifiable, Hashable {
     var icon: String? = nil
     var subtitle: String? = nil
     var developer: String? = nil
+    var about: String? = nil          // the long description
+    var notes: String? = nil          // what's new in this version
+    var screenshots: [String] = []
+    var size: Int64? = nil            // bytes
+    var date: String? = nil
+    var bundleID: String? = nil
     var id: String { source + "|" + name }
+
+    /// Lowercased text the search matches against.
+    var searchKey: String { (name + " " + (developer ?? "") + " " + (subtitle ?? "")).lowercased() }
 }
 
 /// A source's own name and icon, shown on the Sources tab.
@@ -52,10 +61,13 @@ enum SourceLoader {
     private struct GHRelease: Decodable {
         let tag_name: String
         let draft: Bool
+        let body: String?
+        let published_at: String?
         let assets: [GHAsset]
     }
     private struct GHAsset: Decodable {
         let name: String
+        let size: Int64?
         let browser_download_url: String
     }
 
@@ -72,7 +84,10 @@ enum SourceLoader {
             let file = String(ipa.name.dropLast(4))
             let version = Version.find(in: file) ?? Version.find(in: r.tag_name) ?? r.tag_name
             return [StoreApp(name: Version.stripped(file), version: version,
-                             url: ipa.browser_download_url, source: source)]
+                             url: ipa.browser_download_url, source: source,
+                             developer: repo.split(separator: "/").first.map(String.init),
+                             notes: r.body, size: ipa.size,
+                             date: r.published_at.map { String($0.prefix(10)) })]
         }
         return []
     }
@@ -106,13 +121,38 @@ enum SourceLoader {
             guard let link = str(latest, "downloadURL", "down") ?? str(a, "downloadURL", "downloadUrl", "down")
             else { return nil }
             let version = str(latest, "version") ?? str(a, "version") ?? "?"
+            let size = str(latest, "size") ?? str(a, "size")
             return StoreApp(name: name, version: version, url: link, source: source,
                             icon: str(a, "iconURL", "iconUrl", "icon"),
                             subtitle: str(a, "subtitle", "localizedDescription", "versionDescription"),
-                            developer: str(a, "developerName", "developer"))
+                            developer: str(a, "developerName", "developer"),
+                            about: str(a, "localizedDescription", "description"),
+                            notes: str(latest, "localizedDescription", "versionDescription") ?? str(a, "versionDescription"),
+                            screenshots: screenshots(a),
+                            size: size.flatMap { Int64($0) ?? Double($0).map { Int64($0) } },
+                            date: (str(latest, "date") ?? str(a, "versionDate")).map { String($0.prefix(10)) },
+                            bundleID: str(a, "bundleIdentifier", "bundleID"))
         }
         return (info, list)
     }
+}
+
+/// Screenshot links, in whichever shape the source uses: "screenshotURLs",
+/// "screenshots" as a list of links or of {imageURL}, or split per device.
+private func screenshots(_ a: [String: Any]) -> [String] {
+    func links(_ v: Any?) -> [String] {
+        if let list = v as? [String] { return list }
+        if let list = v as? [[String: Any]] {
+            return list.compactMap { ($0["imageURL"] ?? $0["url"]) as? String }
+        }
+        return []
+    }
+    if let byDevice = a["screenshots"] as? [String: Any] {
+        let phone = links(byDevice["iphone"])
+        return phone.isEmpty ? links(byDevice["ipad"]) : phone
+    }
+    let list = links(a["screenshots"])
+    return list.isEmpty ? links(a["screenshotURLs"]) : list
 }
 
 enum SourceError: LocalizedError {

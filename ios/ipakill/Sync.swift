@@ -1,7 +1,7 @@
 import Foundation
 
 /// An app the PC signed, as reported by `ipakill serve`.
-struct SignedApp: Codable, Identifiable {
+struct SignedApp: Codable, Identifiable, Equatable {
     let name: String
     let bundle: String
     let signed: Date
@@ -24,6 +24,67 @@ private struct InstallResponse: Decodable {
     let ok: Bool
     let error: String?
     let log: String?
+}
+
+private struct ProgressResponse: Decodable {
+    let running: Bool
+    let name: String?
+    let stage: String?
+    let done: Int64?
+    let total: Int64?
+    let percent: Int?
+    let started: Int64?
+    let lines: [String]?
+    let next: Int?
+}
+
+/// What the PC is doing for the current install, for the progress bar.
+struct InstallProgress: Equatable {
+    var name = ""
+    var stage = ""          // download, upload, sign, install, done, failed
+    var done: Int64 = 0
+    var total: Int64 = 0
+    var percent = 0
+
+    /// 0...1 across the whole install: getting the file is the first 40%,
+    /// signing 40-60%, installing on the phone the rest.
+    var fraction: Double {
+        switch stage {
+        case "download", "upload": return total > 0 ? 0.4 * Double(done) / Double(total) : 0.05
+        case "sign": return 0.45
+        case "install": return 0.6 + 0.4 * Double(percent) / 100
+        case "done": return 1
+        default: return 0
+        }
+    }
+
+    var label: String {
+        let f = ByteCountFormatter()
+        switch stage {
+        case "download", "upload":
+            let verb = stage == "download" ? "Downloading" : "Uploading"
+            return total > 0 ? "\(verb) \(f.string(fromByteCount: done)) of \(f.string(fromByteCount: total))"
+                             : "\(verb) \(f.string(fromByteCount: done))"
+        case "sign": return "Signing with your Apple ID…"
+        case "install": return "Installing on iPhone \(percent)%"
+        case "done": return "Done"
+        case "failed": return "Failed"
+        default: return "Starting…"
+        }
+    }
+}
+
+struct AppIDInfo: Decodable, Identifiable {
+    let name: String
+    let identifier: String
+    var id: String { identifier }
+}
+
+private struct AppIDsResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let ids: [AppIDInfo]?
+    let limit: Int?
 }
 
 private struct ExecResponse: Decodable {
@@ -50,6 +111,13 @@ final class Sync: ObservableObject {
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
+    @Published var progress: InstallProgress?
+    private var progressLines = 0
+
+    @Published var appIDs: [AppIDInfo]?
+    @Published var appIDLimit = 10
+    @Published var appIDsError: String?
+    @Published var loadingAppIDs = false
 
     // Terminal: commands run on the PC (needs 'ipakill-core serve --shell').
     @Published var term: [String] = ["type 'help' - commands run on the PC"]
@@ -57,7 +125,15 @@ final class Sync: ObservableObject {
     @Published var termBusy = false
 
     @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
-    @Published var store: [StoreApp] = []
+    @Published var store: [StoreApp] = [] {
+        didSet {
+            storeSorted = store.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            storeBySource = Dictionary(grouping: store, by: \.source)
+        }
+    }
+    /// Kept ready so views don't sort or filter thousands of apps on every redraw.
+    private(set) var storeSorted: [StoreApp] = []
+    private var storeBySource: [String: [StoreApp]] = [:]
     @Published var storeErrors: [String: String] = [:]   // source -> error
     @Published var sourceInfo: [String: SourceInfo] = [:]
     @Published var loadingStore = false
@@ -137,18 +213,24 @@ final class Sync: ObservableObject {
             let s = try Sync.decoder.decode(StatusResponse.self, from: data)
             guard s.ok else {
                 if online || log.last != "! \(s.error ?? "rejected")" { say("! \(s.error ?? "rejected")") }
-                online = false
+                if online { online = false }
                 return
             }
             if !online { say("synced with \(s.pc ?? "PC").") }
-            online = true
-            pcName = s.pc ?? ""
-            phoneLink = s.phone ?? ""
-            apps = s.apps ?? []
-            if let data = try? JSONEncoder.iso.encode(apps) { defaults.set(data, forKey: "apps") }
+            // Only assign what changed: every assignment redraws every screen.
+            if !online { online = true }
+            if pcName != (s.pc ?? "") { pcName = s.pc ?? "" }
+            if phoneLink != (s.phone ?? "") { phoneLink = s.phone ?? "" }
+            let newApps = s.apps ?? []
+            if apps != newApps {
+                apps = newApps
+                if let data = try? JSONEncoder.iso.encode(apps) { defaults.set(data, forKey: "apps") }
+            }
         } catch {
-            if online { say("lost connection to PC.") }
-            online = false
+            if online {
+                say("lost connection to PC.")
+                online = false
+            }
         }
     }
 
@@ -183,7 +265,7 @@ final class Sync: ObservableObject {
 
     /// The apps one source offers, in the order the source lists them.
     func apps(in source: String) -> [StoreApp] {
-        store.filter { $0.source == source }
+        storeBySource[source] ?? []
     }
 
     func sourceName(_ source: String) -> String {
@@ -292,7 +374,34 @@ final class Sync: ObservableObject {
 
     private func send(_ req: URLRequest, upload file: URL?) async {
         busy = true
-        defer { busy = false }
+        progress = InstallProgress()
+        progressLines = 0
+        // Poll the PC for the progress bar and the full log while it works.
+        let poller = Task { @MainActor in
+            var from = 0
+            var started: Int64?
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let p = await fetchProgress(from: from) else { continue }
+                if started == nil { started = p.started; from = 0 }
+                if p.started != started { continue }  // an older install
+                for line in p.lines ?? [] {
+                    say("  " + line)
+                    progressLines += 1
+                }
+                from = p.next ?? from
+                progress = InstallProgress(name: p.name ?? "", stage: p.stage ?? "", done: p.done ?? 0,
+                                           total: p.total ?? 0, percent: p.percent ?? 0)
+            }
+        }
+        defer {
+            poller.cancel()
+            busy = false
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if !self.busy { self.progress = nil }
+            }
+        }
         do {
             let data: Data
             let resp: URLResponse
@@ -306,14 +415,52 @@ final class Sync: ObservableObject {
                 return
             }
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
-            for line in (r.log ?? "").split(separator: "\n") {
-                say(line.trimmingCharacters(in: .whitespaces))
+            poller.cancel()
+            if progressLines == 0 {  // an older PC without /progress: show its summary
+                for line in (r.log ?? "").split(separator: "\n") {
+                    say(line.trimmingCharacters(in: .whitespaces))
+                }
             }
+            progress?.stage = r.ok ? "done" : "failed"
             if !r.ok { say("! \(r.error ?? "install failed")") }
         } catch {
             say("! \(error.localizedDescription)")
         }
         await poll()
+    }
+
+    private func fetchProgress(from: Int) async -> ProgressResponse? {
+        guard let req = request("/progress?from=\(from)", timeout: 4),
+              let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200
+        else { return nil }
+        return try? JSONDecoder().decode(ProgressResponse.self, from: data)
+    }
+
+    // MARK: app IDs
+
+    /// The app IDs the Apple ID holds right now (a free one gets 10 per 7 days).
+    func loadAppIDs(fresh: Bool = false) async {
+        guard online, let req = request("/appids" + (fresh ? "?fresh=1" : ""), timeout: 60) else { return }
+        loadingAppIDs = true
+        defer { loadingAppIDs = false }
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                appIDsError = "Update the PC part to see this (Terminal: update)"
+                return
+            }
+            let r = try JSONDecoder().decode(AppIDsResponse.self, from: data)
+            if r.ok {
+                appIDs = r.ids ?? []
+                appIDLimit = r.limit ?? 10
+                appIDsError = nil
+            } else {
+                appIDsError = r.error ?? "could not list app IDs"
+            }
+        } catch {
+            appIDsError = error.localizedDescription
+        }
     }
 
     // MARK: terminal
