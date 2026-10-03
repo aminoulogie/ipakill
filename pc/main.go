@@ -230,35 +230,25 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 
 	args := append([]string{"sign", "-p", ipa, "--apple-id", "--register-and-install",
 		"--udid", strconv.Itoa(dev.ID)}, extra...)
-	cmd := exec.Command(plumesign, args...)
-	cmd.Env = append(os.Environ(), "RUST_LOG=info")
-	pipe, _ := cmd.StdoutPipe()
-	cmd.Stderr = cmd.Stdout
-	if err := cmd.Start(); err != nil {
-		return App{}, err
-	}
 
 	logf, _ := os.Create(logFile)
 	defer logf.Close()
-	bundle := ""
-	sc := bufio.NewScanner(pipe)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		fmt.Fprintln(logf, line)
-		progLine(line)
-		if m := bundleRe.FindStringSubmatch(line); m != nil {
-			bundle = m[1] // the main app is signed last, so the last match wins
+	var bundle string
+	// SideStore's anisette server (Apple login helper codes) sometimes answers
+	// with garbage for a minute; that is worth waiting out instead of failing.
+	for attempt := 1; ; attempt++ {
+		var anisette bool
+		bundle, anisette, err = runPlumesign(args, out, logf)
+		if err == nil {
+			break
 		}
-		if strings.Contains(line, "plumesign::") || strings.Contains(line, "ERROR") || strings.HasPrefix(line, "Error") {
-			if i := strings.Index(line, "] "); i >= 0 && strings.HasPrefix(line, "[") {
-				line = line[i+2:]
-			}
-			fmt.Fprintln(out, "  "+line)
+		if !anisette || attempt == 3 {
+			return App{}, fmt.Errorf("install failed: %v (full log: %s)", err, logFile)
 		}
-	}
-	if err := cmd.Wait(); err != nil {
-		return App{}, fmt.Errorf("install failed - full log: %s", logFile)
+		msg := fmt.Sprintf("Apple's login helper server didn't answer properly - retrying in 20s (%d/3)", attempt+1)
+		fmt.Fprintln(out, "  "+msg)
+		progLine(msg)
+		time.Sleep(20 * time.Second)
 	}
 
 	base := strings.TrimSuffix(filepath.Base(ipa), filepath.Ext(ipa))
@@ -279,6 +269,48 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	saveApps(apps)
 	fmt.Fprintf(out, "[ipakill] Done! %s is signed until %s.\n", name, app.Expires.Format("Mon Jan 2 15:04"))
 	return app, nil
+}
+
+// runPlumesign runs one sign + install, streaming its output; anisette
+// reports whether it failed on the anisette server.
+func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, anisette bool, err error) {
+	var reason string
+	cmd := exec.Command(plumesign, args...)
+	cmd.Env = append(os.Environ(), "RUST_LOG=info")
+	pipe, _ := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		return "", false, err
+	}
+	sc := bufio.NewScanner(pipe)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		fmt.Fprintln(logf, line)
+		progLine(line)
+		if strings.Contains(line, "Anisette error") {
+			anisette = true
+		}
+		if strings.HasPrefix(line, "Error: ") && reason == "" {
+			reason = strings.TrimPrefix(line, "Error: ")
+		}
+		if m := bundleRe.FindStringSubmatch(line); m != nil {
+			bundle = m[1] // the main app is signed last, so the last match wins
+		}
+		if strings.Contains(line, "plumesign::") || strings.Contains(line, "ERROR") || strings.HasPrefix(line, "Error") {
+			if i := strings.Index(line, "] "); i >= 0 && strings.HasPrefix(line, "[") {
+				line = line[i+2:]
+			}
+			fmt.Fprintln(out, "  "+line)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		if reason != "" {
+			return bundle, anisette, fmt.Errorf("%s", reason)
+		}
+		return bundle, anisette, err
+	}
+	return bundle, anisette, nil
 }
 
 func keyFor(a App) string {
