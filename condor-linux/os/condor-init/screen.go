@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -78,20 +79,28 @@ func (r Rotation) fromFB(fx, fy, fbW, fbH int) (int, int) {
 // bitfield is struct fb_bitfield: where a colour channel sits in a pixel.
 type bitfield struct{ offset, length, msbRight uint32 }
 
-// Screen is the framebuffer seen in logical (rotated) coordinates.
+// Screen is the framebuffer seen in logical (rotated) coordinates. Drawing goes into a back
+// buffer in RAM; Flush writes the changed rows to the device with write().
+//
+// Why not mmap: on psbfb (TRA-901G, 2026-10-03) the mmap view is shifted by 299 rows from
+// the read()/write() view and ends 299 rows early, and the panel scans out the
+// read()/write() view. Row tags written through mmap showed up 299 rows earlier via read().
 type Screen struct {
-	mem              []byte
+	buf              []byte      // back buffer, native layout (stride * fbH)
+	dev              io.WriterAt // the framebuffer device; nil in tests
 	stride, bpp      int
 	fbW, fbH         int // native
 	W, H             int // logical
 	rot              Rotation
 	red, green, blue bitfield
+	dirtyLo, dirtyHi int // native rows changed since the last Flush; lo > hi means none
 }
 
-func newScreen(mem []byte, fbW, fbH, stride, bpp int, red, green, blue bitfield, rot Rotation) *Screen {
+func newScreen(dev io.WriterAt, fbW, fbH, stride, bpp int, red, green, blue bitfield, rot Rotation) *Screen {
 	w, h := rot.size(fbW, fbH)
-	return &Screen{mem: mem, stride: stride, bpp: bpp, fbW: fbW, fbH: fbH, W: w, H: h, rot: rot,
-		red: red, green: green, blue: blue}
+	return &Screen{buf: make([]byte, stride*fbH), dev: dev, stride: stride, bpp: bpp,
+		fbW: fbW, fbH: fbH, W: w, H: h, rot: rot, red: red, green: green, blue: blue,
+		dirtyLo: fbH, dirtyHi: -1}
 }
 
 func (s *Screen) pack(r, g, b uint8) uint32 {
@@ -99,7 +108,11 @@ func (s *Screen) pack(r, g, b uint8) uint32 {
 	return c(r, s.red) | c(g, s.green) | c(b, s.blue)
 }
 
-// Set colours one logical pixel; points off the screen are ignored.
+func (s *Screen) markRows(lo, hi int) {
+	s.dirtyLo, s.dirtyHi = min(s.dirtyLo, lo), max(s.dirtyHi, hi)
+}
+
+// Set colours one logical pixel in the back buffer; points off the screen are ignored.
 func (s *Screen) Set(x, y int, r, g, b uint8) {
 	if x < 0 || y < 0 || x >= s.W || y >= s.H {
 		return
@@ -107,19 +120,70 @@ func (s *Screen) Set(x, y int, r, g, b uint8) {
 	fx, fy := s.rot.toFB(x, y, s.fbW, s.fbH)
 	o := fy*s.stride + fx*s.bpp/8
 	if s.bpp == 32 {
-		binary.LittleEndian.PutUint32(s.mem[o:], s.pack(r, g, b))
+		binary.LittleEndian.PutUint32(s.buf[o:], s.pack(r, g, b))
 	} else {
-		binary.LittleEndian.PutUint16(s.mem[o:], uint16(s.pack(r, g, b)))
+		binary.LittleEndian.PutUint16(s.buf[o:], uint16(s.pack(r, g, b)))
 	}
+	s.markRows(fy, fy)
+}
+
+// Flush writes the rows changed since the last Flush to the framebuffer device.
+func (s *Screen) Flush() error {
+	if s.dirtyLo > s.dirtyHi {
+		return nil
+	}
+	lo, hi := s.dirtyLo, s.dirtyHi
+	s.dirtyLo, s.dirtyHi = s.fbH, -1
+	if s.dev == nil {
+		return nil
+	}
+	_, err := s.dev.WriteAt(s.buf[lo*s.stride:(hi+1)*s.stride], int64(lo*s.stride))
+	return err
+}
+
+// Clear makes the whole screen black and writes it out.
+func (s *Screen) Clear() error {
+	clear(s.buf)
+	s.markRows(0, s.fbH-1)
+	return s.Flush()
 }
 
 // Fill colours the logical rectangle [x0,x1) x [y0,y1).
 func (s *Screen) Fill(x0, y0, x1, y1 int, r, g, b uint8) {
-	for y := y0; y < y1; y++ {
-		for x := x0; x < x1; x++ {
+	for y := max(y0, 0); y < min(y1, s.H); y++ {
+		for x := max(x0, 0); x < min(x1, s.W); x++ {
 			s.Set(x, y, r, g, b)
 		}
 	}
+}
+
+// Dot draws a filled circle of radius rad centred on logical (cx, cy).
+func (s *Screen) Dot(cx, cy, rad int, r, g, b uint8) {
+	for y := -rad; y <= rad; y++ {
+		for x := -rad; x <= rad; x++ {
+			if x*x+y*y <= rad*rad {
+				s.Set(cx+x, cy+y, r, g, b)
+			}
+		}
+	}
+}
+
+// Line draws dots of radius rad from (x0,y0) to (x1,y1), so fast strokes stay continuous.
+func (s *Screen) Line(x0, y0, x1, y1, rad int, r, g, b uint8) {
+	dx, dy := x1-x0, y1-y0
+	steps := max(abs(dx), abs(dy), 1)
+	step := max(rad/2, 1)
+	for i := 0; i <= steps; i += step {
+		s.Dot(x0+dx*i/steps, y0+dy*i/steps, rad, r, g, b)
+	}
+	s.Dot(x1, y1, rad, r, g, b)
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TestPattern draws, in logical coordinates: a white border, 8 vertical colour bars over the

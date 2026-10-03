@@ -1,7 +1,7 @@
 // condor-init: our first userspace program on the Condor TRA-901G.
 //
 // Started as root by the /system takeover hook (see cli/takeover.go) after Android's zygote
-// has been stopped. It unblanks the framebuffer, draws a test pattern in the logical
+// has been stopped. It clears the framebuffer, draws a test pattern in the logical
 // (portrait) orientation, and serves a shell on 127.0.0.1:2323, which the PC reaches over USB:
 //
 //	adb forward tcp:2323 tcp:2323   then connect to localhost:2323 (e.g. ncat, PuTTY raw)
@@ -16,18 +16,43 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 const shellAddr = "127.0.0.1:2323"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "drm" { // diagnostic, read-only: what the display scans out
+		fmt.Print(drmInfo())
+		return
+	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("condor-init starting, pid %d", os.Getpid())
-	if s, err := openScreen(rotation); err != nil {
+	// Survive the end of the adb/shell session that may have started us by hand.
+	signal.Ignore(syscall.SIGHUP)
+	setBacklight(80)
+	s, err := openScreen(rotation)
+	if err != nil {
 		log.Printf("framebuffer: %v", err)
 	} else {
+		if err := s.Clear(); err != nil {
+			log.Printf("clear: %v", err)
+		}
+		// Leave the screen black when we're stopped (kill, Ctrl-C), not half a picture.
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			sig := <-stop
+			s.Clear()
+			log.Printf("got %v: screen cleared, exiting", sig)
+			os.Exit(0)
+		}()
 		s.TestPattern()
+		if err := s.Flush(); err != nil {
+			log.Printf("flush: %v", err)
+		}
 		log.Printf("test pattern drawn")
 	}
 	serveShell()

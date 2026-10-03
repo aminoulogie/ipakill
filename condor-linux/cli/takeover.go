@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // The /system takeover route. Condor's boot and recovery images are signed and the firmware
@@ -23,7 +24,7 @@ const (
 	initPath      = condorDir + "/condor-init"
 	systemDev     = "/dev/block/mmcblk0p8"
 	shellTmp      = "/data/local/tmp"
-	takeoverUsage = "usage: condor takeover status | arm [condor-init binary] | disarm | hook"
+	takeoverUsage = "usage: condor takeover status | arm [condor-init binary] | disarm | push <binary> | restart | hook"
 )
 
 const takeoverHook = `#!/system/bin/sh
@@ -79,6 +80,13 @@ func takeover(args []string) error {
 		sh("su -c 'rm " + triggerPath + "'")
 		fmt.Println("disarmed: next boot is normal Android.")
 		return nil
+	case "push": // install a new condor-init without arming
+		if len(args) < 2 {
+			return fmt.Errorf("usage: condor takeover push <condor-init binary>")
+		}
+		return pushRoot(args[1], initPath, "755")
+	case "restart": // replace the running condor-init without rebooting
+		return takeoverRestart()
 	}
 	return fmt.Errorf(takeoverUsage)
 }
@@ -110,6 +118,46 @@ func pushRoot(local, remote, mode string) error {
 		return fmt.Errorf("%s md5 mismatch after rename: %q, want %s", remote, got, want)
 	}
 	fmt.Printf("installed %s (md5 %s)\n", remote, want)
+	return nil
+}
+
+// condorInitPids returns the pids of running condor-init processes.
+func condorInitPids() []string {
+	var pids []string
+	for _, l := range strings.Split(sh("ps"), "\n") {
+		if f := strings.Fields(l); len(f) > 1 && strings.HasSuffix(strings.TrimSpace(l), "condor-init") {
+			pids = append(pids, f[1])
+		}
+	}
+	return pids
+}
+
+// takeoverRestart stops condor-init (it clears the screen on SIGTERM) and starts the
+// installed binary again, detached. Only in takeover mode: with Android running it would
+// draw over SurfaceFlinger.
+func takeoverRestart() error {
+	if strings.Contains(sh("ps"), "system_server") {
+		return fmt.Errorf("Android is running; restart only works in takeover mode (arm + reboot)")
+	}
+	for _, pid := range condorInitPids() {
+		sh("su -c 'kill " + pid + "'")
+	}
+	for i := 0; i < 10 && len(condorInitPids()) > 0; i++ {
+		time.Sleep(300 * time.Millisecond)
+	}
+	if p := condorInitPids(); len(p) > 0 {
+		return fmt.Errorf("condor-init still running (pid %v)", p)
+	}
+	// Let init start it, exactly like at boot: the hook *is* the flash_recovery service, and
+	// that service stopped when condor-init (which the hook exec'd into) exited. Starting it
+	// from 'su ... &' doesn't work: su tears the child down when it returns.
+	sh("su -c 'touch " + triggerPath + "; start flash_recovery'")
+	time.Sleep(2 * time.Second)
+	p := condorInitPids()
+	if len(p) == 0 {
+		return fmt.Errorf("condor-init didn't start; see: condor takeover status")
+	}
+	fmt.Println("condor-init restarted, pid", p[0])
 	return nil
 }
 

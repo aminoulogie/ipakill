@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -16,6 +18,8 @@ const (
 	fbioGetFScreenInfo = 0x4602
 	fbioBlank          = 0x4611
 	fbBlankUnblank     = 0
+
+	backlightDir = "/sys/class/backlight/psb-bl"
 )
 
 func ioctl(fd uintptr, req uintptr, arg unsafe.Pointer) error {
@@ -25,8 +29,9 @@ func ioctl(fd uintptr, req uintptr, arg unsafe.Pointer) error {
 	return nil
 }
 
-// openScreen opens and maps the framebuffer, unblanks it, and wraps it in the logical
-// (rotated) Screen. The file stays open for the life of the process.
+// openScreen opens the framebuffer, unblanks it, and wraps it in the logical (rotated)
+// Screen, which draws through write() (see Screen for why not mmap). The device stays open
+// for the life of the process.
 func openScreen(rot Rotation) (*Screen, error) {
 	var f *os.File
 	var err error
@@ -55,28 +60,37 @@ func openScreen(rot Rotation) (*Screen, error) {
 	bf := func(o int) bitfield {
 		return bitfield{le.Uint32(vinfo[o:]), le.Uint32(vinfo[o+4:]), le.Uint32(vinfo[o+8:])}
 	}
-	heightMM, widthMM := le.Uint32(vinfo[88:]), le.Uint32(vinfo[92:])
-	fbRotate := le.Uint32(vinfo[136:])
 	smemLen := int(le.Uint32(finfo[20:]))
 	stride := int(le.Uint32(finfo[44:]))
-	log.Printf("fb: native %dx%d, %d bpp, stride %d, mem %d, panel %dx%d mm, fb rotate %d; using rotation %d",
-		fbW, fbH, bpp, stride, smemLen, widthMM, heightMM, fbRotate, rot)
+	log.Printf("fb: native %dx%d, %d bpp, stride %d, mem %d, fb rotate %d; using rotation %d",
+		fbW, fbH, bpp, stride, smemLen, le.Uint32(vinfo[136:]), rot)
 	if bpp != 32 && bpp != 16 {
 		return nil, fmt.Errorf("unsupported %d bpp", bpp)
+	}
+	if stride*fbH > smemLen {
+		return nil, fmt.Errorf("stride %d x %d rows exceeds framebuffer memory %d", stride, fbH, smemLen)
 	}
 	// Unblank: SurfaceFlinger normally does this, and it's gone now.
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd, fbioBlank, fbBlankUnblank); e != 0 {
 		log.Printf("FBIOBLANK unblank: %v (continuing)", e)
 	}
-	size := stride * fbH
-	if size > smemLen || size == 0 {
-		size = smemLen
-	}
-	mem, err := syscall.Mmap(int(fd), 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, fmt.Errorf("mmap: %w", err)
-	}
-	s := newScreen(mem, fbW, fbH, stride, bpp, bf(32), bf(44), bf(56), rot)
+	s := newScreen(f, fbW, fbH, stride, bpp, bf(32), bf(44), bf(56), rot)
 	log.Printf("screen: logical %dx%d", s.W, s.H)
 	return s, nil
+}
+
+// setBacklight sets the panel backlight to percent of its maximum.
+func setBacklight(percent int) {
+	max := 100
+	if b, err := os.ReadFile(backlightDir + "/max_brightness"); err == nil {
+		if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v > 0 {
+			max = v
+		}
+	}
+	v := max * percent / 100
+	if err := os.WriteFile(backlightDir+"/brightness", []byte(strconv.Itoa(v)), 0); err != nil {
+		log.Printf("backlight: %v", err)
+		return
+	}
+	log.Printf("backlight %d/%d", v, max)
 }

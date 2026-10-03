@@ -34,14 +34,55 @@ func TestRot90MatchesPanel(t *testing.T) {
 	}
 }
 
-func TestScreenSet(t *testing.T) {
-	mem := make([]byte, fbW*4*fbH)
-	s := newScreen(mem, fbW, fbH, fbW*4, 32, bitfield{16, 8, 0}, bitfield{8, 8, 0}, bitfield{0, 8, 0}, Rot90)
-	s.Set(0, 0, 255, 0, 0) // logical top-left, red
-	o := (fbH-1)*fbW*4 + 0
-	if mem[o+2] != 255 || mem[o+1] != 0 || mem[o] != 0 {
-		t.Fatalf("pixel bytes % x", mem[o:o+4])
+// fakeFB records WriteAt calls like the framebuffer device would receive them.
+type fakeFB struct{ mem []byte }
+
+func (f *fakeFB) WriteAt(p []byte, off int64) (int, error) { return copy(f.mem[off:], p), nil }
+
+func xrgb() (bitfield, bitfield, bitfield) {
+	return bitfield{16, 8, 0}, bitfield{8, 8, 0}, bitfield{0, 8, 0}
+}
+
+func TestScreenSetFlush(t *testing.T) {
+	dev := &fakeFB{mem: make([]byte, fbW*4*fbH)}
+	r, g, b := xrgb()
+	s := newScreen(dev, fbW, fbH, fbW*4, 32, r, g, b, Rot90)
+	s.Set(0, 0, 255, 0, 0) // logical top-left, red → native bottom-left
+	o := (fbH - 1) * fbW * 4
+	if dev.mem[o+2] != 0 {
+		t.Fatal("Set must not touch the device before Flush")
+	}
+	if s.dirtyLo != fbH-1 || s.dirtyHi != fbH-1 {
+		t.Fatalf("dirty rows %d..%d", s.dirtyLo, s.dirtyHi)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if dev.mem[o+2] != 255 || dev.mem[o+1] != 0 || dev.mem[o] != 0 {
+		t.Fatalf("pixel bytes after flush % x", dev.mem[o:o+4])
+	}
+	if s.dirtyLo <= s.dirtyHi {
+		t.Fatal("Flush must reset the dirty range")
 	}
 	s.Set(-1, 5, 1, 1, 1) // off screen: ignored, no panic
 	s.Set(s.W, 0, 1, 1, 1)
+	s.Dot(5, 5, 20, 1, 1, 1) // partly off screen
+	s.Line(0, 0, s.W-1, s.H-1, 3, 9, 9, 9)
+}
+
+func TestScreenClear(t *testing.T) {
+	dev := &fakeFB{mem: make([]byte, fbW*4*fbH)}
+	for i := range dev.mem {
+		dev.mem[i] = 0x77
+	}
+	r, g, b := xrgb()
+	s := newScreen(dev, fbW, fbH, fbW*4, 32, r, g, b, Rot90)
+	if err := s.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range dev.mem {
+		if v != 0 {
+			t.Fatalf("byte %d is %#x after Clear", i, v)
+		}
+	}
 }

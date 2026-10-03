@@ -136,6 +136,8 @@ func usage() {
   condor takeover status                 /system hook, condor-init, trigger, logs
   condor takeover arm [condor-init]      next boot (once) stops Android, runs condor-init
   condor takeover disarm                 next boot is normal Android
+  condor takeover push <condor-init>     install a new condor-init without arming
+  condor takeover restart                restart condor-init in place (takeover mode only)
   condor takeover hook                   print the hook script that lives in /system
   condor setup                   make 'condor' work in any cmd window
 `)
