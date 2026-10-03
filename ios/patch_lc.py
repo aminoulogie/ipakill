@@ -92,6 +92,42 @@ edit(tab,
      "        .modifier(IpakillLifecycle())\n"
      "        .environmentObject(ipakillSync)\n")
 
+# One-jump Home Screen launch (no extension, no app ID): a Shortcut saves
+# ipakill-launch.txt (an app's name) into ipakill's Documents and opens
+# ipakill; on a cold start we read it before anything loads and boot straight
+# into that app. A note older than 30 s is ignored, any note is deleted.
+edit("LiveContainer/LCBootstrap.m",
+     """    NSString *selectedContainer = [lcUserDefaults stringForKey:@"selectedContainer"];
+    NSString *launchUrl = nil;
+""",
+     """    NSString *selectedContainer = [lcUserDefaults stringForKey:@"selectedContainer"];
+    NSString *launchUrl = nil;
+    do {
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *docs = [NSString stringWithFormat:@"%s/Documents", getenv("LC_HOME_PATH")];
+        NSString *note = [docs stringByAppendingPathComponent:@"ipakill-launch.txt"];
+        NSDate *written = [fm attributesOfItemAtPath:note error:nil].fileModificationDate;
+        if(!written) break;
+        NSString *wanted = [[NSString stringWithContentsOfFile:note encoding:NSUTF8StringEncoding error:nil]
+                            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        [fm removeItemAtPath:note error:nil];
+        if(selectedApp || -written.timeIntervalSinceNow > 30 || wanted.length == 0) break;
+        // Accept the bundle folder name or the app's name, any case.
+        NSString *apps = [docs stringByAppendingPathComponent:@"Applications"];
+        for(NSString *folder in [fm contentsOfDirectoryAtPath:apps error:nil]) {
+            if(![folder hasSuffix:@".app"]) continue;
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/%@/Info.plist", apps, folder]];
+            for(NSString *name in @[folder, [folder stringByDeletingPathExtension], info[@"CFBundleDisplayName"] ?: @"", info[@"CFBundleName"] ?: @""]) {
+                if([name caseInsensitiveCompare:wanted] == NSOrderedSame) {
+                    selectedApp = folder;
+                    break;
+                }
+            }
+            if(selectedApp) break;
+        }
+    } while(0);
+""")
+
 # Branding.
 edit("xcconfigs/Global.xcconfig",
      "LIVECONTAINER_BUNDLE_IDENTIFIER = com.kdt.livecontainer$(DEVELOPMENT_TEAM_SUFFIX)",

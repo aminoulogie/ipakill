@@ -573,6 +573,19 @@ struct IpakillLibraryView: View {
                         .buttonStyle(.plain)
                     CertificateRow()
                     NavigationLink { AppIDsView() } label: { AppIDsRow() }
+                    NavigationLink { HomeScreenView() } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "apps.iphone")
+                                .font(.title2)
+                                .foregroundColor(.accentColor)
+                                .frame(width: 44, height: 44)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Home Screen Icons").font(.body.weight(.semibold))
+                                Text("Open an app inside ipakill in one tap").font(.footnote).foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
                 } footer: {
                     Text("Apps you run inside ipakill are in the Apps tab. They need ipakill's certificate, which comes from the PC.")
                 }
@@ -737,6 +750,100 @@ private struct AppIDsView: View {
         .navigationTitle("App IDs")
         .refreshable { await sync.loadAppIDs(fresh: true) }
         .task { await sync.loadAppIDs() }
+    }
+}
+
+/// An app installed inside ipakill (LiveContainer's Documents/Applications).
+private struct ContainerApp: Identifiable {
+    let folder: String
+    let name: String
+    var id: String { folder }
+    var launchLink: String {
+        var c = URLComponents(string: "livecontainer://livecontainer-launch")!
+        c.queryItems = [URLQueryItem(name: "bundle-name", value: folder)]
+        return c.url!.absoluteString
+    }
+
+    static func all() -> [ContainerApp] {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Applications")
+        let folders = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return folders.filter { $0.hasSuffix(".app") }.map { folder in
+            let info = NSDictionary(contentsOf: dir.appendingPathComponent(folder).appendingPathComponent("Info.plist"))
+            let name = info?["CFBundleDisplayName"] as? String ?? info?["CFBundleName"] as? String
+                ?? (folder as NSString).deletingPathExtension
+            return ContainerApp(folder: folder, name: name)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+/// How to make a one-tap Home Screen icon for an app inside ipakill: an
+/// Apple Shortcut saves the app's name to ipakill-launch.txt, then opens the
+/// launch link. ipakill reads the note before it starts (see patch_lc.py),
+/// so it opens straight into the app - no extension, no app ID.
+private struct HomeScreenView: View {
+    @State private var apps: [ContainerApp] = []
+    @State private var copied: String?
+
+    var body: some View {
+        List {
+            Section {
+                step(1, "Open the **Shortcuts** app, tap **+**.")
+                step(2, "Add **Text** and paste the app's **name** (copy it below).")
+                step(3, "Add **Save File**. Tap the folder, pick **On My iPhone › ipakill**. Turn **Ask Where to Save** off, set **Subpath** to `ipakill-launch.txt`, turn **Overwrite If File Exists** on.")
+                step(4, "Add **Open URLs** and paste the app's **link** (copy it below).")
+                step(5, "Tap the shortcut's name at the top › **Add to Home Screen**, choose its icon and name.")
+            } header: {
+                Text("Make an icon (once per app)")
+            } footer: {
+                Text("Tapping the icon opens the app directly. No extension and no app ID needed. The first time, Shortcuts asks to allow access to ipakill's folder: allow it.")
+            }
+
+            Section {
+                if apps.isEmpty {
+                    Text("No apps inside ipakill yet. Use Get › Run inside ipakill.").foregroundColor(.secondary)
+                }
+                ForEach(apps) { app in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(app.name).font(.body.weight(.semibold))
+                        HStack(spacing: 10) {
+                            copyButton("Copy name", app.name, id: app.folder + "name")
+                            copyButton("Copy link", app.launchLink, id: app.folder + "link")
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            } header: {
+                Text("Apps inside ipakill")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle("Home Screen Icons")
+        .onAppear { apps = ContainerApp.all() }
+    }
+
+    private func step(_ n: Int, _ text: LocalizedStringKey) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(n)").font(.footnote.weight(.bold)).foregroundColor(.white)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Color.accentColor))
+            Text(text).font(.callout)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func copyButton(_ title: String, _ value: String, id: String) -> some View {
+        Button {
+            UIPasteboard.general.string = value
+            copied = id
+        } label: {
+            Label(copied == id ? "Copied" : title, systemImage: copied == id ? "checkmark" : "doc.on.doc")
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().fill(Color(.tertiarySystemFill)))
+        }
+        .buttonStyle(.borderless)
     }
 }
 
