@@ -22,7 +22,6 @@ const (
 var alpineFiles = map[string]string{
 	"/etc/resolv.conf":           "nameserver 1.1.1.1\nnameserver 8.8.8.8\n",
 	"/etc/hostname":              "condor\n",
-	"/etc/profile.d/condor.sh":   "PS1='[\\u@\\h \\W]\\$ '\nalias ll='ls -l'\nalias la='ls -la'\n",
 	"/root/.condor-installed-by": "condor alpine install\n",
 }
 

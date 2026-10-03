@@ -54,6 +54,7 @@ func startShell(cols, rows int) (*os.File, func(), error) {
 	var cmd *exec.Cmd
 	attr := &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if alpineInstalled() {
+		configureAlpine()
 		if err := alpineMounts(); err != nil {
 			log.Printf("alpine mounts: %v", err)
 		}

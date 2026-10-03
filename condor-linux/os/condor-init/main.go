@@ -86,6 +86,7 @@ func main() {
 			go c.serve()
 		}
 	}
+	go runTunnel()
 	serveShell()
 }
 

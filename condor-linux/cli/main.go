@@ -13,6 +13,7 @@
 //	condor reboot [bootloader|recovery]
 //	condor bootimg info|unpack|pack  Intel OSIP boot images (files on the PC only)
 //	condor takeover status|arm|disarm|hook  one-shot boot into our own userspace via /system
+//	condor net                     internet for the tablet over USB, via this PC (leave running)
 //	condor alpine install|status|remove  Alpine Linux root for the console (/data/alpine)
 //	condor term                    open condor-init's root shell over USB (takeover mode)
 //	condor setup                  install so 'condor' works in any cmd window (also runs on double-click)
@@ -110,6 +111,8 @@ func main() {
 		err = reboot(args)
 	case "takeover":
 		err = takeover(args)
+	case "net":
+		err = netCmd(args)
 	case "alpine":
 		err = alpine(args)
 	case "term":
@@ -145,6 +148,7 @@ func usage() {
   condor takeover push <condor-init>     install a new condor-init without arming
   condor takeover restart                restart condor-init in place (takeover mode only)
   condor takeover hook                   print the hook script that lives in /system
+  condor net                     internet for the tablet over USB (leave it running)
   condor alpine install|status|remove  Alpine Linux for the console (apk etc.)
   condor term                    open condor-init's root shell (takeover mode, over USB)
   condor setup                   make 'condor' work in any cmd window
