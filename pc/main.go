@@ -362,7 +362,8 @@ func printList() {
 // ---------------------------------------------------------------- Wi-Fi server
 
 type syncConfig struct {
-	Code string `json:"code"`
+	Code  string `json:"code"`
+	Shell bool   `json:"shell,omitempty"` // terminal allowed; set by 'serve --shell', cleared by --no-shell
 }
 
 func loadSyncConfig() syncConfig {
@@ -472,6 +473,14 @@ func downloadOnce(src, dst string) error {
 
 func serve() error {
 	cfg := loadSyncConfig()
+	for _, a := range os.Args[2:] {
+		if a == "--shell" || a == "--no-shell" {
+			cfg.Shell = a == "--shell"
+			b, _ := json.MarshalIndent(cfg, "", "  ")
+			os.WriteFile(syncFile, b, 0o600)
+		}
+	}
+	terminalOn = cfg.Shell
 	os.MkdirAll(ipaDir, 0o755)
 	host, _ := os.Hostname()
 

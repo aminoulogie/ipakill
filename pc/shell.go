@@ -16,7 +16,7 @@ import (
 
 // The terminal in the ipakill iPhone app: commands typed on the phone run
 // here, one at a time, in a working directory that survives restarts.
-// Off unless the server was started with --shell: it is a remote shell,
+// Off until the server is started once with --shell (remembered): it is a remote shell,
 // guarded only by the pairing code (and the lockout in serve's auth).
 //
 // Built-in commands:
@@ -37,14 +37,11 @@ const shellHelp = `ipakill terminal - commands run on the PC (cmd.exe).
   update       download the latest ipakill-core and restart (no git or Go needed)
   restart      restart 'ipakill serve' (uses ipakill-core.new.exe if you built one)`
 
-func shellEnabled() bool {
-	for _, a := range os.Args[2:] {
-		if a == "--shell" {
-			return true
-		}
-	}
-	return false
-}
+// terminalOn is remembered in sync.json: 'serve --shell' turns it on for
+// good (so a plain 'ipakill serve' keeps it), 'serve --no-shell' turns it off.
+var terminalOn bool
+
+func shellEnabled() bool { return terminalOn }
 
 func currentDir() string {
 	if b, err := os.ReadFile(shellDir); err == nil {

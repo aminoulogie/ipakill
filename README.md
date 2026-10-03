@@ -34,7 +34,8 @@ Wi-Fi installs need "Sync with this iPhone over Wi-Fi" turned on in iTunes
 
 ## Terminal (run PC commands from the phone)
 
-Start the server with the terminal allowed:
+Start the server once with the terminal allowed (it is remembered, so a
+plain `ipakill serve` keeps it on; `serve --no-shell` turns it off):
 
 ```
 ipakill-core serve --shell
