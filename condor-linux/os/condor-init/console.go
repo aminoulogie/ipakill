@@ -1,0 +1,239 @@
+package main
+
+import (
+	"fmt"
+	"image"
+	"image/color"
+	"io"
+	"log"
+	"net"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/gofont/gomonobold"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
+
+	"condor-init/vt"
+)
+
+// consoleAddr is where `condor term` connects: input goes into the shell on the tablet's
+// screen, and the shell's output is copied back, so the PC and the tablet show one session.
+const consoleAddr = "127.0.0.1:2323"
+
+const consoleFontSize = 26 // ~73x57 cells on the 1200x1920 portrait screen
+
+// Colours: black background like a Linux tty, with the Tomorrow Night palette for ANSI colours.
+var (
+	consoleFG = color.RGBA{220, 223, 221, 255}
+	consoleBG = color.RGBA{0, 0, 0, 255}
+	ansi      = [16]color.RGBA{
+		{40, 42, 46, 255}, {204, 102, 102, 255}, {181, 189, 104, 255}, {240, 198, 116, 255},
+		{129, 162, 190, 255}, {178, 148, 187, 255}, {138, 190, 183, 255}, {197, 200, 198, 255},
+		{112, 120, 128, 255}, {230, 120, 120, 255}, {200, 210, 120, 255}, {250, 215, 140, 255},
+		{150, 185, 215, 255}, {200, 170, 210, 255}, {160, 210, 200, 255}, {255, 255, 255, 255},
+	}
+)
+
+// console is the terminal shown on the tablet's screen.
+type console struct {
+	s           *Screen
+	t           *vt.Term
+	reg, bold   font.Face
+	cw, ch, asc int // cell width, cell height, baseline offset
+	offX, offY  int // grid origin, centring the grid on the screen
+	mu          sync.Mutex
+	master      io.Writer // the shell's pty, nil between shells
+	clients     map[net.Conn]bool
+}
+
+func newConsole(s *Screen) (*console, error) {
+	mk := func(ttf []byte) (font.Face, error) {
+		f, err := opentype.Parse(ttf)
+		if err != nil {
+			return nil, err
+		}
+		return opentype.NewFace(f, &opentype.FaceOptions{Size: consoleFontSize, DPI: 72, Hinting: font.HintingFull})
+	}
+	reg, err := mk(gomono.TTF)
+	if err != nil {
+		return nil, err
+	}
+	bold, err := mk(gomonobold.TTF)
+	if err != nil {
+		return nil, err
+	}
+	adv, _ := reg.GlyphAdvance('M')
+	m := reg.Metrics()
+	c := &console{s: s, reg: reg, bold: bold, cw: adv.Ceil(),
+		ch: (m.Ascent + m.Descent).Ceil() + 2, asc: m.Ascent.Ceil() + 1, clients: map[net.Conn]bool{}}
+	const pad = 16 // keep text off the bezel
+	cols, rows := (s.W-2*pad)/c.cw, (s.H-2*pad)/c.ch
+	c.offX, c.offY = (s.W-cols*c.cw)/2, (s.H-rows*c.ch)/2
+	c.t = vt.New(cols, rows)
+	c.t.Reply = c.input
+	return c, nil
+}
+
+func colorOf(i uint8, def color.RGBA, bold bool) color.RGBA {
+	if i == vt.Default {
+		return def
+	}
+	if bold && i < 8 {
+		i += 8 // bold ANSI colours are drawn bright, like a Linux tty
+	}
+	return ansi[i]
+}
+
+// render draws the rows that changed and writes them to the screen. Callers hold drawMu.
+func (c *console) render() {
+	rows := c.t.TakeDirty()
+	if len(rows) == 0 {
+		return
+	}
+	line := image.NewRGBA(image.Rect(0, 0, c.t.Cols*c.cw, c.ch))
+	for _, y := range rows {
+		cells, cursor := c.t.Snapshot(y)
+		for x, cell := range cells {
+			fg, bg := colorOf(cell.FG, consoleFG, cell.Bold), colorOf(cell.BG, consoleBG, false)
+			if x == cursor {
+				fg, bg = bg, consoleFG
+			}
+			r := image.Rect(x*c.cw, 0, (x+1)*c.cw, c.ch)
+			for py := r.Min.Y; py < r.Max.Y; py++ {
+				for px := r.Min.X; px < r.Max.X; px++ {
+					line.SetRGBA(px, py, bg)
+				}
+			}
+			if cell.Ch != ' ' && cell.Ch != 0 {
+				face := c.reg
+				if cell.Bold {
+					face = c.bold
+				}
+				d := font.Drawer{Dst: line, Src: image.NewUniform(fg), Face: face, Dot: fixed.P(x*c.cw, c.asc)}
+				d.DrawString(string(cell.Ch))
+			}
+		}
+		oy := c.offY + y*c.ch
+		for py := 0; py < c.ch; py++ {
+			row := line.Pix[line.PixOffset(0, py):]
+			for px := 0; px < line.Rect.Dx(); px++ {
+				c.s.Set(c.offX+px, oy+py, row[4*px], row[4*px+1], row[4*px+2])
+			}
+		}
+	}
+	if err := c.s.Flush(); err != nil {
+		log.Printf("flush: %v", err)
+	}
+}
+
+// output shows shell output on the screen and copies it to connected PCs.
+func (c *console) output(p []byte) {
+	c.t.Write(p)
+	drawMu.Lock()
+	c.render()
+	drawMu.Unlock()
+	c.mu.Lock()
+	for conn := range c.clients {
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if _, err := conn.Write(p); err != nil {
+			conn.Close()
+			delete(c.clients, conn)
+		}
+	}
+	c.mu.Unlock()
+}
+
+// input types p into the shell.
+func (c *console) input(p []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.master != nil {
+		c.master.Write(p)
+	}
+}
+
+func banner() string {
+	rel, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	return fmt.Sprintf("\r\ncondor linux (tty1)   kernel %s\r\n\r\ncondor login: root (automatic login)\r\n\r\n",
+		strings.TrimSpace(string(rel)))
+}
+
+// runConsole keeps a shell running on the screen, starting a new one whenever it exits.
+// It doesn't return.
+func (c *console) run() {
+	c.output([]byte(banner()))
+	for {
+		m, wait, err := startShell(c.t.Cols, c.t.Rows)
+		if err != nil {
+			c.output([]byte("condor: can't start a shell: " + err.Error() + "\r\n"))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		c.mu.Lock()
+		c.master = m
+		c.mu.Unlock()
+		buf := make([]byte, 4096)
+		for {
+			n, err := m.Read(buf)
+			if n > 0 {
+				c.output(buf[:n])
+			}
+			if err != nil {
+				break
+			}
+		}
+		c.mu.Lock()
+		c.master = nil
+		c.mu.Unlock()
+		m.Close()
+		wait()
+		c.output([]byte("\r\n[shell exited; starting a new one]\r\n"))
+		time.Sleep(time.Second)
+	}
+}
+
+// serve accepts `condor term` connections and joins them to the screen's session.
+func (c *console) serve() {
+	for {
+		ln, err := net.Listen("tcp", consoleAddr)
+		if err != nil {
+			log.Printf("listen %s: %v; retrying", consoleAddr, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		log.Printf("console listening on %s", consoleAddr)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			log.Printf("console client %s", conn.RemoteAddr())
+			c.mu.Lock()
+			c.clients[conn] = true
+			c.mu.Unlock()
+			c.input([]byte("\n")) // fresh prompt for the newcomer
+			go func() {
+				buf := make([]byte, 1024)
+				for {
+					n, err := conn.Read(buf)
+					if n > 0 {
+						c.input(buf[:n])
+					}
+					if err != nil {
+						break
+					}
+				}
+				c.mu.Lock()
+				delete(c.clients, conn)
+				c.mu.Unlock()
+				conn.Close()
+			}()
+		}
+		ln.Close()
+	}
+}

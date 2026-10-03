@@ -22,7 +22,17 @@ import (
 	"time"
 )
 
-const shellAddr = "127.0.0.1:2323"
+// shellAddr is a plain, separate root shell (no pty, not on screen) kept as a back door for
+// tools; people use the console on consoleAddr through ` + "`condor term`" + `.
+const shellAddr = "127.0.0.1:2324"
+
+const (
+	condorHome = "/data/condor"
+	shellPATH  = "/sbin:/system/bin:/system/xbin"
+)
+
+// shellPath is the tablet's shell; tests point it at the PC's.
+var shellPath = "/system/bin/sh"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "drm" { // diagnostic, read-only: what the display scans out
@@ -52,7 +62,13 @@ func main() {
 			log.Printf("got %v: screen cleared, exiting", sig)
 			os.Exit(0)
 		}()
-		go runHome(s)
+		if c, err := newConsole(s); err != nil {
+			log.Printf("console: %v; showing the launcher instead", err)
+			go runHome(s)
+		} else {
+			go c.run()
+			go c.serve()
+		}
 	}
 	serveShell()
 }
@@ -105,7 +121,7 @@ func touchLoop(s *Screen) {
 	}
 }
 
-// serveShell gives each connection on 127.0.0.1:2323 a root /system/bin/sh (no pty).
+// serveShell gives each connection on shellAddr its own root shell (no pty).
 func serveShell() {
 	for {
 		ln, err := net.Listen("tcp", shellAddr)
@@ -131,8 +147,8 @@ func handle(c net.Conn) {
 	defer c.Close()
 	log.Printf("shell connection from %s", c.RemoteAddr())
 	fmt.Fprintf(c, "condor-init shell (pid %d). No Android running. Type 'exit' to close.\n", os.Getpid())
-	cmd := exec.Command("/system/bin/sh", "-i")
-	cmd.Env = []string{"PATH=/sbin:/system/bin:/system/xbin", "HOME=/data/condor", "PS1=condor# "}
+	cmd := exec.Command(shellPath, "-i")
+	cmd.Env = []string{"PATH=" + shellPATH, "HOME=" + condorHome, "PS1=condor# "}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = c, c, c
 	if err := cmd.Run(); err != nil && err != io.EOF {
 		log.Printf("shell ended: %v", err)
