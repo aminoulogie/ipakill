@@ -26,7 +26,7 @@ const (
 	initPath      = condorDir + "/condor-init"
 	systemDev     = "/dev/block/mmcblk0p8"
 	shellTmp      = "/data/local/tmp"
-	takeoverUsage = "usage: condor takeover status | arm [binary] | auto on|off [binary] | disarm | push <binary> | restart | hook"
+	takeoverUsage = "usage: condor takeover status | arm [binary] | auto on|off [binary] | install-hook | disarm | push <binary> | restart | hook"
 )
 
 const takeoverHook = `#!/system/bin/sh
@@ -96,6 +96,8 @@ func takeover(args []string) error {
 		return nil
 	case "auto":
 		return takeoverAuto(args[1:])
+	case "install-hook":
+		return installHook()
 	case "disarm":
 		sh("su -c 'rm -f " + triggerPath + " " + autostartPath + " " + bootfailPath + "'")
 		fmt.Println("disarmed: autostart off, next boot is normal Android.")
@@ -128,8 +130,9 @@ func takeoverAuto(args []string) error {
 			return err
 		}
 	}
-	if strings.Contains(sh("ls "+hookPath), "No such") {
-		return fmt.Errorf("the /system hook isn't installed; set up takeover first")
+	if !hookCurrent() {
+		return fmt.Errorf("the startup hook in /system is missing or an older version that ignores autostart.\n" +
+			"Update it first (writes one file in /system):  condor takeover install-hook")
 	}
 	if strings.Contains(sh("su -c 'ls "+initPath+"'"), "No such") {
 		return fmt.Errorf("%s is missing: run 'condor takeover auto on <condor-init binary>'", initPath)
@@ -142,6 +145,52 @@ func takeoverAuto(args []string) error {
 	fmt.Println("to go back to Android:  condor takeover auto off   (then condor reboot)")
 	fmt.Println("safety net: if condor-init ever fails to start 3 boots running, the tablet")
 	fmt.Println("falls back to Android and turns autostart off by itself.")
+	return nil
+}
+
+// hookCurrent reports whether /system holds exactly this CLI's takeoverHook.
+func hookCurrent() bool {
+	sum := md5.Sum([]byte(takeoverHook))
+	return strings.HasPrefix(sh("md5 "+hookPath), hex.EncodeToString(sum[:]))
+}
+
+// installHook writes takeoverHook to /system/etc/install-recovery.sh: /system is remounted
+// read-write only for this one file, the result is md5-checked, and /system goes back to
+// read-only. If anything fails, the old file (or none) stays and Android still boots.
+func installHook() error {
+	if hookCurrent() {
+		fmt.Println("hook is already the current version; nothing to do.")
+		return nil
+	}
+	f, err := os.CreateTemp("", "condor-hook-*")
+	if err != nil {
+		return err
+	}
+	f.WriteString(takeoverHook)
+	f.Close()
+	defer os.Remove(f.Name())
+	tmp := shellTmp + "/install-recovery.sh"
+	if out, err := adb("push", f.Name(), tmp); err != nil {
+		return fmt.Errorf("push: %s", strings.TrimSpace(out))
+	}
+	defer sh("rm " + tmp)
+	sum := md5.Sum([]byte(takeoverHook))
+	want := hex.EncodeToString(sum[:])
+	if got := sh("md5 " + tmp); !strings.HasPrefix(got, want) {
+		return fmt.Errorf("pushed hook is damaged (%q); nothing was written to /system", got)
+	}
+	fmt.Println("==> writing", hookPath, "(the only change to /system)")
+	sh("su -c 'mount -o remount,rw -t ext4 " + systemDev + " /system'")
+	sh("su -c 'cat " + tmp + " > " + hookPath + "; chmod 755 " + hookPath + "; sync'")
+	sh("su -c 'mount -o remount,ro -t ext4 " + systemDev + " /system'")
+	if !hookCurrent() {
+		return fmt.Errorf("the hook in /system doesn't match after writing: %s", sh("md5 "+hookPath))
+	}
+	m := mountOpts(sh("cat /proc/mounts"), "/system")
+	fmt.Println("hook updated and verified; /system:", m)
+	if f := strings.Fields(m); len(f) < 2 || !strings.HasPrefix(f[1], "ro") {
+		fmt.Println("warning: /system is still read-write; run: condor shell \"su -c 'mount -o remount,ro -t ext4 " + systemDev + " /system'\"")
+	}
 	return nil
 }
 

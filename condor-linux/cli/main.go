@@ -145,6 +145,7 @@ func usage() {
   condor takeover status                 /system hook, condor-init, trigger, logs
   condor takeover arm [condor-init]      next boot (once) stops Android, runs condor-init
   condor takeover auto on|off [binary]   boot straight into condor every time (on) / Android (off)
+  condor takeover install-hook           update the startup hook in /system (writes one file)
   condor takeover disarm                 autostart off + next boot is normal Android
   condor takeover push <condor-init>     install a new condor-init without arming
   condor takeover restart                restart condor-init in place (takeover mode only)
