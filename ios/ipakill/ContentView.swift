@@ -20,6 +20,121 @@ struct IpakillLifecycle: ViewModifier {
             .onChange(of: phase) { p in
                 p == .active ? sync.start() : sync.stop()
             }
+            .sheet(isPresented: $sync.showInstall) {
+                InstallSheet().environmentObject(sync)
+            }
+    }
+}
+
+/// ESign-style install screen: the app, a progress bar, and a live terminal
+/// with everything the PC does.
+struct InstallSheet: View {
+    @EnvironmentObject var sync: Sync
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                header
+                terminal
+            }
+            .padding(16)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(sync.installResult == nil ? "Hide" : "Done") { dismiss() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private var title: String {
+        switch sync.installResult {
+        case nil: return "Installing"
+        case true?: return "Installed"
+        case false?: return "Failed"
+        }
+    }
+
+    private var fraction: Double {
+        if sync.installResult == true { return 1 }
+        return sync.progress?.fraction ?? 0
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            AppIcon(url: sync.installIcon, name: sync.installTitle, size: 64)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(sync.installTitle).font(.headline).lineLimit(1)
+                ProgressView(value: fraction)
+                    .tint(sync.installResult == false ? .red : sync.installResult == true ? .green : .accentColor)
+                    .animation(.easeInOut(duration: 0.3), value: fraction)
+                HStack {
+                    Text(status).lineLimit(1)
+                    Spacer()
+                    Text("\(Int(fraction * 100))%")
+                }
+                .font(.footnote.monospacedDigit())
+                .foregroundColor(.secondary)
+            }
+            if let ok = sync.installResult {
+                Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 34))
+                    .foregroundColor(ok ? .green : .red)
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .animation(.spring(), value: sync.installResult)
+    }
+
+    private var status: String {
+        switch sync.installResult {
+        case true?: return "Signed and installed"
+        case false?: return "Something went wrong - see the log"
+        case nil: return sync.progress?.label ?? "Starting…"
+        }
+    }
+
+    private var terminal: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(sync.installLines.enumerated()), id: \.offset) { i, line in
+                        Text(line)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(color(line))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .id(i)
+                    }
+                    if sync.installResult == nil {
+                        Text("▍")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.green)
+                            .id(-1)
+                    }
+                }
+                .padding(12)
+            }
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08)))
+            .onChange(of: sync.installLines.count) { n in
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(n - 1, anchor: .bottom) }
+            }
+        }
+    }
+
+    private func color(_ line: String) -> Color {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("!") || t.hasPrefix("Error") { return Color(red: 1, green: 0.35, blue: 0.35) }
+        if t.hasPrefix("$") { return Color(red: 0.4, green: 0.8, blue: 1) }
+        if t.contains("complete") || t.hasPrefix("[ipakill] Done") || t.hasPrefix("Done") { return Color(red: 0.3, green: 0.95, blue: 0.5) }
+        if t.contains("retrying") { return .orange }
+        return Color(white: 0.82)
     }
 }
 
@@ -155,10 +270,7 @@ struct GetActions: ViewModifier {
             get: { app != nil }, set: { if !$0 { app = nil } }
         ), titleVisibility: .visible, presenting: app) { a in
             Button("Run inside ipakill") { runInside(a) }
-            Button("Install with PC signing") {
-                sharedModel.selectedTab = .ipakillActivity
-                onPCInstall(a)
-            }
+            Button("Install with PC signing") { onPCInstall(a) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Inside ipakill needs no install slot and no re-signing of its own.")

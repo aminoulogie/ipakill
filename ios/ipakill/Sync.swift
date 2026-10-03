@@ -112,6 +112,14 @@ final class Sync: ObservableObject {
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
     @Published var progress: InstallProgress?
+
+    // The install sheet (ESign style): what is being installed and its log.
+    @Published var showInstall = false
+    @Published var installTitle = ""
+    @Published var installIcon: URL?
+    @Published var installLines: [String] = []
+    @Published var installResult: Bool?     // nil while running
+    private var capturing = false
     private var progressLines = 0
 
     @Published var appIDs: [AppIDInfo]?
@@ -185,6 +193,7 @@ final class Sync: ObservableObject {
     }
 
     func say(_ line: String) {
+        if capturing { installLines.append(line) }
         log.append(line)
         if log.count > 200 { log.removeFirst(log.count - 200) }
     }
@@ -331,6 +340,7 @@ final class Sync: ObservableObject {
         ]
         guard var req = request("/install-url?" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
         req.httpMethod = "POST"
+        beginInstall(app.name, icon: icon(for: app))
         say("$ ipakill get \(app.name) \(app.version)")
         say("pc is downloading + signing... ~1 min")
         await send(req, upload: nil)
@@ -367,9 +377,19 @@ final class Sync: ObservableObject {
         guard var req = request("/install?name=\(encoded)", timeout: 600) else { return }
         req.httpMethod = "POST"
 
+        beginInstall((name as NSString).deletingPathExtension, icon: nil)
         say("$ ipakill \(name)")
         say("uploading to \(pcName.isEmpty ? "PC" : pcName)... signing takes ~30s")
         await send(req, upload: tmp)
+    }
+
+    private func beginInstall(_ title: String, icon: URL?) {
+        installTitle = title
+        installIcon = icon
+        installLines = []
+        installResult = nil
+        capturing = true
+        showInstall = true
     }
 
     private func send(_ req: URLRequest, upload file: URL?) async {
@@ -389,6 +409,8 @@ final class Sync: ObservableObject {
         defer {
             poller.cancel()
             busy = false
+            capturing = false
+            if installResult == nil { installResult = false }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 if !self.busy { self.progress = nil }
@@ -416,6 +438,7 @@ final class Sync: ObservableObject {
             }
             progress?.stage = r.ok ? "done" : "failed"
             if !r.ok { say("! \(r.error ?? "install failed")") }
+            installResult = r.ok
         } catch {
             say("! \(error.localizedDescription)")
         }
