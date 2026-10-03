@@ -119,7 +119,8 @@ status)
 	else
 		echo "not connected"
 	fi
-	ip -4 addr show $IF 2>/dev/null | awk '/inet /{print "address: "$2}'
+	a=$(ip -4 addr show $IF 2>/dev/null | awk '/inet /{print $2}')
+	echo "address: ${a:-none yet (still connecting? see /var/log/wifi.log)}"
 	;;
 off)
 	pkill wpa_supplicant; pkill -f "udhcpc -i $IF"; ip link set $IF down; echo "wifi off"

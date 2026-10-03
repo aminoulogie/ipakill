@@ -66,6 +66,10 @@ func serveProxyConn(c net.Conn, dial func(string) (net.Conn, error)) {
 		if req.Method == http.MethodConnect {
 			target, err := dial(req.Host)
 			if err != nil {
+				time.Sleep(3 * time.Second)
+				target, err = dial(req.Host)
+			}
+			if err != nil {
 				fmt.Fprintf(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
 				return
 			}
@@ -86,6 +90,11 @@ func serveProxyConn(c net.Conn, dial func(string) (net.Conn, error)) {
 		req.RequestURI = ""
 		req.Header.Del("Proxy-Connection")
 		resp, err := directTransport.RoundTrip(req)
+		if err != nil && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
+			// Right after boot the network can still be settling (DNS, DHCP): retry once.
+			time.Sleep(3 * time.Second)
+			resp, err = directTransport.RoundTrip(req)
+		}
 		if err != nil {
 			msg := "no internet: connect Wi-Fi (wifi connect SSID password) or run 'condor net' on the PC"
 			fmt.Fprintf(c, "HTTP/1.1 502 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", msg)
