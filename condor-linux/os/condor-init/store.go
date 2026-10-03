@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -34,9 +35,10 @@ import (
 // 4.2's store is from 2013 and misses today's roots.
 
 var (
-	gutendexURL = "https://gutendex.com/books/"
-	storeDir    = "/data/media/0/Books" // the first of bookDirs: internal storage
-	previewDir  = condorHome + "/previews"
+	gutendexURL   = "https://gutendex.com/books/"
+	gutenbergBase = "https://www.gutenberg.org"
+	storeDir      = "/data/media/0/Books" // the first of bookDirs: internal storage
+	previewDir    = condorHome + "/previews"
 )
 
 type gbook struct {
@@ -68,13 +70,17 @@ func (b *gbook) author() string {
 	return strings.Join(names, ", ")
 }
 
-func (b *gbook) epubURL() string {
+// epubURLs are where to get the book, best first. The reader shows text only, so the
+// no-images edition (often a tenth of the size) comes first; the catalogue's own EPUB link
+// and the EPUB 3 edition are fallbacks.
+func (b *gbook) epubURLs() []string {
+	urls := []string{fmt.Sprintf("%s/ebooks/%d.epub.noimages", gutenbergBase, b.ID)}
 	for mt, u := range b.Formats {
 		if strings.HasPrefix(mt, "application/epub") {
-			return u
+			urls = append(urls, u)
 		}
 	}
-	return fmt.Sprintf("https://www.gutenberg.org/ebooks/%d.epub3.images", b.ID)
+	return append(urls, fmt.Sprintf("%s/ebooks/%d.epub3.images", gutenbergBase, b.ID))
 }
 
 var unsafeName = regexp.MustCompile(`[^\pL\pN .,'()-]+`)
@@ -110,6 +116,7 @@ type storeState struct {
 	loading        bool
 	status         string // error or progress line
 	gen            int    // drops answers to searches that were replaced
+	preferSecond   bool   // gutendex failed: ask gutenberg.org first
 	sel            *gbook // the book whose page is open, or nil for the list
 	typing         bool   // keyboard up
 	dl             map[int]string
@@ -120,6 +127,7 @@ var webClient = sync.OnceValue(func() *http.Client {
 	return &http.Client{Timeout: 10 * time.Minute, Transport: &http.Transport{
 		Proxy:                 http.ProxyURL(&url.URL{Scheme: "http", Host: proxyAddr}),
 		TLSClientConfig:       &tls.Config{RootCAs: alpineRoots()},
+		TLSHandshakeTimeout:   20 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 	}}
 })
@@ -137,8 +145,10 @@ func alpineRoots() *x509.CertPool {
 	return p
 }
 
-func webGet(u string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", u, nil)
+func webGet(u string) (*http.Response, error) { return webGetCtx(context.Background(), u) }
+
+func webGetCtx(ctx context.Context, u string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -154,41 +164,103 @@ func webGet(u string) (*http.Response, error) {
 	return resp, nil
 }
 
-// storeQuery is the Gutendex URL for the current search, topic, language and page.
-func (st *storeState) storeQuery() string {
+// storeSearch is what to list: a search, a topic, a language and a page.
+type storeSearch struct {
+	query, topic, lang string
+	page               int
+}
+
+type storeResult struct {
+	books   []gbook
+	count   int // 0 when the source doesn't say
+	hasNext bool
+}
+
+// A storeSource is a catalogue to search. gutendex.com is first (it has summaries), but it
+// is a free hosted instance and sometimes doesn't answer; gutenberg.org's own OPDS feed is
+// the fallback, and becomes the first choice once gutendex has failed.
+type storeSource struct {
+	host   string
+	search func(context.Context, storeSearch) (storeResult, error)
+}
+
+var storeSources = []storeSource{
+	{"gutendex.com", searchGutendex},
+	{"gutenberg.org", searchGutenbergOPDS},
+}
+
+// storeTimeout is how long a search may take before the next source is tried.
+var storeTimeout = 25 * time.Second
+
+func searchGutendex(ctx context.Context, q storeSearch) (storeResult, error) {
 	v := url.Values{}
 	v.Set("mime_type", "application/epub")
-	if st.query != "" {
-		v.Set("search", st.query)
+	if q.query != "" {
+		v.Set("search", q.query)
 	}
-	if t := storeTopics[st.topic].topic; t != "" {
-		v.Set("topic", t)
+	if q.topic != "" {
+		v.Set("topic", q.topic)
 	}
-	if l := storeLangs[st.lang]; l != "" {
-		v.Set("languages", l)
+	if q.lang != "" {
+		v.Set("languages", q.lang)
 	}
-	if st.page > 1 {
-		v.Set("page", fmt.Sprint(st.page))
+	if q.page > 1 {
+		v.Set("page", fmt.Sprint(q.page))
 	}
-	return gutendexURL + "?" + v.Encode()
+	resp, err := webGetCtx(ctx, gutendexURL+"?"+v.Encode())
+	if err != nil {
+		return storeResult{}, err
+	}
+	defer resp.Body.Close()
+	var res struct {
+		Count   int     `json:"count"`
+		Next    string  `json:"next"`
+		Results []gbook `json:"results"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&res); err != nil {
+		return storeResult{}, err
+	}
+	return storeResult{res.Results, res.Count, res.Next != ""}, nil
 }
 
 // storeLoad fetches the current results in the background. Caller holds drawMu.
 func (c *console) storeLoad() {
 	st := &c.store
 	st.gen++
-	gen, u := st.gen, st.storeQuery()
-	st.loading, st.status = true, "loading..."
+	gen := st.gen
+	q := storeSearch{st.query, storeTopics[st.topic].topic, storeLangs[st.lang], max(st.page, 1)}
+	srcs := storeSources
+	if st.preferSecond {
+		srcs = []storeSource{storeSources[1], storeSources[0]}
+	}
+	st.loading, st.status = true, "loading from "+srcs[0].host+"..."
 	go func() {
-		var res struct {
-			Count   int     `json:"count"`
-			Next    string  `json:"next"`
-			Results []gbook `json:"results"`
-		}
-		resp, err := webGet(u)
-		if err == nil {
-			err = json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&res)
-			resp.Body.Close()
+		var res storeResult
+		var err error
+		var errs []string
+		for i, src := range srcs {
+			if i > 0 {
+				drawMu.Lock()
+				if gen == st.gen {
+					st.status = srcs[i-1].host + " didn't answer, trying " + src.host + "..."
+					if c.mode == modeStore {
+						c.showPage()
+					}
+				}
+				drawMu.Unlock()
+			}
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+			res, err = src.search(ctx, q)
+			cancel()
+			log.Printf("store: %s %+v: %d books in %v, err %v", src.host, q, len(res.books), time.Since(start).Round(time.Millisecond), err)
+			if err == nil {
+				drawMu.Lock()
+				st.preferSecond = src.host == storeSources[1].host
+				drawMu.Unlock()
+				break
+			}
+			errs = append(errs, src.host+": "+shortErr(err))
 		}
 		drawMu.Lock()
 		defer drawMu.Unlock()
@@ -197,11 +269,10 @@ func (c *console) storeLoad() {
 		}
 		st.loading, st.loaded = false, true
 		if err != nil {
-			log.Printf("store: %v", err)
-			st.status = "no connection to the library: is Wi-Fi on? (" + shortErr(err) + ")"
+			st.status = "can't reach the library. " + strings.Join(errs, "; ")
 		} else {
 			st.status = ""
-			st.results, st.count, st.hasNext = res.Results, res.Count, res.Next != ""
+			st.results, st.count, st.hasNext = res.books, res.count, res.hasNext
 		}
 		if c.mode == modeStore {
 			c.showPage()
@@ -217,10 +288,23 @@ func shortErr(err error) string {
 	return s
 }
 
-// fetchBook downloads b's EPUB to dst (via a temporary file), checking that it opens.
-// progress gets the bytes so far.
+// fetchBook downloads b's EPUB to dst (via a temporary file), checking that it opens, trying
+// each of its URLs in turn. progress gets the bytes so far.
 func fetchBook(b *gbook, dst string, progress func(int64)) error {
-	resp, err := webGet(b.epubURL())
+	var errs []string
+	for _, u := range b.epubURLs() {
+		err := fetchEPUB(u, dst, progress)
+		if err == nil {
+			return nil
+		}
+		log.Printf("store: %s: %v", u, err)
+		errs = append(errs, shortErr(err))
+	}
+	return fmt.Errorf("%s", strings.Join(errs, "; "))
+}
+
+func fetchEPUB(u, dst string, progress func(int64)) error {
+	resp, err := webGet(u)
 	if err != nil {
 		return err
 	}
@@ -467,13 +551,19 @@ func (c *console) storePage() *page {
 	if st.query != "" {
 		head = "\"" + st.query + "\""
 	}
-	if st.loaded && st.status == "" {
+	if st.loaded && st.status == "" && st.count > 0 {
 		head += fmt.Sprintf("   ·   %d books", st.count)
 	}
 	pn.text(c.pf.small, pgAccent, pn.mx, pn.y+30, head)
 	pn.y += 50
 	if st.status != "" {
-		pn.line(c.pf.small, pgMuted, st.status)
+		for _, l := range wrapText(c.pf.small, st.status, c.s.W-2*pn.mx) {
+			pn.y += 42
+			pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
+		}
+		if !st.loading {
+			pn.row([]string{"s:retry"}, []string{"retry"}, "", false)
+		}
 		pn.y += 20
 	}
 	for i := range st.results {
@@ -545,7 +635,13 @@ func (c *console) storeBookPage() *page {
 	}
 	pn.text(c.pf.body, pgAccent, pn.mx, pn.y, clip(c.pf.body, b.author(), w))
 	pn.y += 50
-	meta := fmt.Sprintf("Gutenberg #%d   ·   %s   ·   %d downloads", b.ID, strings.Join(b.Languages, ", "), b.Downloads)
+	meta := fmt.Sprintf("Gutenberg #%d", b.ID)
+	if len(b.Languages) > 0 {
+		meta += "   ·   " + strings.Join(b.Languages, ", ")
+	}
+	if b.Downloads > 0 {
+		meta += fmt.Sprintf("   ·   %d downloads", b.Downloads)
+	}
 	pn.text(c.pf.small, pgMuted, pn.mx, pn.y, meta)
 
 	state := st.dl[b.ID]
@@ -571,8 +667,11 @@ func (c *console) storeBookPage() *page {
 
 	pn.heading("ABOUT")
 	about := strings.Join(b.Summaries, " ")
+	if about == "" && len(b.Subjects) > 0 {
+		about = "Subjects: " + strings.Join(b.Subjects, "; ")
+	}
 	if about == "" {
-		about = "No summary in the catalogue. Subjects: " + strings.Join(b.Subjects, "; ")
+		about = "No summary from this catalogue: tap read preview to start reading."
 	}
 	about = strings.TrimSuffix(strings.TrimSpace(about), "(This is an automatically generated summary.)")
 	lines := wrapText(c.pf.small, about, w)
@@ -641,6 +740,8 @@ func (c *console) storeTap(id string) bool {
 			st.typing, st.editing = true, ""
 			c.skb.visible = true
 		}
+	case id == "s:retry":
+		c.storeLoad()
 	case id == "s:lang":
 		st.lang = (st.lang + 1) % len(storeLangs)
 		st.page, st.results = 1, nil

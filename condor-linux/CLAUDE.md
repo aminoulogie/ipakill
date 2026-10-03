@@ -225,7 +225,11 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       shows the catalogue summary; "read preview" opens it in the reader without saving
       (/data/condor/previews, newest 5 kept), "download" saves to /data/media/0/Books.
       HTTPS through condor-init's proxy 127.0.0.1:3128 with Alpine's CA bundle (Android 4.2's
-      roots are too old). Paid-book previews (Google Books) are page images in a web viewer
+      roots are too old). gutendex.com is a free hosted instance and was very slow on the
+      tablet: searches give up after 25 s and fall back to gutenberg.org's own OPDS feed
+      (opds.go), which then stays first. Downloads take the `.epub.noimages` edition first
+      (text-only reader, much smaller). Gutenberg OPFs have `<meta property>text</meta>`:
+      the epub package must not use xml.HTMLAutoClose (it broke every Gutenberg book). Paid-book previews (Google Books) are page images in a web viewer
       with DRM: not possible without a browser.
 - [ ] microSD bind into Alpine; update over Wi-Fi
 

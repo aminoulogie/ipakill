@@ -193,12 +193,13 @@ func dcText(inner []byte, tag string) string {
 	}
 }
 
-// xmlUnmarshal is tolerant: books in the wild have HTML entities and sloppy markup.
+// xmlUnmarshal is tolerant: books in the wild have HTML entities and sloppy markup. No
+// HTML auto-closing though: OPF files use <meta property="...">value</meta>, and treating
+// <meta> as an empty HTML tag made the closing tag break the parse (Gutenberg's EPUBs).
 func xmlUnmarshal(b []byte, v any) error {
 	dec := xml.NewDecoder(bytes.NewReader(b))
 	dec.Strict = false
 	dec.Entity = xml.HTMLEntity
-	dec.AutoClose = xml.HTMLAutoClose
 	dec.CharsetReader = func(_ string, r io.Reader) (io.Reader, error) { return r, nil }
 	return dec.Decode(v)
 }
