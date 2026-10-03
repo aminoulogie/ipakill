@@ -37,9 +37,10 @@ if ($undo) { Write-Host 'Removed the ipakill Apple pins.' -ForegroundColor Green
 
 $pins = @()
 foreach ($name in $servers) {
-    $current = (Resolve-DnsName $name -Type A -ErrorAction SilentlyContinue | Where-Object IP4Address).IP4Address
-    if ($current -and (Test-Port443 $current[0])) {
-        Write-Host "$name OK ($($current[0]))" -ForegroundColor Green
+    $current = @((Resolve-DnsName $name -Type A -ErrorAction SilentlyContinue | Where-Object IP4Address).IP4Address)
+    $first = if ($current.Count -gt 0) { $current[0] } else { $null }
+    if ($first -and (Test-Port443 $first)) {
+        Write-Host "${name} OK ($first)" -ForegroundColor Green
         continue
     }
     $candidates = @()
@@ -53,16 +54,16 @@ foreach ($name in $servers) {
             $candidates += ($r.Answer | Where-Object type -eq 1).data
         } catch {}
     }
-    $candidates = $candidates | Where-Object { $_ -and $_ -ne $current[0] }
+    $candidates = $candidates | Where-Object { $_ -and $_ -ne $first }
     $found = $null
     foreach ($ip in ($candidates | Select-Object -Unique)) {
         if (Test-Port443 $ip) { $found = $ip; break }
     }
     if ($found) {
-        Write-Host "$name blocked at $($current -join ', ') - pinned to $found" -ForegroundColor Yellow
+        Write-Host "${name} blocked at $($current -join ', ') - pinned to $found" -ForegroundColor Yellow
         $pins += "$found`t$name`t$tag"
     } else {
-        Write-Host "$name: no reachable address found (tried $($candidates -join ', '))" -ForegroundColor Red
+        Write-Host "${name}: no reachable address found (tried $($candidates -join ', '))" -ForegroundColor Red
     }
 }
 
