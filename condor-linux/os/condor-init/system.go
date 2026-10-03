@@ -455,6 +455,13 @@ func (c *console) settingsPage() *page {
 		}
 		y += len(opts) * rh
 		footer("The power button turns the screen off and on at any time.")
+		header("Motion")
+		rows = groupRows(img, x, y, pw, 1, rh)
+		apText(img, f.body, rows[0].Min.X+30, rows[0].Min.Y+56, apLabel, "Animations")
+		iosSwitch(img, rows[0].Max.X-24, (rows[0].Min.Y+rows[0].Max.Y)/2, c.cfg.Animations, false)
+		p.buttons = append(p.buttons, button{"anim", rows[0]})
+		y += rh
+		footer("Off: every screen appears at once, like an e-reader. This tablet has no graphics chip Linux can use, so animations are drawn by the processor and are slower.")
 	case "general":
 		header("About")
 		ver := alpineVersion()

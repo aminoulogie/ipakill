@@ -171,8 +171,8 @@ func loadLibrary() *library {
 		p.ThemeSet = 2
 	}
 	p.Theme = min(max(p.Theme, 0), len(readerThemes)-1)
-	if p.PageTurn != "slide" && p.PageTurn != "none" {
-		p.PageTurn = "curl"
+	if p.PageTurn != "slide" && p.PageTurn != "curl" {
+		p.PageTurn = "none" // instant, like an e-reader
 	}
 	p.Font = readerFontList[fontIndex(p.Font)].id
 	if p.LineHeight == 0 {

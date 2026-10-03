@@ -31,7 +31,7 @@ var animFrames int // frames drawn, for tests
 
 // animOK: frames can be composed natively (portrait on a landscape 32 bpp framebuffer).
 func (c *console) animOK() bool {
-	return animScale > 0 && c.screenOn && c.s.rot == Rot90 && c.s.bpp == 32
+	return animScale > 0 && c.cfg.Animations && c.screenOn && c.s.rot == Rot90 && c.s.bpp == 32
 }
 
 // spring is iOS's ease-out: quick start, soft landing.

@@ -734,6 +734,7 @@ func TestGestures(t *testing.T) {
 
 func TestPageTurnsAndBookmarks(t *testing.T) {
 	c := readerConsole(t)
+	c.cfg.Animations = true
 	openFirstBook(t, c)
 	old := turnDuration
 	turnDuration = map[string]time.Duration{"slide": 60 * time.Millisecond, "curl": 60 * time.Millisecond}

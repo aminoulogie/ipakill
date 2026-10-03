@@ -291,6 +291,15 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       condor-init.bak, restarts via /system/bin/start flash_recovery (bind-mounted Android
       toolbox) and rolls back if no condor-init runs 15 s later. PC polls /tmp/condor-update.log.
       Tested in simulation (good, broken, damaged); not yet on the tablet.
+- [x] Animations off by default (cfg.Animations, Settings > Display & Brightness > Motion):
+      without a GPU every frame is CPU-pushed; instant changes feel fastest (e-reader style).
+- [ ] **GPU (condor-gl)**: no distro can use the SGX544 (Halium/libhybris on Clovertrail+ draws
+      fail; KOReader x86 needs Android 4.3). Route: a bionic-native helper using Android's
+      own libEGL/libGLESv2 via FramebufferNativeWindow (android_createDisplaySurface, libui,
+      SurfaceFlinger stopped). os/condor-gl/gltest (built with clang+lld, no NDK: stub
+      libc/libdl, own _start calling __libc_init) measures swap fps, texture upload, slide
+      fps. Run: condor-linux\gl-test.cmd. If fast: condor-init hands page images to the
+      helper, which animates on the GPU.
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

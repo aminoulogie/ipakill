@@ -165,6 +165,10 @@ func (pn *pen) row(ids, labels []string, selected string, warn bool) {
 type savedSettings struct {
 	Brightness int `json:"brightness"`
 	ScreenOff  int `json:"screen_off_minutes"` // 0 = never
+	// Animations: off by default. Without a GPU (the SGX only works through Android's
+	// drivers) every frame is pushed by the CPU, so instant changes, as on e-readers, feel
+	// fastest. Settings > Display & Brightness turns them on.
+	Animations bool `json:"animations"`
 }
 
 const settingsPath = condorHome + "/settings.json"

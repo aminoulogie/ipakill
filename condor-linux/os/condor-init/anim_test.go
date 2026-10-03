@@ -9,6 +9,7 @@ import (
 // Every transition ends exactly on the screen it leads to, after drawing frames.
 func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 	c := testConsole(t)
+	c.cfg.Animations = true
 	c.showPage()
 	for _, tc := range []struct {
 		kind string
@@ -40,6 +41,7 @@ func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 
 func TestAnimationsAreTimeBoxed(t *testing.T) {
 	c := testConsole(t)
+	c.cfg.Animations = true
 	c.showPage()
 	start := time.Now()
 	c.transition("push", c.fullSheet(), func() { c.setMode(modeSettings) })
@@ -82,4 +84,22 @@ func BenchmarkFrameCurl(b *testing.B) {
 }
 func BenchmarkFrameRise(b *testing.B) {
 	benchFrame(b, func(c *console, old, nu []byte, t float64) { c.riseFrame(old, nu, c.lookupSheet(), t) })
+}
+
+// Off by default: screens change at once, no frames.
+func TestAnimationsOffByDefault(t *testing.T) {
+	c := testConsole(t)
+	c.cfg = loadSettings()
+	c.showPage()
+	before := animFrames
+	c.transition("push", c.fullSheet(), func() { c.setMode(modeSettings) })
+	if c.cfg.Animations || animFrames != before {
+		t.Error("animations should be off unless turned on")
+	}
+	c.setPane = "display"
+	c.showPage()
+	tapButton(t, c, "anim")
+	if !c.cfg.Animations {
+		t.Error("the switch should turn them on")
+	}
 }
