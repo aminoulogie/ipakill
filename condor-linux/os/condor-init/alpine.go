@@ -67,4 +67,21 @@ func alpineBoot() {
 		log.Printf("wifi boot: %v", err)
 	}
 	log.Printf("wifi boot done")
+	startSSHD()
 }
+
+// startSSHD starts Alpine's SSH server if it's installed (condor ssh setup installs it).
+// Root logs in with a key only (Alpine's default PermitRootLogin prohibit-password).
+func startSSHD() {
+	if _, err := os.Stat(alpineRoot + "/usr/sbin/sshd"); err != nil {
+		return
+	}
+	if err := runInAlpine("/bin/sh", "-c", sshdStart); err != nil {
+		log.Printf("sshd: %v", err)
+		return
+	}
+	log.Printf("sshd started")
+}
+
+// sshdStart makes host keys on first use and starts sshd unless it's already running.
+const sshdStart = "ssh-keygen -A >/dev/null 2>&1; pgrep -x sshd >/dev/null || /usr/sbin/sshd"

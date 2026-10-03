@@ -27,7 +27,7 @@ var alpineFiles = map[string]string{
 
 func alpine(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: condor alpine install [alpine-minirootfs-*-x86.tar.gz] | status | remove")
+		return fmt.Errorf("usage: condor alpine install [alpine-minirootfs-*-x86.tar.gz] | status | remove | run <command>")
 	}
 	if err := needDevice(); err != nil {
 		return err
@@ -52,6 +52,11 @@ func alpine(args []string) error {
 		sh("su -c 'for m in proc sys dev/pts dev tmp; do umount " + alpineRoot + "/$m; done; rm -r " + alpineRoot + "'")
 		fmt.Println("removed", alpineRoot)
 		return nil
+	case "run":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: condor alpine run <command> (e.g. condor alpine run apk add htop)")
+		}
+		return alpineRun(strings.Join(args[1:], " "))
 	case "install":
 		local := ""
 		if len(args) > 1 {

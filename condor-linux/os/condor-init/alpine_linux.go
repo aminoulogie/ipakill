@@ -46,11 +46,18 @@ func alpineMounts() error {
 // setHostname names the machine "condor" (shown in the prompt).
 func setHostname() { syscall.Sethostname([]byte("condor")) }
 
-// runInAlpine runs a command inside the Alpine root and waits for it (used for wifi boot).
+// runInAlpine runs a command inside the Alpine root and waits for it. Output goes to our own
+// stdout/stderr (the init log at boot, the terminal for 'condor-init alpine-run'). Internet
+// goes through condor-init's proxy, like in the console.
 func runInAlpine(args ...string) error {
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = "/"
-	cmd.Env = []string{"HOME=/root", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	cmd.Dir = "/root"
+	proxy := "http://" + proxyAddr
+	cmd.Env = []string{"HOME=/root", "TERM=xterm", "USER=root",
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"http_proxy=" + proxy, "https_proxy=" + proxy, "HTTP_PROXY=" + proxy, "HTTPS_PROXY=" + proxy,
+		"no_proxy=localhost,127.0.0.1"}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Chroot: alpineRoot}
 	return cmd.Run()
 }

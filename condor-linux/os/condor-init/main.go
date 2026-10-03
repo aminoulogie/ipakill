@@ -40,6 +40,19 @@ func main() {
 		case "drm": // diagnostic, read-only: what the display scans out
 			fmt.Print(drmInfo())
 			return
+		case "alpine-run": // condor-init alpine-run <cmd> [args...]: run inside Alpine (condor alpine run)
+			if len(os.Args) < 3 || !alpineInstalled() {
+				fmt.Fprintln(os.Stderr, "usage: condor-init alpine-run <command> [args...] (needs Alpine installed)")
+				os.Exit(2)
+			}
+			if err := alpineMounts(); err != nil {
+				fmt.Fprintln(os.Stderr, "alpine mounts:", err)
+			}
+			if err := runInAlpine(os.Args[2:]...); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
 		case "untar": // condor-init untar <file.tar.gz> <dir>  (Android has no tar)
 			if len(os.Args) != 4 {
 				fmt.Fprintln(os.Stderr, "usage: condor-init untar <file.tar.gz> <dir>")
