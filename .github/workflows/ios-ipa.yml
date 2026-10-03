@@ -10,7 +10,7 @@ name: Build iOS ipa
 
 on:
   push:
-    branches: [main, livecontainer]   # livecontainer: test builds, artifact only
+    branches: [main, livecontainer]   # livecontainer: test builds, published as pre-releases
     paths: ['ios/**', '.github/workflows/ios-ipa.yml']
   workflow_dispatch:
 
@@ -87,13 +87,15 @@ jobs:
           path: ${{ runner.temp }}/build.log
           if-no-files-found: ignore
 
+      # Test builds (livecontainer branch) are pre-releases: still offered by the
+      # ipakill store, so they can be installed from the phone.
       - name: Publish release
-        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.ver.outputs.v }}
+          PRE: ${{ github.ref != 'refs/heads/main' && '--prerelease' || '' }}
         run: |
-          gh release create "v$V" "$RUNNER_TEMP/ipakill-$V.ipa" \
+          gh release create "v$V" "$RUNNER_TEMP/ipakill-$V.ipa" $PRE \
             --repo "$GITHUB_REPOSITORY" --title "ipakill $V" \
             --notes "Unsigned. Install from the ipakill store, or run: ipakill ipakill-$V.ipa. Built on LiveContainer $LC_COMMIT (AGPL-3.0)."
 
