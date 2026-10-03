@@ -38,6 +38,8 @@ extern void *dlopen(const char *, int);
 extern void *dlsym(void *, const char *);
 extern const char *dlerror(void);
 extern void exit(int);
+extern void *malloc(unsigned);
+extern int usleep(unsigned);
 
 static char out[512];
 #define fail(...) do { int n_ = snprintf(out, sizeof out, "condor-gl: " __VA_ARGS__); write(2, out, n_); exit(1); } while (0)
@@ -65,6 +67,7 @@ static void readAll(void *p, unsigned n) {
 		b += r; n -= r;
 	}
 }
+#define say(...) do { int n_ = snprintf(out, sizeof out, __VA_ARGS__); write(1, out, n_); } while (0)
 static void reply(char c) { write(1, &c, 1); }
 
 /* yoffset: where the display shows the framebuffer from (struct fb_var_screeninfo, word 5). */
@@ -82,11 +85,24 @@ int main(int argc, char **argv) {
 	if (argc < 4) fail("usage: glanim <shm file> <width> <height>\n");
 	int W = num(argv[2]), H = num(argv[3]);
 	unsigned size = (unsigned)W * H * 4;
-	int shm = open(argv[1], 2 /* O_RDWR */);
-	if (shm < 0) fail("can't open %s\n", argv[1]);
-	unsigned char *mem = mmap(0, size * 3, 3 /* READ|WRITE */, 1 /* SHARED */, shm, 0);
-	if (mem == (void *)-1) fail("mmap %s\n", argv[1]);
 	fbfd = open("/dev/graphics/fb0", 0);
+	/* "glanim show W H": a test to watch. The screen as condor drew it (read from the
+	   framebuffer) is shown through the GPU, moved down 300 pixels, for 6 seconds; then the
+	   screen is red for 4 seconds. */
+	int show = argv[1][0] == 's';
+	unsigned char *mem;
+	if (show) {
+		mem = malloc(size * 3);
+		if (!mem || fbfd < 0) fail("show: no memory or framebuffer\n");
+		unsigned got = 0;
+		while (got < size) { long r = read(fbfd, mem + got, size - got); if (r <= 0) break; got += r; }
+		say("show: read %u bytes of the screen as condor drew it\n", got);
+	} else {
+		int shm = open(argv[1], 2 /* O_RDWR */);
+		if (shm < 0) fail("can't open %s\n", argv[1]);
+		mem = mmap(0, size * 3, 3 /* READ|WRITE */, 1 /* SHARED */, shm, 0);
+		if (mem == (void *)-1) fail("mmap %s\n", argv[1]);
+	}
 
 	void *ui = lib("libui.so"), *egl = lib("libEGL.so"), *gl = lib("libGLESv2.so");
 	EGLNativeWindowType (*createDisplaySurface)(void) = sym(ui, "android_createDisplaySurface");
@@ -130,6 +146,8 @@ int main(int argc, char **argv) {
 	void (*glBlendFunc)(u32, u32) = sym(gl, "glBlendFunc");
 	void (*glClearColor)(float, float, float, float) = sym(gl, "glClearColor");
 	void (*glClear)(u32) = sym(gl, "glClear");
+	void (*glReadPixels)(int, int, int, int, u32, u32, void *) = sym(gl, "glReadPixels");
+	const char *(*glGetString)(u32) = sym(gl, "glGetString");
 
 	/* Window first, then the driver: the order the test showed working (and exiting cleanly). */
 	EGLNativeWindowType win = createDisplaySurface();
@@ -200,6 +218,38 @@ int main(int argc, char **argv) {
 		glTexParameteri(0x0DE1, 0x2803, 0x812F);
 	}
 	glClearColor(0, 0, 0, 1);
+	if (show) {
+		say("show: %s on a %dx%d screen\n", glGetString(0x1F01), sw, sh);
+		glBindTexture(0x0DE1, tex[0]);
+		glTexImage2D(0x0DE1, 0, 0x1908, W, H, 0, 0x1908, 0x1401, mem);
+		/* The whole picture, moved 300 native columns (down on the portrait screen). */
+		float v4[4][5] = {{300, 0, 0, 0, 1}, {W + 300, 0, W, 0, 1}, {300, H, 0, H, 1}, {W + 300, H, W, H, 1}};
+		glVertexAttribPointer(0, 2, 0x1406, 0, 20, &v4[0][0]);
+		glVertexAttribPointer(1, 2, 0x1406, 0, 20, &v4[0][2]);
+		glVertexAttribPointer(2, 1, 0x1406, 0, 20, &v4[0][4]);
+		glUniform1i(uSolid, 0);
+		glUniform1f(uMul, 1);
+		glUniform1f(uMix, 0);
+		for (int i = 0; i < 360; i++) {
+			glClear(0x4000);
+			glDrawArrays(5, 0, 4);
+			if (i == 0) {
+				/* What the GPU drew, read back: a pixel of the picture against the source. */
+				unsigned char px[4];
+				int x = W / 2 + 300, y = H / 2;
+				glReadPixels(x, H - 1 - y, 1, 1, 0x1908, 0x1401, px);
+				unsigned char *s = mem + 4 * (y * W + x - 300);
+				say("show: GPU drew r%d g%d b%d where the picture has r%d g%d b%d\n",
+					px[0], px[1], px[2], s[2], s[1], s[0]);
+			}
+			eglSwapBuffers(dpy, surf);
+		}
+		say("show: now red for 4 seconds\n");
+		glClearColor(1, 0, 0, 1);
+		for (int i = 0; i < 240; i++) { glClear(0x4000); eglSwapBuffers(dpy, surf); }
+		say("show: done\n");
+		exit(0);
+	}
 	reply('R');
 
 	static quad q[MAXQ];
