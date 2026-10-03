@@ -81,10 +81,16 @@ func DrawTextCentered(dst *image.RGBA, f font.Face, cx, cy int, c color.Color, s
 // Fill paints the rectangle r.
 func Fill(dst *image.RGBA, r image.Rectangle, c color.RGBA) {
 	r = r.Intersect(dst.Rect)
-	for y := r.Min.Y; y < r.Max.Y; y++ {
-		for x := r.Min.X; x < r.Max.X; x++ {
-			dst.SetRGBA(x, y, c)
-		}
+	if r.Empty() {
+		return
+	}
+	// Paint the first row pixel by pixel, then copy it down: copy() is a memmove.
+	first := dst.Pix[dst.PixOffset(r.Min.X, r.Min.Y):][:4*r.Dx()]
+	for i := 0; i < len(first); i += 4 {
+		first[i], first[i+1], first[i+2], first[i+3] = c.R, c.G, c.B, c.A
+	}
+	for y := r.Min.Y + 1; y < r.Max.Y; y++ {
+		copy(dst.Pix[dst.PixOffset(r.Min.X, y):][:len(first)], first)
 	}
 }
 
@@ -104,16 +110,26 @@ func blend(dst *image.RGBA, x, y int, c color.RGBA, a float64) {
 
 // RoundRect paints r with corners of radius rad, anti-aliased.
 func RoundRect(dst *image.RGBA, r image.Rectangle, rad int, c color.RGBA) {
-	rad = min(rad, r.Dx()/2, r.Dy()/2)
-	for y := r.Min.Y; y < r.Max.Y; y++ {
-		for x := r.Min.X; x < r.Max.X; x++ {
-			// Distance from the pixel centre to the nearest corner circle's centre, only
-			// inside the corner squares; everywhere else the rectangle is fully covered.
-			cx, cy := float64(x)+0.5, float64(y)+0.5
-			ccx := math.Max(float64(r.Min.X+rad), math.Min(cx, float64(r.Max.X-rad)))
-			ccy := math.Max(float64(r.Min.Y+rad), math.Min(cy, float64(r.Max.Y-rad)))
-			d := math.Hypot(cx-ccx, cy-ccy)
-			blend(dst, x, y, c, float64(rad)+0.5-d)
+	rad = max(min(rad, r.Dx()/2, r.Dy()/2), 0)
+	// Everything outside the four corner squares is fully covered.
+	Fill(dst, image.Rect(r.Min.X+rad, r.Min.Y, r.Max.X-rad, r.Max.Y), c)
+	Fill(dst, image.Rect(r.Min.X, r.Min.Y+rad, r.Min.X+rad, r.Max.Y-rad), c)
+	Fill(dst, image.Rect(r.Max.X-rad, r.Min.Y+rad, r.Max.X, r.Max.Y-rad), c)
+	corners := [4]image.Rectangle{
+		image.Rect(r.Min.X, r.Min.Y, r.Min.X+rad, r.Min.Y+rad),
+		image.Rect(r.Max.X-rad, r.Min.Y, r.Max.X, r.Min.Y+rad),
+		image.Rect(r.Min.X, r.Max.Y-rad, r.Min.X+rad, r.Max.Y),
+		image.Rect(r.Max.X-rad, r.Max.Y-rad, r.Max.X, r.Max.Y),
+	}
+	for _, q := range corners {
+		for y := q.Min.Y; y < q.Max.Y; y++ {
+			for x := q.Min.X; x < q.Max.X; x++ {
+				// Distance from the pixel centre to the corner circle's centre.
+				cx, cy := float64(x)+0.5, float64(y)+0.5
+				ccx := math.Max(float64(r.Min.X+rad), math.Min(cx, float64(r.Max.X-rad)))
+				ccy := math.Max(float64(r.Min.Y+rad), math.Min(cy, float64(r.Max.Y-rad)))
+				blend(dst, x, y, c, float64(rad)+0.5-math.Hypot(cx-ccx, cy-ccy))
+			}
 		}
 	}
 }

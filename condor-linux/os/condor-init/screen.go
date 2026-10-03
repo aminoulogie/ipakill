@@ -5,8 +5,11 @@ import (
 	"image"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"unsafe"
 )
 
 // Rotation is how our logical screen is turned relative to the framebuffer's native scanout.
@@ -223,6 +226,10 @@ func (s *Screen) blitRGBA(img *image.RGBA, ox, oy int) {
 	}
 	rs, gs, bs := s.red.offset, s.green.offset, s.blue.offset
 	rl, gl, bl := 8-s.red.length, 8-s.green.length, 8-s.blue.length
+	if s.rot == Rot90 && s.bpp == 32 {
+		s.blitRot90(img, ox, oy, x0, y0, x1, y1)
+		return
+	}
 	px := s.bpp / 8
 	lo, hi := s.fbH, -1
 	for y := y0; y < y1; y++ {
@@ -241,4 +248,60 @@ func (s *Screen) blitRGBA(img *image.RGBA, ox, oy int) {
 		}
 	}
 	s.markRows(lo, hi)
+}
+
+// blitRot90 is blitRGBA for the tablet's own layout (portrait on a landscape 32 bpp
+// framebuffer): logical (x, y) is native (y, fbH-1-x), so a logical column is a native row.
+// It works in 64x64 tiles so both the image reads and the framebuffer writes stay in cache.
+func (s *Screen) blitRot90(img *image.RGBA, ox, oy, x0, y0, x1, y1 int) {
+	// Split the logical columns (= native rows) across the CPU's threads: the bands share no
+	// memory, and the Z2580 has 2 cores x 2 threads.
+	n := min(runtime.GOMAXPROCS(0), 4, max((x1-x0)/64, 1))
+	var wg sync.WaitGroup
+	for k := range n {
+		bx0, bx1 := x0+(x1-x0)*k/n, x0+(x1-x0)*(k+1)/n
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.blitRot90Band(img, ox, oy, bx0, y0, bx1, y1)
+		}()
+	}
+	wg.Wait()
+	s.markRows(s.fbH-x1, s.fbH-1-x0)
+}
+
+func (s *Screen) blitRot90Band(img *image.RGBA, ox, oy, x0, y0, x1, y1 int) {
+	rs, gs, bs := s.red.offset, s.green.offset, s.blue.offset
+	rl, gl, bl := 8-s.red.length, 8-s.green.length, 8-s.blue.length
+	xrgb := rs == 16 && gs == 8 && bs == 0 && rl == 0 && gl == 0 && bl == 0 // this tablet
+	src, dst := words(img.Pix), words(s.buf)
+	is, ds := img.Stride/4, s.stride/4
+	base := img.PixOffset(img.Rect.Min.X-ox, img.Rect.Min.Y-oy) / 4 // logical (0, 0)
+	const tile = 8                                                  // fastest of 4..128 measured
+	for ty := y0; ty < y1; ty += tile {
+		ey := min(ty+tile, y1)
+		for tx := x0; tx < x1; tx += tile {
+			ex := min(tx+tile, x1)
+			for y := ty; y < ey; y++ {
+				o := (s.fbH-1-tx)*ds + y
+				for _, p := range src[base+y*is+tx : base+y*is+ex] {
+					// p is the RGBA bytes read little-endian: A<<24 | B<<16 | G<<8 | R.
+					if xrgb {
+						dst[o] = p&0xff<<16 | p&0xff00 | p>>16&0xff
+					} else {
+						dst[o] = (p&0xff)>>rl<<rs | (p>>8&0xff)>>gl<<gs | (p>>16&0xff)>>bl<<bs
+					}
+					o -= ds
+				}
+			}
+		}
+	}
+}
+
+// words views a byte slice as little-endian 32-bit words (x86 is little-endian).
+func words(b []byte) []uint32 {
+	if len(b) < 4 {
+		return nil
+	}
+	return unsafe.Slice((*uint32)(unsafe.Pointer(&b[0])), len(b)/4)
 }

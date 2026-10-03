@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/image/font"
@@ -96,6 +97,36 @@ type shelfBook struct {
 	path, title, author string
 }
 
+// shelfCache remembers each book's title and author by path, size and date, so drawing the
+// shelf doesn't reopen every EPUB (slow on the tablet's eMMC and CPU).
+var shelfCache = map[string]struct {
+	size int64
+	mod  time.Time
+	sb   shelfBook
+}{}
+
+func bookInfo(p string, e os.DirEntry) shelfBook {
+	fi, err := e.Info()
+	if err == nil {
+		if ce, ok := shelfCache[p]; ok && ce.size == fi.Size() && ce.mod.Equal(fi.ModTime()) {
+			return ce.sb
+		}
+	}
+	sb := shelfBook{path: p, title: strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))}
+	if b, err := epub.Open(p); err == nil {
+		sb.title, sb.author = b.Title, b.Author
+		b.Close()
+	}
+	if fi != nil {
+		shelfCache[p] = struct {
+			size int64
+			mod  time.Time
+			sb   shelfBook
+		}{fi.Size(), fi.ModTime(), sb}
+	}
+	return sb
+}
+
 // findBooks lists the EPUBs on the tablet, by title.
 func findBooks() []shelfBook {
 	seen := map[string]bool{}
@@ -116,12 +147,7 @@ func findBooks() []shelfBook {
 				continue
 			}
 			seen[p] = true
-			sb := shelfBook{path: p, title: strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))}
-			if b, err := epub.Open(p); err == nil {
-				sb.title, sb.author = b.Title, b.Author
-				b.Close()
-			}
-			books = append(books, sb)
+			books = append(books, bookInfo(p, e))
 		}
 	}
 	for _, d := range bookDirs {
@@ -154,14 +180,23 @@ type readerFonts struct {
 	body, bold font.Face
 }
 
+// readerFontsBySize keeps each text size's faces (and their glyph caches) once made, so
+// going back to a size with A-/A+ is instant.
+var readerFontsBySize = map[int]*readerFonts{}
+
 func newReaderFonts(size int) *readerFonts {
+	if rf := readerFontsBySize[size]; rf != nil {
+		return rf
+	}
 	reg, _ := opentype.Parse(goregular.TTF)
 	bold, _ := opentype.Parse(gobold.TTF)
 	mk := func(f *opentype.Font, s float64) font.Face {
 		face, _ := opentype.NewFace(f, &opentype.FaceOptions{Size: s, DPI: 72, Hinting: font.HintingFull})
-		return face
+		return ui.Cache(face)
 	}
-	return &readerFonts{size: size, body: mk(reg, float64(size)), bold: mk(bold, float64(size)*1.25)}
+	rf := &readerFonts{size: size, body: mk(reg, float64(size)), bold: mk(bold, float64(size)*1.25)}
+	readerFontsBySize[size] = rf
+	return rf
 }
 
 // layoutChapter wraps a chapter's paragraphs to the page width and cuts them into pages.
@@ -377,7 +412,7 @@ func (c *console) readerPage() *page {
 	ob := c.book
 	th := readerThemes[c.lib.Prefs.Theme]
 	h := c.s.H - c.barH
-	img := image.NewRGBA(image.Rect(0, 0, c.s.W, h))
+	img := canvas(c.s.W, h)
 	ui.Fill(img, img.Rect, th.bg)
 	p := &page{img: img}
 

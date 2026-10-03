@@ -72,9 +72,20 @@ func loadPageFonts() (*pageFonts, error) {
 	}
 	mk := func(f *opentype.Font, size float64) font.Face {
 		face, _ := opentype.NewFace(f, &opentype.FaceOptions{Size: size, DPI: 72, Hinting: font.HintingFull})
-		return face
+		return ui.Cache(face)
 	}
 	return &pageFonts{title: mk(bold, 64), body: mk(reg, 36), bold: mk(bold, 38), small: mk(reg, 28)}, nil
+}
+
+// pageCanvas is reused for every page: a fresh 9 MB image per tap kept the garbage collector
+// busy on the tablet. Pages are drawn and blitted under drawMu, one at a time.
+var pageCanvas *image.RGBA
+
+func canvas(w, h int) *image.RGBA {
+	if pageCanvas == nil || pageCanvas.Rect.Dx() != w || pageCanvas.Rect.Dy() != h {
+		pageCanvas = image.NewRGBA(image.Rect(0, 0, w, h))
+	}
+	return pageCanvas
 }
 
 // pen is a small helper for laying out text and buttons on a page.
@@ -87,7 +98,7 @@ type pen struct {
 }
 
 func newPen(w, h int, f *pageFonts) *pen {
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	img := canvas(w, h)
 	ui.Fill(img, img.Rect, pgBG)
 	return &pen{p: &page{img: img}, f: f, W: w, mx: 48}
 }
