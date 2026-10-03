@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,8 @@ var (
 const shellHelp = `ipakill terminal - commands run on the PC (cmd.exe).
   cd <dir>     change directory (remembered)
   update       download the latest ipakill-core and restart (no git or Go needed)
-  restart      restart 'ipakill serve' (uses ipakill-core.new.exe if you built one)`
+  restart      restart 'ipakill serve' (uses ipakill-core.new.exe if you built one)
+Linux names work too: ls, cat, pwd, rm, cp, mv, which, ps, kill.`
 
 // terminalOn is remembered in sync.json: 'serve --shell' turns it on for
 // good (so a plain 'ipakill serve' keeps it), 'serve --no-shell' turns it off.
@@ -140,7 +142,7 @@ func shellHandler(w http.ResponseWriter, r *http.Request) {
 		reply(out+"updated - restarting, reconnects in a few seconds", 0)
 		go restartSoon()
 	default:
-		out, code := runShell(dir, line, 10*time.Minute)
+		out, code := runShell(dir, translate(line), 10*time.Minute)
 		reply(out, code)
 	}
 }
@@ -209,4 +211,44 @@ func restartSoon() {
 		return
 	}
 	os.Exit(0)
+}
+
+// translate lets a few everyday Linux/macOS commands work in cmd.exe.
+func translate(line string) string {
+	if runtime.GOOS != "windows" {
+		return line
+	}
+	f := strings.Fields(line)
+	rest := strings.TrimSpace(strings.TrimPrefix(line, f[0]))
+	// Drop unix-style flags (ls -la, rm -rf, ...); cmd doesn't know them.
+	var args []string
+	for _, a := range strings.Fields(rest) {
+		if !strings.HasPrefix(a, "-") {
+			args = append(args, a)
+		}
+	}
+	plain := strings.Join(args, " ")
+	switch f[0] {
+	case "ls", "ll", "la":
+		return strings.TrimSpace("dir " + strings.ReplaceAll(plain, "/", "\\"))
+	case "cat":
+		return "type " + plain
+	case "pwd":
+		return "cd"
+	case "rm":
+		return "del " + plain
+	case "cp":
+		return "copy " + plain
+	case "mv":
+		return "move " + plain
+	case "clear":
+		return "cls"
+	case "which":
+		return "where " + plain
+	case "ps":
+		return "tasklist"
+	case "kill":
+		return "taskkill /F /PID " + plain
+	}
+	return line
 }
