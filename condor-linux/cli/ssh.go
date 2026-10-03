@@ -47,12 +47,29 @@ func tabletIP() (string, error) {
 	return m[1], nil
 }
 
-// alpineRun runs a command inside the tablet's Alpine, showing its output live.
+var reAlpineExit = regexp.MustCompile(`alpine-run: exit (\d+)\s*$`)
+
+// alpineRun runs a shell command inside the tablet's Alpine and prints its output. The command
+// is double-quoted for the tablet's outer shell (so ; > || $ reach Alpine's shell intact), and
+// success is read from condor-init's "alpine-run: exit N" line, since adb drops exit codes.
 func alpineRun(cmdline string) error {
 	if strings.Contains(sh("su -c 'ls "+initPath+"'"), "No such") {
 		return fmt.Errorf("%s is missing; install condor-init first (dev.cmd)", initPath)
 	}
-	return adbLive("shell", "su -c '"+initPath+" alpine-run "+cmdline+"'")
+	q := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(cmdline)
+	out, _ := adb("shell", "su -c '"+initPath+" alpine-run \""+q+"\"'")
+	out = strings.TrimRight(out, "\n")
+	m := reAlpineExit.FindStringSubmatch(out)
+	if body := strings.TrimSpace(reAlpineExit.ReplaceAllString(out, "")); body != "" {
+		fmt.Println(body)
+	}
+	switch {
+	case m == nil:
+		return fmt.Errorf("no result from the tablet (is condor-init up to date? run dev.cmd)")
+	case m[1] != "0":
+		return fmt.Errorf("command failed on the tablet (exit %s): %s", m[1], cmdline)
+	}
+	return nil
 }
 
 func sshSetup() error {
@@ -94,7 +111,7 @@ func sshSetup() error {
 	sh("su -c 'chmod 700 " + alpineRoot + "/root/.ssh; chmod 600 " + keys + "'")
 
 	fmt.Println("==> starting sshd")
-	if err := alpineRun(`/bin/sh -c "ssh-keygen -A >/dev/null 2>&1; pgrep -x sshd >/dev/null || /usr/sbin/sshd"`); err != nil {
+	if err := alpineRun("ssh-keygen -A >/dev/null 2>&1; pgrep -x sshd >/dev/null || /usr/sbin/sshd"); err != nil {
 		return fmt.Errorf("starting sshd: %w", err)
 	}
 	if ip, err := tabletIP(); err == nil {

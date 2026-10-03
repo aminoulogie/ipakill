@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -48,11 +49,20 @@ func main() {
 			if err := alpineMounts(); err != nil {
 				fmt.Fprintln(os.Stderr, "alpine mounts:", err)
 			}
-			if err := runInAlpine(os.Args[2:]...); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+			// Through Alpine's shell, so the command is looked up in Alpine's PATH (not
+			// Android's) and shell syntax works. The last line reports the exit status, because
+			// Android 4.2's adb doesn't pass exit codes back to the PC.
+			code := 0
+			if err := runInAlpine("/bin/sh", "-c", strings.Join(os.Args[2:], " ")); err != nil {
+				code = 127
+				if ee, ok := err.(*exec.ExitError); ok {
+					code = ee.ExitCode()
+				} else {
+					fmt.Fprintln(os.Stderr, err)
+				}
 			}
-			return
+			fmt.Printf("alpine-run: exit %d\n", code)
+			os.Exit(code)
 		case "untar": // condor-init untar <file.tar.gz> <dir>  (Android has no tar)
 			if len(os.Args) != 4 {
 				fmt.Fprintln(os.Stderr, "usage: condor-init untar <file.tar.gz> <dir>")
