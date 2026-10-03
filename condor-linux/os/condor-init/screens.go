@@ -76,6 +76,7 @@ func (c *console) launcherPage() *page {
 		{"terminal", "terminal", "Alpine shell with keyboard"},
 		{"settings", "settings", "display, wi-fi, battery, power"},
 		{"books", "books", "read EPUB books"},
+		{"store", "store", "75,000 free books from Project Gutenberg"},
 	}
 	for _, a := range apps {
 		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+170)
@@ -159,10 +160,15 @@ func (c *console) showPage() {
 		c.page = c.shelfPage()
 	case c.mode == modeReader && c.book != nil:
 		c.page = c.readerPage()
+	case c.mode == modeStore:
+		c.page = c.storePage()
 	default:
 		c.page = c.launcherPage()
 	}
 	c.s.blitRGBA(c.page.img, 0, c.barH)
+	if c.mode == modeStore && c.store.typing {
+		c.skb.draw()
+	}
 	c.s.Flush()
 }
 
@@ -184,7 +190,7 @@ func (c *console) pageTap(x, y int) {
 	if id != c.confirm {
 		c.confirm = ""
 	}
-	if c.readerTap(id) {
+	if c.storeTap(id) || c.readerTap(id) {
 		return
 	}
 	switch id {

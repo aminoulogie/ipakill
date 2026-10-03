@@ -215,6 +215,18 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       line height 1.7, tap left third = back, else forward, volume keys turn pages; progress
       per book as (chapter, first word) in /data/condor/books.json. Soma itself can't run here
       (React web app; no browser engine on the framebuffer).
+- [x] **Speed** (2026-10-03): pages took 45-55 ms on a PC (~0.5-1 s on the Atom); now ~9-10 ms.
+      Rot90 blit in 8x8 tiles, word-sized, across 4 threads; ui.Fill copies rows; RoundRect
+      anti-aliases corners only; ui.CachedFace glyph cache; one reused page canvas; shelf
+      metadata cached. `go test -bench Page` (bench_test.go) to measure.
+- [x] **Store** (store.go): Project Gutenberg's 75,000+ free books through Gutendex
+      (github.com/garethbjohnson/gutendex, https://gutendex.com/books/). Search with the
+      on-screen keyboard (second `keyboard` instance), topics, language, pages; a book's page
+      shows the catalogue summary; "read preview" opens it in the reader without saving
+      (/data/condor/previews, newest 5 kept), "download" saves to /data/media/0/Books.
+      HTTPS through condor-init's proxy 127.0.0.1:3128 with Alpine's CA bundle (Android 4.2's
+      roots are too old). Paid-book previews (Google Books) are page images in a web viewer
+      with DRM: not possible without a browser.
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

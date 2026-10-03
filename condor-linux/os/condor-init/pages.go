@@ -25,6 +25,7 @@ const (
 	modeSettings
 	modeBooks  // the shelf
 	modeReader // a book open
+	modeStore  // free books to download
 )
 
 type button struct {

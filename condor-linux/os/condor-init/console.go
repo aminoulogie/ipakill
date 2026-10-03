@@ -61,6 +61,9 @@ type console struct {
 	rf          *readerFonts
 	book        *openBook
 	shelf       []shelfBook
+	store       storeState
+	skb         *keyboard // the store's search keyboard
+	fromStore   bool      // the open book came from the store (a preview or a download)
 	clients     map[net.Conn]bool
 }
 
@@ -97,6 +100,15 @@ func newConsole(s *Screen) (*console, error) {
 	c.t = vt.New(cols, rows)
 	c.t.Reply = c.input
 	if c.kb, err = newKeyboard(s, c.input, c.keyboardShown); err != nil {
+		return nil, err
+	}
+	c.skb, err = newKeyboard(s, c.storeKey, func(visible bool) {
+		if !visible { // its hide key: stop typing
+			c.store.typing = false
+			c.showPage()
+		}
+	})
+	if err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -146,6 +158,8 @@ func (c *console) touchLoop() {
 				switch {
 				case c.mode == modeTerminal:
 					c.kb.touch(p)
+				case c.mode == modeStore && c.store.typing && c.skb.visible && p.Y >= c.skb.y0:
+					c.skb.touch(p)
 				case p.Up:
 					c.pageTap(p.X, p.Y)
 				}

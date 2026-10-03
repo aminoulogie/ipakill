@@ -419,6 +419,9 @@ func (c *console) readerPage() *page {
 	// Toolbar: shelf, smaller, bigger, theme.
 	ids := []string{"shelf", "smaller", "bigger", "theme"}
 	labels := []string{"< shelf", "A-", "A+", th.name}
+	if c.fromStore {
+		labels[0] = "< store"
+	}
 	gap, mx := 16, 24
 	bw := (c.s.W - 2*mx - gap*(len(ids)-1)) / len(ids)
 	btnBG := blend(th.bg, th.fg, 0.12)
@@ -471,8 +474,11 @@ func (c *console) readerTap(id string) bool {
 	case strings.HasPrefix(id, "book"):
 		var i int
 		if _, err := fmt.Sscanf(id, "book%d", &i); err == nil && i < len(c.shelf) {
+			c.fromStore = false
 			c.openBookAt(c.shelf[i].path)
 		}
+	case id == "shelf" && c.fromStore:
+		c.setMode(modeStore)
 	case id == "shelf":
 		c.setMode(modeBooks)
 	case id == "prev":
