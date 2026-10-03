@@ -10,9 +10,9 @@ if ($Ip -notmatch '^\d+\.\d+\.\d+\.\d+$') { Write-Host "Which IP? condor-linux\g
 $ssh = @('-o', 'ConnectTimeout=8', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new')
 $bin = Join-Path $PSScriptRoot 'os\condor-gl\gltest'
 $ErrorActionPreference = 'Continue'
-& scp @ssh $bin "root@${Ip}:/tmp/gltest"
+& scp @ssh $bin (Join-Path $PSScriptRoot 'os\condor-gl\gl-run.sh') "root@${Ip}:/tmp/"
 if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at ${Ip}?" -ForegroundColor Red; exit 1 }
-# Run it as Android runs its own programs: through condor-init's root shell (port 2324 on
-# the tablet), which is in Android's filesystem (/vendor holds the GPU driver) and passes on
-# Android's environment, including the system-properties area the driver reads.
-& ssh @ssh "root@$Ip" "cp /tmp/gltest /proc/1/root/data/local/tmp/gltest; chmod 755 /proc/1/root/data/local/tmp/gltest; /system/bin/stop surfaceflinger; sleep 1; printf 'echo props=`$ANDROID_PROPERTY_WORKSPACE; /data/local/tmp/gltest 2>&1; echo exit code `$?; exit\n' | nc 127.0.0.1 2324"
+# The run itself is os/condor-gl/gl-run.sh (in Alpine): gltest runs in Android's root
+# through condor-init's root shell (port 2324), with Android's environment, twice (window
+# first, then GPU driver first), followed by Android's log and any crash report.
+& ssh @ssh "root@$Ip" "sh /tmp/gl-run.sh"

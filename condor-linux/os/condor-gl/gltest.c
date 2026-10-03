@@ -100,7 +100,10 @@ static void diagnose(void) {
 }
 
 int main(int argc, char **argv) {
-	(void)argc; (void)argv;
+	(void)argv;
+	/* With any argument, the GPU driver starts before the framebuffer window is opened
+	   (the driver may want to open the framebuffer itself). */
+	int eglFirst = argc > 1;
 	say("gltest: OpenGL ES on the framebuffer through Android's own drivers\n");
 	say("step: loading libui, libEGL, libGLESv2\n");
 	void *ui = lib("libui.so"), *egl = lib("libEGL.so"), *gl = lib("libGLESv2.so");
@@ -142,17 +145,24 @@ int main(int argc, char **argv) {
 	void (*glTexImage2D)(u32, int, int, int, int, int, u32, u32, const void *) = sym(gl, "glTexImage2D");
 	void (*glGetShaderiv)(u32, u32, int *) = sym(gl, "glGetShaderiv");
 
-	say("step: opening the framebuffer window\n");
-	EGLNativeWindowType win = createDisplaySurface();
-	if (!win) { say("FAIL: android_createDisplaySurface returned nothing (is SurfaceFlinger still running? stop surfaceflinger)\n"); unpan(); return 1; }
-	say("step: starting the GPU driver (eglGetDisplay, eglInitialize)\n");
-	EGLDisplay dpy = eglGetDisplay(0);
+	EGLNativeWindowType win = 0;
+	EGLDisplay dpy = 0;
 	EGLint maj = 0, min = 0;
-	if (!dpy || !eglInitialize(dpy, &maj, &min)) {
-		say("FAIL: the GPU driver didn't start (display %p, EGL error 0x%x). Looking for why:\n", dpy, eglGetError());
-		diagnose();
-		unpan();
-		return 1;
+	for (int round = 0; round < 2; round++) {
+		if ((round == 0) != eglFirst) {
+			say("step: opening the framebuffer window\n");
+			win = createDisplaySurface();
+			if (!win) { say("FAIL: android_createDisplaySurface returned nothing (is SurfaceFlinger still running? stop surfaceflinger)\n"); unpan(); return 1; }
+		} else {
+			say("step: starting the GPU driver (eglGetDisplay, eglInitialize)\n");
+			dpy = eglGetDisplay(0);
+			if (!dpy || !eglInitialize(dpy, &maj, &min)) {
+				say("FAIL: the GPU driver didn't start (display %p, EGL error 0x%x). Looking for why:\n", dpy, eglGetError());
+				diagnose();
+				unpan();
+				return 1;
+			}
+		}
 	}
 	const EGLint cfgAttr[] = {0x3033 /*SURFACE_TYPE*/, 4 /*WINDOW*/, 0x3040 /*RENDERABLE*/, 4 /*ES2*/,
 		0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3038};
