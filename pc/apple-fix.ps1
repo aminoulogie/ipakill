@@ -12,7 +12,7 @@ $hostsFile = "$env:SystemRoot\System32\drivers\etc\hosts"
 $tag = '# ipakill-apple'
 $servers = 'gsa.apple.com', 'developerservices2.apple.com', 'idmsa.apple.com', 'appleid.apple.com',
     'github.com', 'api.github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com',
-    'raw.githubusercontent.com'
+    'raw.githubusercontent.com', 'ani.sidestore.app'
 $dnsServers = '1.1.1.1', '8.8.8.8', '9.9.9.9', '208.67.222.222', '1.0.0.1', '8.8.4.4'
 # Apple answers differently by region; Google's DNS-over-HTTPS can ask "as if
 # from" other networks, which turns up more addresses to try.
