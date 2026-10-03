@@ -13,7 +13,12 @@ func shellCommand(ctx context.Context, line string) *exec.Cmd {
 	return cmd
 }
 
-// startDetached opens the program in a new console window.
+// startDetached runs the program in a console window of its own, so it keeps
+// running after this process exits. (Not via "cmd /C start": start reads an
+// unquoted first argument as the program, not the window title.)
 func startDetached(exe string, args ...string) error {
-	return exec.Command("cmd.exe", append([]string{"/C", "start", "ipakill", exe}, args...)...).Start()
+	const createNewConsole = 0x00000010
+	cmd := exec.Command(exe, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewConsole}
+	return cmd.Start()
 }
