@@ -22,6 +22,7 @@ func (c *console) key(code uint16, value int32) {
 	}
 	drawMu.Lock()
 	defer drawMu.Unlock()
+	c.lastInput = time.Now()
 	switch code {
 	case keyPower:
 		if value != 1 {
@@ -36,8 +37,12 @@ func (c *console) key(code uint16, value int32) {
 		if code == keyVolumeDown {
 			step = -10
 		}
-		c.brightness = min(max(c.brightness+step, 10), 100)
-		setBacklight(c.brightness)
+		c.cfg.Brightness = min(max(c.cfg.Brightness+step, 10), 100)
+		setBacklight(c.cfg.Brightness)
+		c.cfg.save()
+		if c.mode == modeSettings {
+			c.showPage()
+		}
 	}
 }
 
@@ -55,8 +60,9 @@ func (c *console) setScreen(on bool) {
 		return
 	}
 	blankScreen(c.s, false)
+	c.lastInput = time.Now()
 	c.redrawAll()
-	setBacklight(c.brightness)
+	setBacklight(c.cfg.Brightness)
 	log.Printf("screen on")
 }
 
@@ -66,5 +72,18 @@ func (c *console) keysLoop(device string) {
 		err := readKeys(device, c.key)
 		log.Printf("keys %s: %v; retrying in 5s", device, err)
 		time.Sleep(5 * time.Second)
+	}
+}
+
+// idleLoop turns the screen off after the configured minutes without a touch or key.
+// It doesn't return.
+func (c *console) idleLoop() {
+	for range time.Tick(5 * time.Second) {
+		drawMu.Lock()
+		if c.screenOn && c.cfg.ScreenOff > 0 && time.Since(c.lastInput) > time.Duration(c.cfg.ScreenOff)*time.Minute {
+			log.Printf("idle %d min: screen off", c.cfg.ScreenOff)
+			c.setScreen(false)
+		}
+		drawMu.Unlock()
 	}
 }

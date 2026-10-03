@@ -50,7 +50,13 @@ type console struct {
 	glyphs      map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
 	barH        int                      // status bar height at the top
 	screenOn    bool
-	brightness  int // percent
+	mode        mode  // launcher, terminal or settings
+	page        *page // the launcher/settings page on screen, for taps
+	pf          *pageFonts
+	cfg         savedSettings // brightness, screen-off timeout
+	confirm     string        // power button waiting for its second tap
+	wifiBusy    bool
+	lastInput   time.Time // for the screen-off timeout
 	clients     map[net.Conn]bool
 }
 
@@ -76,7 +82,10 @@ func newConsole(s *Screen) (*console, error) {
 		ch: (m.Ascent + m.Descent).Ceil() + 2, asc: m.Ascent.Ceil() + 1, clients: map[net.Conn]bool{}}
 	c.glyphs = map[glyphKey]*image.RGBA{}
 	c.barH = c.ch + 8
-	c.screenOn, c.brightness = true, 80
+	c.screenOn, c.mode, c.cfg, c.lastInput = true, modeLauncher, loadSettings(), time.Now()
+	if c.pf, err = loadPageFonts(); err != nil {
+		return nil, err
+	}
 	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
 	c.offX, c.offY = (s.W-cols*c.cw)/2, c.barH+consolePad/2
 	c.t = vt.New(cols, rows)
@@ -116,11 +125,24 @@ func (c *console) touchLoop() {
 		err := readTouch("Goodix", c.s.fbW, c.s.fbH, c.s.rot, func(string, ...any) {}, func(pts []TouchPoint) {
 			drawMu.Lock()
 			defer drawMu.Unlock()
+			c.lastInput = time.Now()
 			if !c.screenOn {
 				return // only the power button wakes the screen
 			}
 			for _, p := range pts {
-				c.kb.touch(p)
+				// The "≡ condor" corner of the status bar goes home from any screen.
+				if p.Up && p.Y < c.barH && p.X < c.s.W/3 {
+					if c.mode != modeLauncher {
+						c.setMode(modeLauncher)
+					}
+					continue
+				}
+				switch {
+				case c.mode == modeTerminal:
+					c.kb.touch(p)
+				case p.Up:
+					c.pageTap(p.X, p.Y)
+				}
 			}
 		})
 		log.Printf("touch: %v; retrying in 2s", err)
@@ -140,8 +162,8 @@ func colorOf(i uint8, def color.RGBA, bold bool) color.RGBA {
 
 // render draws the rows that changed and writes them to the screen. Callers hold drawMu.
 func (c *console) render() {
-	if !c.screenOn {
-		return // dirty marks stay; setScreen(true) redraws everything
+	if !c.screenOn || c.mode != modeTerminal {
+		return // dirty marks stay; redrawAll repaints everything when the terminal shows again
 	}
 	rows := c.t.TakeDirty()
 	if len(rows) == 0 {

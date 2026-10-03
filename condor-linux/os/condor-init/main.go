@@ -106,9 +106,9 @@ func main() {
 			log.Printf("console: %v; showing the launcher instead", err)
 			go runHome(s)
 		} else {
+			setBacklight(c.cfg.Brightness)
 			drawMu.Lock()
-			c.drawBar()
-			c.kb.draw()
+			c.redrawAll()
 			drawMu.Unlock()
 			go c.run()
 			go c.serve()
@@ -116,6 +116,7 @@ func main() {
 			go c.statusLoop()
 			go c.keysLoop("mid_powerbtn")
 			go c.keysLoop("gpio-keys")
+			go c.idleLoop()
 		}
 	}
 	go runTunnel()

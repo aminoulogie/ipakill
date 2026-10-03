@@ -39,7 +39,7 @@ func wifiAddr() string {
 // barParts returns the left and right texts and the battery colour.
 func barParts() (left, right string, batColor color.RGBA) {
 	now := time.Now().In(displayZone)
-	left = " condor  " + now.Format("Mon 02 Jan 15:04")
+	left = " ≡ condor  " + now.Format("Mon 02 Jan 15:04")
 	wifi := "wifi off"
 	if ip := wifiAddr(); ip != "" {
 		wifi = "wifi " + ip
@@ -92,10 +92,14 @@ func (c *console) redrawAll() {
 	clear(c.s.buf)
 	c.s.markRows(0, c.s.fbH-1)
 	c.drawBar()
-	c.t.MarkAll()
-	c.render()
-	if c.kb.visible {
-		c.kb.draw()
+	if c.mode == modeTerminal {
+		c.t.MarkAll()
+		c.render()
+		if c.kb.visible {
+			c.kb.draw()
+		}
+	} else {
+		c.showPage()
 	}
 	c.s.Flush()
 }

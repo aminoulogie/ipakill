@@ -56,6 +56,7 @@ on it; Alpine's musl and busybox are fine. It's minimal and "build it yourself" 
 | 13 | One-step dev loop: `dev.cmd` builds, pushes, restarts | `dev.ps1` |
 | 14 | On-screen keyboard under the console (hide/show, resizes the shell) | `keyboard.go` |
 | 15 | Status bar, power button (screen off/on), volume = brightness, glyph cache, NTP | `bar.go`, `power.go`, `glyphs.go` |
+| 16 | Launcher + settings (brightness, auto screen-off, Wi-Fi, battery, power) | `pages.go`, `screens.go` |
 
 ## Next
 

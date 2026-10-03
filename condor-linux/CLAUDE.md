@@ -200,8 +200,15 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       power button toggles the screen (backlight 0 + FBIOBLANK powerdown; touches ignored
       while off), volume keys = brightness (power.go), NTP at boot after Wi-Fi (busybox ntpd),
       shell TZ=WAT-1.
+- [x] **Launcher + settings** (pages.go, screens.go): boots to the launcher (terminal,
+      settings, books "coming soon"); "≡ condor" corner of the status bar = home from anywhere;
+      the terminal keeps running in the background. Settings: brightness, auto screen-off
+      (never/1/5/10 min, idleLoop), Wi-Fi status + reconnect, battery, system, power (restart,
+      power off, android = autostart off + reboot; two taps; via `setprop sys.powerctl`).
+      Saved in /data/condor/settings.json. Ready-made launchers don't fit: they need X/Wayland
+      or a GPU, and fbdev mmap is shifted 299 rows on this panel.
 - [ ] Books app (EPUB reader)
-- [ ] Auto screen-off after idle; microSD bind into Alpine
+- [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.
 

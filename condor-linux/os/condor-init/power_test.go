@@ -27,8 +27,8 @@ func TestPowerButtonTogglesScreen(t *testing.T) {
 		t.Fatal("release/repeat must not toggle")
 	}
 	c.key(keyVolumeUp, 1) // ignored while off
-	if c.brightness != 80 {
-		t.Fatalf("brightness changed while off: %d", c.brightness)
+	if c.cfg.Brightness != 80 {
+		t.Fatalf("brightness changed while off: %d", c.cfg.Brightness)
 	}
 	c.key(keyPower, 1)
 	if !c.screenOn {
@@ -36,8 +36,8 @@ func TestPowerButtonTogglesScreen(t *testing.T) {
 	}
 	c.key(keyVolumeDown, 1)
 	c.key(keyVolumeDown, 2)
-	if c.brightness != 60 {
-		t.Fatalf("brightness %d, want 60", c.brightness)
+	if c.cfg.Brightness != 60 {
+		t.Fatalf("brightness %d, want 60", c.cfg.Brightness)
 	}
 }
 
