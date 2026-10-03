@@ -27,6 +27,7 @@ var bookDirs = []string{
 
 type shelfBook struct {
 	path, title, author string
+	cover               string // "epub:<file>#<path in the archive>", or ""
 }
 
 // shelfCache remembers each book's title and author by path, size and date, so drawing the
@@ -47,6 +48,9 @@ func bookInfo(p string, e os.DirEntry) shelfBook {
 	sb := shelfBook{path: p, title: strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))}
 	if b, err := epub.Open(p); err == nil {
 		sb.title, sb.author = b.Title, b.Author
+		if b.CoverPath != "" {
+			sb.cover = "epub:" + p + "#" + b.CoverPath
+		}
 		b.Close()
 	}
 	if fi != nil {
@@ -89,50 +93,132 @@ func findBooks() []shelfBook {
 	return books
 }
 
-// shelfPage lists the books.
+// Library layout (page coordinates).
+const (
+	libCols  = 4
+	libGap   = 36
+	libCellW = (1200 - 2*48 - (libCols-1)*libGap) / libCols // 249
+	libCover = libCellW * 3 / 2                             // 373
+	libCellH = libCover + 70
+	libRows  = 2
+)
+
+// shelfPage is the Library: the book being read in a "continue reading" card with the
+// reading goal, then every book as a cover with how far along it is.
 func (c *console) shelfPage() *page {
-	pn := newPen(c.s.W, c.s.H-c.barH, c.pf)
-	pn.btn("home", "< home", image.Rect(pn.mx-12, 24, pn.mx+260, 124), pgBtn, pgText)
-	pn.y = 230
-	pn.text(c.pf.title, pgText, pn.mx, pn.y, "books")
-	// Soma's reading goal: minutes today against the daily goal, books finished this year.
-	mins, goal := c.lib.readingToday(), c.lib.Prefs.GoalMinutes
-	gr := image.Rect(pn.mx, pn.y+30, c.s.W-pn.mx, pn.y+120)
-	ui.RoundRect(pn.p.img, gr, 20, pgCard)
-	if done := min(mins, goal) * (gr.Dx() - 8) / max(goal, 1); done > 0 {
-		ui.RoundRect(pn.p.img, image.Rect(gr.Min.X+4, gr.Max.Y-14, gr.Min.X+4+done, gr.Max.Y-6), 4, pgAccent)
-	}
-	ui.DrawText(pn.p.img, c.pf.small, gr.Min.X+28, gr.Min.Y+52, pgText, fmt.Sprintf("today %d of %d min", mins, goal))
-	right := fmt.Sprintf("%d of %d books this year", c.lib.booksThisYear(), c.lib.Prefs.BooksPerYear)
-	ui.DrawText(pn.p.img, c.pf.small, gr.Max.X-28-ui.TextWidth(c.pf.small, right), gr.Min.Y+52, pgMuted, right)
-	pn.p.buttons = append(pn.p.buttons, button{"r:goal", gr})
-	pn.y = gr.Max.Y
+	f := apple()
+	h := c.s.H - c.barH
+	img := canvas(c.s.W, h)
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img}
+	mx := 48
+
+	// Top: back to home, and the store.
+	iconBack(img, mx, 64, apOrange)
+	apText(img, f.body, mx+30, 76, apOrange, "Home")
+	p.buttons = append(p.buttons, button{"home", image.Rect(0, 10, 260, 120)})
+	apTextRight(img, f.body, c.s.W-mx, 76, apOrange, "Book Store")
+	p.buttons = append(p.buttons, button{"store", image.Rect(c.s.W-320, 10, c.s.W, 120)})
+	apText(img, f.largeTitle, mx, 200, apLabel, "Library")
+
 	c.shelf = findBooks()
 	if len(c.shelf) == 0 {
-		pn.line(c.pf.body, pgText, "no books yet")
-		pn.line(c.pf.small, pgMuted, "copy .epub files from the PC:  condor books C:\\path\\book.epub")
-		pn.line(c.pf.small, pgMuted, "or put them in a Books folder on the microSD card")
-		return pn.p
+		apText(img, f.title, mx, 420, apLabel, "Your library is empty")
+		y := drawParagraphs(img, f.body, "Get free books from the Book Store, or copy EPUB files to the Books folder from your PC.",
+			mx, 460, c.s.W-2*mx, 48, 700, apSecondary)
+		r := image.Rect(mx, y+30, mx+420, y+130)
+		ui.RoundRect(img, r, 50, apOrange)
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Book Store")
+		p.buttons = append(p.buttons, button{"store", r})
+		return p
 	}
-	pn.y += 30
-	maxY := c.s.H - c.barH - 40
+	item := func(b shelfBook) *storeItem {
+		return &storeItem{key: b.path, title: b.title, author: b.author, cover: b.cover}
+	}
+
+	// Continue reading: the book opened last.
+	y := 250
+	last, lastAt := -1, ""
 	for i, b := range c.shelf {
-		if pn.y+150 > maxY {
-			pn.line(c.pf.small, pgMuted, fmt.Sprintf("... and %d more", len(c.shelf)-i))
-			break
+		if pr, ok := c.lib.Progress[b.path]; ok && pr.Opened > lastAt && c.lib.Finished[b.path] == "" {
+			last, lastAt = i, pr.Opened
 		}
-		r := image.Rect(pn.mx, pn.y, c.s.W-pn.mx, pn.y+140)
-		ui.RoundRect(pn.p.img, r, 22, pgCard)
-		pn.text(c.pf.bold, pgText, r.Min.X+36, r.Min.Y+60, clip(c.pf.bold, b.title, r.Dx()-72))
-		sub := b.author
-		if pr, ok := c.lib.Progress[b.path]; ok {
-			sub = strings.TrimSpace(fmt.Sprintf("%s   · chapter %d", sub, pr.Chapter+1))
-		}
-		pn.text(c.pf.small, pgMuted, r.Min.X+36, r.Min.Y+110, clip(c.pf.small, sub, r.Dx()-72))
-		pn.p.buttons = append(pn.p.buttons, button{fmt.Sprintf("book%d", i), r})
-		pn.y += 160
 	}
-	return pn.p
+	if last >= 0 {
+		b := c.shelf[last]
+		card := image.Rect(mx, y, c.s.W-mx, y+460)
+		ui.RoundRect(img, card, 30, apCard)
+		cr := image.Rect(card.Min.X+30, card.Min.Y+30, card.Min.X+30+267, card.Min.Y+30+400)
+		shadowRect(img, cr)
+		c.drawCover(img, cr, item(b))
+		x, w := cr.Max.X+40, card.Max.X-cr.Max.X-70
+		apText(img, f.captionBold, x, card.Min.Y+70, apOrange, "CONTINUE READING")
+		ty := card.Min.Y + 130
+		for i, l := range layoutWords(f.headline, strings.Fields(b.title), 0, w, false) {
+			if i == 2 {
+				break
+			}
+			drawWords(img, f.headline, l, x, ty, apLabel)
+			ty += 46
+		}
+		apText(img, f.callout, x, ty+6, apSecondary, clip(f.callout, b.author, w))
+		pct := c.lib.Progress[b.path].Pct
+		bar := image.Rect(x, ty+40, x+w-110, ty+48)
+		ui.RoundRect(img, bar, 4, apSeparator)
+		if pct > 0 {
+			ui.RoundRect(img, image.Rect(bar.Min.X, bar.Min.Y, bar.Min.X+bar.Dx()*pct/100, bar.Max.Y), 4, apLabel)
+		}
+		apTextRight(img, f.caption, x+w, ty+54, apSecondary, fmt.Sprintf("%d%%", pct))
+		p.buttons = append(p.buttons, button{fmt.Sprintf("book%d", last), image.Rect(card.Min.X, card.Min.Y, x+w, ty+60)})
+
+		// Reading goal ring.
+		mins, goal := c.lib.readingToday(), c.lib.Prefs.GoalMinutes
+		gy := card.Max.Y - 90
+		ring(img, x+44, gy, 38, 12, float64(mins)/float64(max(goal, 1)), apSeparator, apOrange)
+		apText(img, f.captionBold, x+110, gy-8, apLabel, "Reading Goal")
+		apText(img, f.caption, x+110, gy+30, apSecondary,
+			fmt.Sprintf("%d of %d min today · %d of %d books this year", mins, goal, c.lib.booksThisYear(), c.lib.Prefs.BooksPerYear))
+		p.buttons = append(p.buttons, button{"r:goal", image.Rect(x, gy-50, card.Max.X, gy+50)})
+		y = card.Max.Y + 40
+	}
+
+	// All books.
+	apText(img, f.headline, mx, y+40, apLabel, "All Books")
+	apTextRight(img, f.caption, c.s.W-mx, y+40, apSecondary, map[bool]string{true: "1 book", false: fmt.Sprintf("%d books", len(c.shelf))}[len(c.shelf) == 1])
+	y += 76
+	per := libCols * libRows
+	if last < 0 {
+		per = libCols * 3
+	}
+	c.shelfFrom = min(c.shelfFrom, (len(c.shelf)-1)/per*per)
+	for i := c.shelfFrom; i < len(c.shelf) && i < c.shelfFrom+per; i++ {
+		b := c.shelf[i]
+		col, row := (i-c.shelfFrom)%libCols, (i-c.shelfFrom)/libCols
+		x, cy := mx+col*(libCellW+libGap), y+row*(libCellH+20)
+		cr := image.Rect(x, cy, x+libCellW, cy+libCover)
+		shadowRect(img, cr)
+		c.drawCover(img, cr, item(b))
+		status, col2 := "NEW", rgb(0x0a84ff)
+		if pr, ok := c.lib.Progress[b.path]; ok {
+			status, col2 = fmt.Sprintf("%d%%", pr.Pct), apSecondary
+		}
+		if c.lib.Finished[b.path] != "" {
+			status, col2 = "FINISHED", apSecondary
+		}
+		apText(img, f.captionBold, x, cr.Max.Y+44, col2, status)
+		p.buttons = append(p.buttons, button{fmt.Sprintf("book%d", i), image.Rect(x, cy, x+libCellW, cy+libCellH)})
+	}
+	if len(c.shelf) > per {
+		by := h - 100
+		apText(img, f.body, mx, by+48, apOrange, "‹ Previous")
+		p.buttons = append(p.buttons, button{"shelf:prev", image.Rect(0, by, 360, by+90)})
+		apTextCenter(img, f.caption, c.s.W/2, by+38, apSecondary,
+			fmt.Sprintf("%d–%d of %d", c.shelfFrom+1, min(c.shelfFrom+per, len(c.shelf)), len(c.shelf)))
+		apTextRight(img, f.body, c.s.W-mx, by+48, apOrange, "Next ›")
+		p.buttons = append(p.buttons, button{"shelf:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
+		c.shelfPer = per
+	}
+	return p
 }
 
 // clip shortens s with "..." to fit width pixels.

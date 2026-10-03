@@ -107,8 +107,10 @@ type readerPrefs struct {
 }
 
 type bookProgress struct {
-	Chapter int `json:"chapter"`
-	Word    int `json:"word"`
+	Chapter int    `json:"chapter"`
+	Word    int    `json:"word"`
+	Pct     int    `json:"pct"`    // through the whole book, for the library
+	Opened  string `json:"opened"` // RFC 3339, for "continue reading"
 }
 
 // library is saved in /data/condor/books.json.
@@ -410,7 +412,7 @@ func (c *console) turn(dir int) {
 		return
 	}
 	c.readTick()
-	c.rd.sel, c.rd.menu, c.rd.panel = nil, menuNone, nil
+	c.rd.sel, c.rd.menu, c.rd.panel, c.rd.chrome = nil, menuNone, nil, false
 	switch {
 	case dir > 0 && ob.page < len(ob.pages)-1:
 		ob.page, ob.line = ob.page+1, 0
@@ -464,7 +466,11 @@ func (c *console) saveProgress() {
 	if c.lib.Prefs.LineFocus && ob.line < len(pg) {
 		w = pg[ob.line].word
 	}
-	c.lib.Progress[ob.path] = bookProgress{ob.chapter, w}
+	pct := c.progressPct()
+	if ob.finished {
+		pct = 100
+	}
+	c.lib.Progress[ob.path] = bookProgress{ob.chapter, w, pct, time.Now().Format(time.RFC3339)}
 	c.lib.save()
 }
 
@@ -621,21 +627,19 @@ func (c *console) buildPage() {
 
 func (c *console) drawFooter(img *image.RGBA, th readerTheme) {
 	ob := c.book
+	f := apple()
 	h := img.Rect.Dy()
-	right := fmt.Sprintf("%d / %d   %d%%", ob.page+1, len(ob.pages), c.progressPct())
-	if ob.finished {
-		right = "the end   100%"
-	}
 	m := c.lib.Prefs.Margin
-	fy := h - readerFooterH/2 + 10
-	title := visual(clip(c.pf.small, ob.chTitle, c.s.W-2*m-ui.TextWidth(c.pf.small, right)-40))
-	if isRTL(ob.chTitle) { // an Arabic book: its chapter on the right, the page count on the left
-		ui.DrawText(img, c.pf.small, m, fy, th.faint, right)
-		ui.DrawText(img, c.pf.small, c.s.W-m-ui.TextWidth(c.pf.small, title), fy, th.faint, title)
-		return
+	// Apple Books: the book's place in small grey type, above and below the text.
+	apTextCenter(img, f.caption, c.s.W/2, 70, th.faint, clip(f.caption, ob.chTitle, c.s.W-2*m))
+	foot := fmt.Sprintf("%d of %d", ob.page+1, len(ob.pages))
+	if ob.finished {
+		foot = "The End"
 	}
-	ui.DrawText(img, c.pf.small, c.s.W-m-ui.TextWidth(c.pf.small, right), fy, th.faint, right)
-	ui.DrawText(img, c.pf.small, m, fy, th.faint, title)
+	apTextCenter(img, f.caption, c.s.W/2, h-readerFooterH/2, th.faint, foot)
+	if left := len(ob.pages) - ob.page - 1; left > 0 && !ob.finished {
+		apTextRight(img, f.caption, c.s.W-m, h-readerFooterH/2+9, th.faint, fmt.Sprintf("%d left in chapter", left))
+	}
 }
 
 // textRows is the band of rows the text area covers, where dimming applies.
@@ -692,39 +696,126 @@ func (c *console) readerPage() *page {
 	}
 	p := &page{img: img}
 	c.drawOverlays(p, th) // menu, card, settings: their buttons come first
-	c.drawToolbar(p, th)
-	if c.rd.menu == menuNone && c.rd.panel == nil && !c.rd.settings {
-		third := c.s.W / 3
-		if c.lib.Prefs.LineFocus {
-			third = c.s.W / 6 // Soma: the left sixth steps back a line
-		}
-		h := c.s.H - c.barH
+	if c.overlayOpen() {
+		return p
+	}
+	h := c.s.H - c.barH
+	if c.rd.chrome {
+		c.drawChrome(p, th)
+		p.buttons = append(p.buttons, button{"chrome", img.Rect}) // a tap on the page hides it again
+		return p
+	}
+	// Apple Books: the sides turn the page, the middle brings up the controls. Line by line
+	// (Soma): the whole page steps lines, the left sixth back; the controls live in the
+	// margins above and below the text.
+	tr := c.textRect()
+	if c.lib.Prefs.LineFocus {
 		p.buttons = append(p.buttons,
-			button{"prev", image.Rect(0, readerToolbarH, third, h)},
-			button{"next", image.Rect(third, readerToolbarH, c.s.W, h)})
+			button{"chrome", image.Rect(0, 0, c.s.W, tr.Min.Y-10)},
+			button{"chrome", image.Rect(0, h-readerFooterH, c.s.W, h)},
+			button{"prev", image.Rect(0, 0, c.s.W/6, h)},
+			button{"next", image.Rect(c.s.W/6, 0, c.s.W, h)})
+	} else {
+		third := c.s.W / 3
+		p.buttons = append(p.buttons,
+			button{"prev", image.Rect(0, 0, third, h)},
+			button{"chrome", image.Rect(third, 0, c.s.W-third, h)},
+			button{"next", image.Rect(c.s.W-third, 0, c.s.W, h)})
 	}
 	return p
 }
 
-func (c *console) drawToolbar(p *page, th readerTheme) {
-	ids := []string{"shelf", "contents", "marks", "linemode", "settings"}
-	labels := []string{"< shelf", "contents", "marks", "line", "Aa"}
+// accent is the controls' colour on a theme.
+func (th readerTheme) accent() color.RGBA {
+	if th.dark {
+		return apOrange
+	}
+	return rgb(0xd9730d)
+}
+
+// drawChrome is Apple Books' controls: a bar on top (back, contents, highlights, line by
+// line, Aa) and a progress slider at the bottom.
+func (c *console) drawChrome(p *page, th readerTheme) {
+	f := apple()
+	ob := c.book
+	img := p.img
+	h := img.Rect.Dy()
+	bar := blend(th.bg, th.fg, 0.05)
+	sep := blend(th.bg, th.fg, 0.15)
+	acc := th.accent()
+
+	top := image.Rect(0, 0, c.s.W, 130)
+	ui.Fill(img, top, bar)
+	ui.Fill(img, image.Rect(0, top.Max.Y-2, c.s.W, top.Max.Y), sep)
+	back := "Library"
 	if c.fromStore {
-		labels[0] = "< store"
+		back = "Store"
 	}
-	gap, mx := 14, 20
-	bw := (c.s.W - 2*mx - gap*(len(ids)-1)) / len(ids)
-	ui.Fill(p.img, image.Rect(0, 0, c.s.W, readerToolbarH), th.bg)
-	for i, id := range ids {
-		r := image.Rect(mx+i*(bw+gap), 16, mx+i*(bw+gap)+bw, readerToolbarH-14)
-		bg, fg := blend(th.bg, th.fg, 0.12), th.fg
-		if (id == "linemode" && c.lib.Prefs.LineFocus) || (id == "settings" && c.rd.settings) {
-			bg, fg = th.fg, th.bg
+	iconBack(img, 40, 65, acc)
+	apText(img, f.body, 72, 77, acc, back)
+	p.buttons = append(p.buttons, button{"shelf", image.Rect(0, 0, 300, top.Max.Y)})
+	icons := []string{"contents", "marks", "linemode", "settings"}
+	for i, id := range icons {
+		cx := c.s.W - 70 - (len(icons)-1-i)*120
+		switch id {
+		case "contents":
+			iconList(img, cx, 65, acc)
+		case "marks":
+			iconMarker(img, cx, 65, acc)
+		case "linemode":
+			lit := blend(bar, acc, 0.35)
+			if c.lib.Prefs.LineFocus {
+				ui.RoundRect(img, image.Rect(cx-50, 22, cx+50, 108), 22, blend(bar, acc, 0.22))
+				lit = acc
+			}
+			iconLines(img, cx, 65, acc, lit)
+		case "settings":
+			iconAa(img, cx, 65, acc)
 		}
-		ui.RoundRect(p.img, r, 16, bg)
-		ui.DrawTextCentered(p.img, c.pf.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
-		p.buttons = append(p.buttons, button{id, r})
+		p.buttons = append(p.buttons, button{id, image.Rect(cx-58, 0, cx+58, top.Max.Y)})
 	}
+
+	// Bottom: where you are in the book; tap the slider to jump.
+	bot := image.Rect(0, h-190, c.s.W, h)
+	ui.Fill(img, bot, bar)
+	ui.Fill(img, image.Rect(0, bot.Min.Y, c.s.W, bot.Min.Y+2), sep)
+	tx0, tx1, ty := 70, c.s.W-70, bot.Min.Y+60
+	ui.RoundRect(img, image.Rect(tx0, ty-4, tx1, ty+4), 4, sep)
+	pct := c.progressPct()
+	kx := tx0 + (tx1-tx0)*pct/100
+	ui.RoundRect(img, image.Rect(tx0, ty-4, kx, ty+4), 4, th.faint)
+	ui.Circle(img, kx, ty, 18, th.fg)
+	for i := 0; i < 100; i++ {
+		x0 := tx0 + (tx1-tx0)*i/100
+		x1 := tx0 + (tx1-tx0)*(i+1)/100
+		if i == 0 {
+			x0 = 0
+		}
+		if i == 99 {
+			x1 = c.s.W
+		}
+		p.buttons = append(p.buttons, button{fmt.Sprintf("r:seek:%d", i), image.Rect(x0, ty-40, x1, ty+40)})
+	}
+	label := fmt.Sprintf("%s  ·  %d of %d", ob.chTitle, ob.page+1, len(ob.pages))
+	apTextCenter(img, f.caption, c.s.W/2, ty+62, th.fg, clip(f.caption, label, c.s.W-240))
+	apTextCenter(img, f.caption, c.s.W/2, ty+102, th.faint, fmt.Sprintf("%d%% of the book", pct))
+	p.buttons = append(p.buttons, button{"r:bar", top}, button{"r:bar", bot})
+}
+
+// seek jumps to a point through the book (0..99, in hundredths). Caller holds drawMu.
+func (c *console) seek(at int) {
+	ob := c.book
+	n := len(ob.b.Chapters)
+	pos := float64(at) / 100 * float64(n)
+	ch := min(int(pos), n-1)
+	frac := pos - float64(ch)
+	if ch != ob.chapter && !c.loadChapter(ch, 0) {
+		return
+	}
+	ob.page = min(int(frac*float64(len(ob.pages))), len(ob.pages)-1)
+	ob.line = 0
+	c.invalidatePage()
+	c.saveProgress()
 }
 
 // refreshLines redraws only the strips of two lines (moving the lit line). Caller holds drawMu.

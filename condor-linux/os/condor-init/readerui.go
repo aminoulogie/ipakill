@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 	"strings"
 	"time"
@@ -47,6 +48,7 @@ type readerUI struct {
 	menu       menuState
 	panel      *lookupPanel
 	settings   bool
+	chrome     bool   // Apple Books' controls, shown by a tap in the middle of the page
 	view       string // "", "contents", "marks"
 	listFrom   int
 	toast      string
@@ -242,255 +244,348 @@ func (c *console) selBands() (first, last image.Rectangle, ok bool) {
 	return
 }
 
-// drawOverlays draws the word menu, the answer card, the settings sheet and a toast,
-// registering their buttons.
-func (c *console) drawOverlays(p *page, th readerTheme) {
-	ph := c.s.H - c.barH
-	card := blend(th.bg, th.fg, 0.10)
+// sheetColours are an Apple sheet's background, text and secondary text on a theme.
+func sheetColours(th readerTheme) (bg, label, secondary, sep color.RGBA) {
 	if th.dark {
-		card = blend(th.bg, th.fg, 0.16)
+		return apCard, apLabel, apSecondary, apSeparator
 	}
-	edge := blend(th.bg, th.fg, 0.30)
-	btnBG := blend(card, th.fg, 0.12)
-	btn := func(id, label string, r image.Rectangle, on bool) {
-		bg, fg := btnBG, th.fg
-		if on {
-			bg, fg = th.fg, th.bg
-		}
-		ui.RoundRect(p.img, r, 16, bg)
-		ui.DrawTextCentered(p.img, c.pf.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, label)
-		p.buttons = append(p.buttons, button{id, r})
-	}
-	box := func(r image.Rectangle) {
-		ui.RoundRect(p.img, r.Inset(-2), 26, edge)
-		ui.RoundRect(p.img, r, 24, card)
-	}
+	return rgb(0xf2f2f7), rgb(0x000000), rgb(0x6c6c70), rgb(0xd1d1d6)
+}
 
-	// The settings sheet takes the place of everything else.
+// drawOverlays draws the selection's callout menu, the Look Up / Translate sheet, the Themes
+// & Settings sheet and a toast, registering their buttons first.
+func (c *console) drawOverlays(p *page, th readerTheme) {
 	if c.rd.settings {
-		c.drawSettings(p, th, box, btn)
+		c.drawSettings(p, th)
 		return
 	}
-
 	first, last, ok := c.selBands()
-	menuTop := 0
 	if c.rd.menu != menuNone && ok {
-		const mh = 112
-		y := first.Min.Y - mh - 18
-		if y < readerToolbarH+10 {
-			y = last.Max.Y + 18
-		}
-		y = min(y, ph-mh-10)
-		r := image.Rect(20, y, c.s.W-20, y+mh)
-		box(r)
-		menuTop = y
-		in := r.Inset(14)
-		text := c.selText()
-		onMark := markAt(c.lib.Marks[c.book.path], c.book.chapter, c.rd.sel.from) != nil
-		if c.rd.menu == menuInk {
-			n := len(markColours) + 1
-			if onMark {
-				n++
-			}
-			w := in.Dx() / n
-			btn("r:inkback", "<", image.Rect(in.Min.X, in.Min.Y, in.Min.X+w-12, in.Max.Y), false)
-			for i, m := range markColours {
-				cx := in.Min.X + (i+1)*w + w/2
-				ui.Circle(p.img, cx, (in.Min.Y+in.Max.Y)/2, 36, m.chip)
-				p.buttons = append(p.buttons, button{"r:ink:" + m.id, image.Rect(cx-w/2, in.Min.Y, cx+w/2, in.Max.Y)})
-			}
-			if onMark {
-				btn("r:unmark", "remove", image.Rect(in.Max.X-w+12, in.Min.Y, in.Max.X, in.Max.Y), false)
-			}
-		} else {
-			ids := []string{"r:hl"}
-			labels := []string{"highlight"}
-			if isCapturable(text) {
-				ids, labels = append(ids, "r:lookup"), append(labels, "look up")
-			}
-			ids, labels = append(ids, "r:translate"), append(labels, languageLabel(c.lib.Prefs.TranslateTo))
-			if isCapturable(text) {
-				ids, labels = append(ids, "r:keep"), append(labels, "keep")
-			}
-			gap := 12
-			w := (in.Dx() - gap*(len(ids)-1)) / len(ids)
-			for i := range ids {
-				btn(ids[i], labels[i], image.Rect(in.Min.X+i*(w+gap), in.Min.Y, in.Min.X+i*(w+gap)+w, in.Max.Y), false)
-			}
-		}
+		c.drawCallout(p, first, last)
 	}
-
 	if pn := c.rd.panel; pn != nil {
-		c.drawPanel(p, th, pn, first, ok, menuTop, box, btn)
+		c.drawPanel(p, th, pn)
 	}
-
 	if c.rd.toast != "" && time.Now().Before(c.rd.toastUntil) {
-		w := ui.TextWidth(c.pf.small, c.rd.toast) + 60
-		r := image.Rect((c.s.W-w)/2, readerToolbarH+12, (c.s.W+w)/2, readerToolbarH+78)
-		ui.RoundRect(p.img, r, 30, th.fg)
-		ui.DrawTextCentered(p.img, c.pf.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, th.bg, c.rd.toast)
+		f := apple()
+		w := ui.TextWidth(f.callout, c.rd.toast) + 80
+		r := image.Rect((c.s.W-w)/2, 120, (c.s.W+w)/2, 196)
+		ui.RoundRect(p.img, r, 38, apCallout)
+		apTextCenter(p.img, f.callout, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apLabel, c.rd.toast)
 	}
 }
 
-// drawPanel is the answer card: a meaning or a translation, docked away from the selection.
-func (c *console) drawPanel(p *page, th readerTheme, pn *lookupPanel, sel image.Rectangle, haveSel bool, menuTop int,
-	box func(image.Rectangle), btn func(string, string, image.Rectangle, bool)) {
+// drawCallout is the dark menu over a selection, with its arrow pointing at the words.
+func (c *console) drawCallout(p *page, first, last image.Rectangle) {
+	f := apple()
 	ph := c.s.H - c.barH
-	const h = 700
-	top := ph - readerFooterH - h - 10 // bottom...
-	if haveSel && sel.Max.Y > ph/2 {
-		top = readerToolbarH + 10 // ...unless the word is down there
-		if menuTop > 0 && menuTop < top+h && menuTop+112 > top {
-			top = menuTop + 130
+	const mh = 104
+	text := c.selText()
+	onMark := markAt(c.lib.Marks[c.book.path], c.book.chapter, c.rd.sel.from) != nil
+	type item struct{ id, label string }
+	var items []item
+	if c.rd.menu == menuInk {
+		for _, m := range markColours {
+			items = append(items, item{"r:ink:" + m.id, ""})
 		}
-	} else if menuTop > top-130 && menuTop > 0 {
-		top = min(top, menuTop-h-18)
+		if onMark {
+			items = append(items, item{"r:unmark", "Remove"})
+		}
+	} else {
+		items = append(items, item{"r:hl", "Highlight"})
+		if isCapturable(text) {
+			items = append(items, item{"r:lookup", "Look Up"})
+		}
+		items = append(items, item{"r:translate", "Translate"})
+		if isCapturable(text) {
+			items = append(items, item{"r:keep", "Keep"})
+		}
 	}
-	top = max(top, readerToolbarH+10)
-	r := image.Rect(20, top, c.s.W-20, top+h)
-	box(r)
-	f := c.uiFonts()
-	x, w := r.Min.X+36, r.Dx()-72
-	y := r.Min.Y + 30
+	widths := make([]int, len(items))
+	total := 0
+	for i, it := range items {
+		widths[i] = 96
+		if it.label != "" {
+			widths[i] = ui.TextWidth(f.callout, it.label) + 64
+		}
+		total += widths[i]
+	}
+	cx := (first.Min.X + first.Max.X) / 2
+	x0 := min(max(cx-total/2, 24), c.s.W-24-total)
+	above := first.Min.Y-mh-30 > 150
+	y := first.Min.Y - mh - 24
+	if !above {
+		y = min(last.Max.Y+24, ph-mh-20)
+	}
+	r := image.Rect(x0, y, x0+total, y+mh)
+	ui.RoundRect(p.img, r, 22, apCallout)
+	// The arrow.
+	ax := min(max(cx, r.Min.X+40), r.Max.X-40)
+	for i := 0; i < 18; i++ {
+		if above {
+			ui.Fill(p.img, image.Rect(ax-18+i, r.Max.Y+i, ax+18-i, r.Max.Y+i+1), apCallout)
+		} else {
+			ui.Fill(p.img, image.Rect(ax-18+i, r.Min.Y-i-1, ax+18-i, r.Min.Y-i), apCallout)
+		}
+	}
+	x := r.Min.X
+	for i, it := range items {
+		ir := image.Rect(x, r.Min.Y, x+widths[i], r.Max.Y)
+		if it.label == "" { // an ink
+			mc := markColour(strings.TrimPrefix(it.id, "r:ink:"))
+			ui.Circle(p.img, (ir.Min.X+ir.Max.X)/2, (ir.Min.Y+ir.Max.Y)/2, 28, mc.chip)
+		} else {
+			col := apLabel
+			if it.id == "r:unmark" {
+				col = rgb(0xff453a)
+			}
+			apTextCenter(p.img, f.callout, (ir.Min.X+ir.Max.X)/2, (ir.Min.Y+ir.Max.Y)/2, col, it.label)
+		}
+		if i > 0 && it.label != "" || i > 0 && items[i-1].label != "" {
+			ui.Fill(p.img, image.Rect(x, r.Min.Y+20, x+2, r.Max.Y-20), rgb(0x48484a))
+		}
+		p.buttons = append(p.buttons, button{it.id, ir})
+		x += widths[i]
+	}
+}
 
-	// The words asked about.
+// drawPanel is the Look Up / Translate sheet.
+func (c *console) drawPanel(p *page, th readerTheme, pn *lookupPanel) {
+	f := apple()
+	ph := c.s.H - c.barH
+	bg, label, secondary, sep := sheetColours(th)
+	acc := th.accent()
+	r := sheet(p.img, ph-860, bg)
+	p.buttons = append(p.buttons, button{"r:close", image.Rect(0, 0, c.s.W, r.Min.Y)}) // tap above: close
+	x, w := 48, c.s.W-96
+	y := r.Min.Y + 90
+	apTextRight(p.img, f.headline, c.s.W-48, y, acc, "Done")
+	p.buttons = append(p.buttons, button{"r:close", image.Rect(c.s.W-220, r.Min.Y, c.s.W, r.Min.Y+130)})
+	title := "Look Up"
+	if pn.kind == "translate" {
+		title = "Translate"
+	}
+	apText(p.img, f.captionBold, x, y-6, secondary, strings.ToUpper(title))
+	y += 20
 	head := pn.query
 	if len([]rune(head)) > 120 {
 		head = string([]rune(head)[:119]) + "…"
 	}
-	lines := layoutWords(f.bold, strings.Fields(head), 0, w, false)
-	for i, l := range lines {
+	for i, l := range layoutWords(f.title, strings.Fields(head), 0, w, false) {
 		if i == 2 {
 			break
 		}
-		drawWords(p.img, f.bold, l, x, y+f.bold.Metrics().Ascent.Ceil(), th.strong)
-		y += int(float64(f.lh) * 1.25)
+		y += 56
+		drawWords(p.img, f.title, l, x, y, label)
 	}
+	y += 60
+	bottom := r.Max.Y - 150
 	if pn.kind == "translate" {
-		// Target language chips.
-		y += 6
-		n := len(languages)
-		cw := (w - 8*(n-1)) / n
-		for i, l := range languages {
-			cr := image.Rect(x+i*(cw+8), y, x+i*(cw+8)+cw, y+64)
-			btn("r:lang:"+l.code, strings.ToUpper(l.code), cr, l.code == pn.lang)
+		apText(p.img, f.caption, x, y+10, secondary, languageLabel(c.bookLang())+"  →  "+languageLabel(pn.lang))
+		y += 40
+		px := x
+		for _, l := range languages {
+			lw := ui.TextWidth(f.captionBold, strings.ToUpper(l.code)) + 44
+			pr := image.Rect(px, y, px+lw, y+64)
+			bgc, fg := blend(bg, label, 0.08), label
+			if l.code == pn.lang {
+				bgc, fg = acc, rgb(0xffffff)
+			}
+			ui.RoundRect(p.img, pr, 32, bgc)
+			apTextCenter(p.img, f.captionBold, (pr.Min.X+pr.Max.X)/2, (pr.Min.Y+pr.Max.Y)/2, fg, strings.ToUpper(l.code))
+			p.buttons = append(p.buttons, button{"r:lang:" + l.code, pr})
+			px += lw + 12
 		}
-		y += 84
+		y += 100
 	}
-	bottom := r.Max.Y - 130
+	ui.Fill(p.img, image.Rect(x, y-20, x+w, y-18), sep)
 	switch {
 	case pn.loading:
-		ui.DrawText(p.img, c.pf.small, x, y+40, th.faint, map[bool]string{true: "looking it up...", false: "translating..."}[pn.kind == "meaning"])
+		msg := "Looking up…"
+		if pn.kind == "translate" {
+			msg = "Translating…"
+		}
+		apText(p.img, f.body, x, y+30, secondary, msg)
 	case pn.err != "":
-		drawParagraphs(p.img, f.body, pn.err, x, y+10, w, f.lh, bottom, th.faint)
+		drawParagraphs(p.img, f.body, strings.ToUpper(pn.err[:1])+pn.err[1:], x, y, w, 48, bottom, secondary)
 	case pn.look != nil:
-		ui.DrawText(p.img, c.pf.small, x, y+28, th.faint, pn.look.source)
-		y += 50
-		for _, s := range pn.look.senses {
-			text := s.definition
+		apText(p.img, f.captionBold, x, y+20, secondary, "DICTIONARY · "+strings.ToUpper(pn.look.source))
+		y += 46
+		for i, s := range pn.look.senses {
 			if s.pos != "" {
-				text = s.pos + " · " + text
+				apText(p.img, f.captionBold, x, y+30, acc, fmt.Sprintf("%d  %s", i+1, strings.ToLower(s.pos)))
+				y += 44
 			}
-			y = drawParagraphs(p.img, f.body, text, x, y, w, f.lh, bottom, th.fg)
+			y = drawParagraphs(p.img, f.body, s.definition, x, y, w, 46, bottom, label)
 			if s.example != "" {
-				y = drawParagraphs(p.img, f.body, "“"+s.example+"”", x+30, y, w-30, f.lh, bottom, th.faint)
+				y = drawParagraphs(p.img, f.callout, "“"+s.example+"”", x+24, y, w-24, 42, bottom, secondary)
 			}
-			y += 12
+			y += 16
 		}
 	case pn.tr != nil:
-		y = drawParagraphs(p.img, f.body, pn.tr.text, x, y+10, w, f.lh, bottom, th.fg)
+		y = drawParagraphs(p.img, f.headline, pn.tr.text, x, y, w, 52, bottom, label)
 		if pn.tr.quality >= 0 && pn.tr.quality < 0.7 {
-			ui.DrawText(p.img, c.pf.small, x, min(y+40, bottom), th.faint, "machine translation, may be loose")
+			apText(p.img, f.caption, x, min(y+40, bottom), secondary, "Machine translation, may be loose")
 		}
 	}
-
 	// Actions.
-	ids, labels := []string{}, []string{}
+	type act struct{ id, label string }
+	var acts []act
 	if pn.isWord {
-		ids, labels = append(ids, "r:keep"), append(labels, "keep")
+		acts = append(acts, act{"r:keep", "Keep Word"})
 	}
 	if pn.kind == "meaning" {
-		ids, labels = append(ids, "r:translate"), append(labels, languageLabel(c.lib.Prefs.TranslateTo))
+		acts = append(acts, act{"r:translate", "Translate"})
 	} else if pn.isWord {
-		ids, labels = append(ids, "r:lookup"), append(labels, "look up")
+		acts = append(acts, act{"r:lookup", "Look Up"})
 	}
-	ids, labels = append(ids, "r:close"), append(labels, "close")
-	gap := 14
-	bw := (w - gap*(len(ids)-1)) / len(ids)
-	for i := range ids {
-		btn(ids[i], labels[i], image.Rect(x+i*(bw+gap), r.Max.Y-110, x+i*(bw+gap)+bw, r.Max.Y-24), false)
+	if len(acts) > 0 {
+		gap := 20
+		bw := (w - gap*(len(acts)-1)) / len(acts)
+		for i, a := range acts {
+			br := image.Rect(x+i*(bw+gap), r.Max.Y-130, x+i*(bw+gap)+bw, r.Max.Y-36)
+			ui.RoundRect(p.img, br, 24, blend(bg, label, 0.08))
+			apTextCenter(p.img, f.headline, (br.Min.X+br.Max.X)/2, (br.Min.Y+br.Max.Y)/2, acc, a.label)
+			p.buttons = append(p.buttons, button{a.id, br})
+		}
 	}
-	p.buttons = append(p.buttons, button{"r:panel", r}) // taps on the card itself do nothing
+	p.buttons = append(p.buttons, button{"r:panel", r})
 }
 
-// drawSettings is Soma's "Aa" sheet.
-func (c *console) drawSettings(p *page, th readerTheme, box func(image.Rectangle), btn func(string, string, image.Rectangle, bool)) {
+// readerThemeNames: Apple Books' names for the three papers.
+var readerThemeNames = []string{"Night", "Original", "Calm"}
+
+// iosSwitch draws an on/off switch with its right edge at right.
+func iosSwitch(img *image.RGBA, right, cy int, on, dark bool) image.Rectangle {
+	r := image.Rect(right-102, cy-31, right, cy+31)
+	track := rgb(0xe9e9eb)
+	if dark {
+		track = rgb(0x39393d)
+	}
+	if on {
+		track = rgb(0x30d158)
+	}
+	ui.RoundRect(img, r, 31, track)
+	kx := r.Min.X + 31
+	if on {
+		kx = r.Max.X - 31
+	}
+	ui.Circle(img, kx, cy, 27, rgb(0xffffff))
+	return r
+}
+
+// drawSettings is Apple Books' Themes & Settings sheet, with Soma's extra controls.
+func (c *console) drawSettings(p *page, th readerTheme) {
+	f := apple()
 	ph := c.s.H - c.barH
 	pr := c.lib.Prefs
-	r := image.Rect(20, readerToolbarH+10, c.s.W-20, ph-20)
-	box(r)
-	x, w := r.Min.X+32, r.Dx()-64
-	y := r.Min.Y + 20
-	label := func(s string) {
-		ui.DrawText(p.img, c.pf.small, x, y+34, th.faint, s)
-		y += 50
-	}
-	row := func(ids, labels []string, on string) {
-		gap := 12
-		bw := (w - gap*(len(ids)-1)) / len(ids)
-		for i := range ids {
-			btn(ids[i], labels[i], image.Rect(x+i*(bw+gap), y, x+i*(bw+gap)+bw, y+84), ids[i] == on)
-		}
-		y += 104
-	}
-	stepper := func(id, value string) {
-		bw := 200
-		btn(id+":-", "-", image.Rect(x, y, x+bw, y+84), false)
-		btn(id+":+", "+", image.Rect(x+w-bw, y, x+w, y+84), false)
-		ui.DrawTextCentered(p.img, c.pf.bold, x+w/2, y+42, th.fg, value)
-		y += 104
-	}
+	bg, label, secondary, sep := sheetColours(th)
+	acc := th.accent()
+	r := sheet(p.img, ph-1500, bg)
+	p.buttons = append(p.buttons, button{"settings", image.Rect(0, 0, c.s.W, r.Min.Y)}) // tap above: close
+	x, w := 40, c.s.W-80
+	y := r.Min.Y + 90
+	apText(p.img, f.headline, x, y, label, "Themes & Settings")
+	apTextRight(p.img, f.headline, x+w, y, acc, "Done")
+	p.buttons = append(p.buttons, button{"settings", image.Rect(c.s.W-220, r.Min.Y, c.s.W, r.Min.Y+130)})
+	y += 40
+	pill := blend(bg, label, 0.08)
 
-	label("THEME")
-	var ids, labels []string
+	// Text size and brightness: two capsules split down the middle.
+	capsule := func(cr image.Rectangle, lid, rid string, drawL, drawR func(cx, cy int)) {
+		ui.RoundRect(p.img, cr, 26, pill)
+		mid := (cr.Min.X + cr.Max.X) / 2
+		ui.Fill(p.img, image.Rect(mid-1, cr.Min.Y+18, mid+1, cr.Max.Y-18), sep)
+		drawL((cr.Min.X+mid)/2, (cr.Min.Y+cr.Max.Y)/2)
+		drawR((mid+cr.Max.X)/2, (cr.Min.Y+cr.Max.Y)/2)
+		p.buttons = append(p.buttons, button{lid, image.Rect(cr.Min.X, cr.Min.Y, mid, cr.Max.Y)},
+			button{rid, image.Rect(mid, cr.Min.Y, cr.Max.X, cr.Max.Y)})
+	}
+	half := (w - 24) / 2
+	capsule(image.Rect(x, y, x+half, y+100), "r:set:size:-", "r:set:size:+",
+		func(cx, cy int) { apTextCenter(p.img, f.caption, cx, cy, label, "A") },
+		func(cx, cy int) { apTextCenter(p.img, f.title, cx, cy, label, "A") })
+	sun := func(rad int) func(cx, cy int) {
+		return func(cx, cy int) {
+			ui.Circle(p.img, cx, cy, rad, label)
+			for a := 0; a < 8; a++ {
+				t := float64(a) * math.Pi / 4
+				line(p.img, cx+int(float64(rad+6)*math.Cos(t)), cy+int(float64(rad+6)*math.Sin(t)),
+					cx+int(float64(rad+12)*math.Cos(t)), cy+int(float64(rad+12)*math.Sin(t)), 4, label)
+			}
+		}
+	}
+	capsule(image.Rect(x+half+24, y, x+w, y+100), "r:set:bright:-", "r:set:bright:+", sun(6), sun(11))
+	y += 130
+
+	// Themes as tiles of their own paper and ink.
+	tw := (w - 2*24) / 3
 	for i, t := range readerThemes {
-		ids, labels = append(ids, fmt.Sprintf("r:set:theme:%d", i)), append(labels, t.name)
-	}
-	row(ids, labels, fmt.Sprintf("r:set:theme:%d", pr.Theme))
-
-	label("FONT")
-	gap := 12
-	bw := (w - gap*(len(readerFontList)-1)) / len(readerFontList)
-	for i, f := range readerFontList {
-		fr := image.Rect(x+i*(bw+gap), y, x+i*(bw+gap)+bw, y+84)
-		on := f.id == pr.Font
-		bg, fg := blend(blend(th.bg, th.fg, 0.16), th.fg, 0.12), th.fg
-		if on {
-			bg, fg = th.fg, th.bg
+		tr := image.Rect(x+i*(tw+24), y, x+i*(tw+24)+tw, y+200)
+		if i == pr.Theme {
+			ui.RoundRect(p.img, tr.Inset(-6), 30, acc)
+		} else {
+			ui.RoundRect(p.img, tr.Inset(-2), 26, sep)
 		}
-		ui.RoundRect(p.img, fr, 16, bg)
-		face := newReaderFonts(f.id, 32, 1.4).body
-		ui.DrawTextCentered(p.img, face, (fr.Min.X+fr.Max.X)/2, (fr.Min.Y+fr.Max.Y)/2, fg, f.label)
-		p.buttons = append(p.buttons, button{"r:set:font:" + f.id, fr})
+		ui.RoundRect(p.img, tr, 24, t.bg)
+		ui.DrawTextCentered(p.img, newReaderFonts(pr.Font, 64, 1.4).body, (tr.Min.X+tr.Max.X)/2, (tr.Min.Y+tr.Max.Y)/2, t.fg, "Aa")
+		apTextCenter(p.img, f.callout, (tr.Min.X+tr.Max.X)/2, tr.Max.Y+36, label, readerThemeNames[i])
+		p.buttons = append(p.buttons, button{fmt.Sprintf("r:set:theme:%d", i), image.Rect(tr.Min.X, tr.Min.Y, tr.Max.X, tr.Max.Y+56)})
 	}
-	y += 104
+	y += 280
 
-	label("TEXT SIZE")
-	stepper("r:set:size", fmt.Sprintf("%d", pr.Size))
-	label("LINE SPACING")
-	stepper("r:set:lh", fmt.Sprintf("%.1f", pr.LineHeight))
-	label("MARGINS")
-	stepper("r:set:margin", fmt.Sprintf("%d", pr.Margin))
-	label("LINE BY LINE   tap: next · left edge: back · hold: jump")
-	row([]string{"r:set:line:off", "r:set:line:on"}, []string{"off", "on"}, map[bool]string{true: "r:set:line:on", false: "r:set:line:off"}[pr.LineFocus])
-	label("TRANSLATE TO")
-	ids, labels = nil, nil
-	for _, l := range languages {
-		ids, labels = append(ids, "r:set:tr:"+l.code), append(labels, strings.ToUpper(l.code))
+	// Fonts: each name in its own face, a check on the one in use.
+	group := image.Rect(x, y, x+w, y+len(readerFontList)*84)
+	ui.RoundRect(p.img, group, 24, pill)
+	for i, rf := range readerFontList {
+		rr := image.Rect(x, y+i*84, x+w, y+(i+1)*84)
+		if i > 0 {
+			ui.Fill(p.img, image.Rect(x+30, rr.Min.Y, x+w, rr.Min.Y+2), sep)
+		}
+		face := newReaderFonts(rf.id, 36, 1.4).body
+		ui.DrawText(p.img, face, x+30, rr.Min.Y+56, label, rf.label)
+		if rf.id == pr.Font {
+			iconCheck(p.img, x+w-70, (rr.Min.Y+rr.Max.Y)/2, acc)
+		}
+		p.buttons = append(p.buttons, button{"r:set:font:" + rf.id, rr})
 	}
-	row(ids, labels, "r:set:tr:"+pr.TranslateTo)
-	label(fmt.Sprintf("DAILY READING GOAL  (today %d min)", c.lib.readingToday()))
-	stepper("r:set:goal", fmt.Sprintf("%d min", pr.GoalMinutes))
+	y = group.Max.Y + 50
+
+	// Soma's controls.
+	apText(p.img, f.captionBold, x+10, y, secondary, "CUSTOMIZE")
+	y += 20
+	rows := 5
+	group = image.Rect(x, y, x+w, y+rows*92)
+	ui.RoundRect(p.img, group, 24, pill)
+	row := func(i int, name string) (int, int) { // returns the row's centre y and right edge
+		top := y + i*92
+		if i > 0 {
+			ui.Fill(p.img, image.Rect(x+30, top, x+w, top+2), sep)
+		}
+		apText(p.img, f.body, x+30, top+60, label, name)
+		return top + 46, x + w - 24
+	}
+	stepper := func(i int, name, id, value string) {
+		cy, right := row(i, name)
+		sr := image.Rect(right-320, cy-34, right, cy+34)
+		ui.RoundRect(p.img, sr, 20, blend(pill, label, 0.08))
+		apTextCenter(p.img, f.headline, sr.Min.X+50, cy, label, "−")
+		apTextCenter(p.img, f.callout, (sr.Min.X+sr.Max.X)/2, cy, label, value)
+		apTextCenter(p.img, f.headline, sr.Max.X-50, cy, label, "+")
+		p.buttons = append(p.buttons, button{id + ":-", image.Rect(sr.Min.X, sr.Min.Y-12, sr.Min.X+110, sr.Max.Y+12)},
+			button{id + ":+", image.Rect(sr.Max.X-110, sr.Min.Y-12, sr.Max.X, sr.Max.Y+12)})
+	}
+	stepper(0, "Line Spacing", "r:set:lh", fmt.Sprintf("%.1f", pr.LineHeight))
+	stepper(1, "Margins", "r:set:margin", fmt.Sprintf("%d", pr.Margin))
+	cy, right := row(2, "Line by Line")
+	sw := iosSwitch(p.img, right, cy, pr.LineFocus, th.dark)
+	p.buttons = append(p.buttons, button{map[bool]string{true: "r:set:line:off", false: "r:set:line:on"}[pr.LineFocus], sw.Inset(-14)})
+	cy, right = row(3, "Translate To")
+	apTextRight(p.img, f.body, right-30, cy+12, acc, languageLabel(pr.TranslateTo))
+	line(p.img, right-14, cy-12, right-2, cy, 4, secondary)
+	line(p.img, right-2, cy, right-14, cy+12, 4, secondary)
+	p.buttons = append(p.buttons, button{"r:set:trnext", image.Rect(x+w/2, cy-46, x+w, cy+46)})
+	stepper(4, fmt.Sprintf("Daily Goal  (today %d)", c.lib.readingToday()), "r:set:goal", fmt.Sprintf("%d min", pr.GoalMinutes))
 	p.buttons = append(p.buttons, button{"r:panel", r})
 }
 
@@ -626,6 +721,14 @@ func (c *console) readerTap(id string) bool {
 			c.openBookAt(c.shelf[i].path)
 		}
 		return true
+	case id == "shelf:prev" || id == "shelf:next":
+		if id == "shelf:next" && c.shelfFrom+c.shelfPer < len(c.shelf) {
+			c.shelfFrom += c.shelfPer
+		} else if id == "shelf:prev" {
+			c.shelfFrom = max(c.shelfFrom-c.shelfPer, 0)
+		}
+		c.showPage()
+		return true
 	case id == "r:goal":
 		pr.GoalMinutes = nextGoal(pr.GoalMinutes)
 		c.lib.save()
@@ -653,18 +756,28 @@ func (c *console) readerTap(id string) bool {
 			c.turn(dir)
 		}
 		return true
-	case id == "contents" || id == "marks":
+	case id == "chrome":
+		c.rd.chrome = !c.rd.chrome
+	case id == "r:bar":
+		return true // the controls' bars, between their buttons
+	case strings.HasPrefix(id, "r:seek:"):
+		var at int
+		fmt.Sscanf(id, "r:seek:%d", &at)
+		c.seek(at)
+	case id == "contents" || id == "marks" || id == "r:list:contents" || id == "r:list:marks":
 		c.closeOverlays()
-		c.rd.view, c.rd.listFrom = id, -1
+		c.rd.chrome = false
+		c.rd.view, c.rd.listFrom = strings.TrimPrefix(id, "r:list:"), -1
 	case id == "linemode":
 		pr.LineFocus = !pr.LineFocus
 		ob.line = 0
+		c.rd.chrome = false
 		c.lib.save()
 		c.invalidatePage()
 	case id == "settings":
 		open := !c.rd.settings
 		c.closeOverlays()
-		c.rd.settings = open
+		c.rd.settings, c.rd.chrome = open, false
 	case id == "r:hl":
 		c.rd.menu = menuInk
 	case id == "r:inkback":
@@ -752,6 +865,17 @@ func (c *console) applySetting(s string) bool {
 		if isLanguage(arg) {
 			pr.TranslateTo = arg
 		}
+	case "trnext":
+		for i, l := range languages {
+			if l.code == pr.TranslateTo {
+				pr.TranslateTo = languages[(i+1)%len(languages)].code
+				break
+			}
+		}
+	case "bright":
+		c.cfg.Brightness = min(max(c.cfg.Brightness+10*step, 10), 100)
+		setBacklight(c.cfg.Brightness)
+		c.cfg.save()
 	case "goal":
 		pr.GoalMinutes = min(max(pr.GoalMinutes+5*step, 5), 240)
 	}
@@ -760,57 +884,54 @@ func (c *console) applySetting(s string) bool {
 
 // --- contents and highlights -------------------------------------------------------------
 
-const listPerPage = 9
+const listPerPage = 10
 
 func (c *console) readerListPage() *page {
 	ob := c.book
 	th := readerThemes[c.lib.Prefs.Theme]
+	f := apple()
 	h := c.s.H - c.barH
 	img := canvas(c.s.W, h)
 	ui.Fill(img, img.Rect, th.bg)
 	p := &page{img: img}
-	card := blend(th.bg, th.fg, 0.08)
-	btnBG := blend(th.bg, th.fg, 0.14)
-	addBtn := func(id, label string, r image.Rectangle) {
-		ui.RoundRect(img, r, 16, btnBG)
-		ui.DrawTextCentered(img, c.pf.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, th.fg, label)
-		p.buttons = append(p.buttons, button{id, r})
-	}
-	addBtn("r:list:back", "< book", image.Rect(28, 20, 300, 106))
-	title := "contents"
-	if c.rd.view == "marks" {
-		title = "highlights"
-	}
-	ui.DrawText(img, c.pf.title, 330, 88, th.strong, title)
-	f := c.uiFonts()
+	acc := th.accent()
+	_, _, secondary, sep := sheetColours(th)
+	label := th.fg
+
+	apTextCenter(img, f.headline, c.s.W/2, 70, label, clip(f.headline, ob.b.Title, c.s.W-480))
+	apTextRight(img, f.headline, c.s.W-48, 82, acc, "Done")
+	p.buttons = append(p.buttons, button{"r:list:back", image.Rect(c.s.W-240, 0, c.s.W, 130)})
+	segmented(p, image.Rect(c.s.W/2-330, 120, c.s.W/2+330, 196), []string{"r:list:contents", "r:list:marks"},
+		[]string{"Contents", "Highlights"}, "r:list:"+c.rd.view, th.bg, label)
 
 	type row struct {
-		id, text, sub string
-		chip          *inkColour
-		del           string
-		current       bool
+		id, text, sub, right string
+		chip                 *inkColour
+		del                  string
+		current              bool
 	}
 	var rows []row
 	if c.rd.view == "contents" {
 		if ob.titles == nil {
-			ui.DrawText(img, c.pf.body, 48, 240, th.faint, "reading the chapters...")
+			apText(img, f.body, 48, 300, secondary, "Reading the chapters…")
 			return p
 		}
 		for i, t := range ob.titles {
-			rows = append(rows, row{id: fmt.Sprintf("r:toc:%d", i), text: t, sub: fmt.Sprintf("chapter %d", i+1), current: i == ob.chapter})
+			rows = append(rows, row{id: fmt.Sprintf("r:toc:%d", i), text: t, right: fmt.Sprint(i + 1), current: i == ob.chapter})
 		}
 	} else {
 		for _, m := range c.lib.Marks[ob.path] {
 			mc := markColour(m.Colour)
-			sub := fmt.Sprintf("chapter %d", m.Chapter+1)
+			sub := fmt.Sprintf("Chapter %d", m.Chapter+1)
 			if ob.titles != nil && m.Chapter < len(ob.titles) {
 				sub = ob.titles[m.Chapter]
 			}
 			rows = append(rows, row{id: "r:mark:" + m.ID, text: m.Text, sub: sub + "  ·  " + m.Added, chip: &mc, del: "r:del:" + m.ID})
 		}
 		if len(rows) == 0 {
-			ui.DrawText(img, c.pf.body, 48, 240, th.fg, "no highlights in this book yet")
-			ui.DrawText(img, c.pf.small, 48, 300, th.faint, "long-press a word, drag to take in more, then highlight")
+			apTextCenter(img, f.title, c.s.W/2, 480, label, "No Highlights")
+			apTextCenter(img, f.callout, c.s.W/2, 550, secondary, "Touch and hold a word, drag to take in more,")
+			apTextCenter(img, f.callout, c.s.W/2, 596, secondary, "then tap Highlight.")
 			return p
 		}
 	}
@@ -823,27 +944,34 @@ func (c *console) readerListPage() *page {
 		}
 	}
 	c.rd.listFrom = min(c.rd.listFrom, (len(rows)-1)/listPerPage*listPerPage)
-	y := 140
+	rowH := 150
+	y := 230
 	for i := c.rd.listFrom; i < len(rows) && i < c.rd.listFrom+listPerPage; i++ {
 		r := rows[i]
-		rr := image.Rect(28, y, c.s.W-28, y+166)
-		bg := card
-		if r.current {
-			bg = blend(th.bg, th.mark, th.markA)
-		}
-		ui.RoundRect(img, rr, 20, bg)
-		x := rr.Min.X + 30
+		rr := image.Rect(0, y, c.s.W, y+rowH)
+		x, tw := 48, c.s.W-96
 		if r.chip != nil {
-			ui.RoundRect(img, image.Rect(x, rr.Min.Y+24, x+14, rr.Max.Y-24), 6, r.chip.chip)
-			x += 36
+			ui.RoundRect(img, image.Rect(x, rr.Min.Y+26, x+10, rr.Max.Y-26), 5, r.chip.chip)
+			x, tw = x+34, tw-34
 		}
-		tw := rr.Max.X - x - 30
 		if r.del != "" {
-			tw -= 120
-			addBtn(r.del, "x", image.Rect(rr.Max.X-130, rr.Min.Y+40, rr.Max.X-30, rr.Max.Y-40))
+			apTextRight(img, f.callout, c.s.W-48, rr.Min.Y+rowH/2+10, rgb(0xff453a), "Delete")
+			p.buttons = append(p.buttons, button{r.del, image.Rect(c.s.W-200, rr.Min.Y, c.s.W, rr.Max.Y)})
+			tw -= 170
 		}
-		lines := layoutWords(f.body, strings.Fields(r.text), 0, tw, false)
-		ly := rr.Min.Y + 52
+		if r.right != "" {
+			apTextRight(img, f.callout, c.s.W-48, rr.Min.Y+rowH/2+10, secondary, r.right)
+			tw -= 90
+		}
+		face, col := f.body, label
+		if r.current {
+			face, col = f.headline, acc
+		}
+		lines := layoutWords(face, strings.Fields(r.text), 0, tw, false)
+		ly := rr.Min.Y + 58
+		if r.sub == "" && len(lines) == 1 {
+			ly = rr.Min.Y + rowH/2 + 12
+		}
 		for li, l := range lines {
 			if li == 2 {
 				break
@@ -851,20 +979,24 @@ func (c *console) readerListPage() *page {
 			if li == 1 && len(lines) > 2 {
 				l.words = append(l.words, tword{text: "…", x: l.words[len(l.words)-1].x + l.words[len(l.words)-1].w + 6})
 			}
-			drawWords(img, f.body, l, x, ly, th.fg)
-			ly += 46
+			drawWords(img, face, l, x, ly, col)
+			ly += 44
 		}
-		ui.DrawText(img, c.pf.small, x, rr.Max.Y-18, th.faint, clip(c.pf.small, r.sub, tw))
+		if r.sub != "" {
+			apText(img, f.caption, x, rr.Max.Y-20, secondary, clip(f.caption, r.sub, tw))
+		}
+		ui.Fill(img, image.Rect(48, rr.Max.Y-1, c.s.W, rr.Max.Y+1), sep)
 		p.buttons = append(p.buttons, button{r.id, rr})
-		y += 180
+		y += rowH
 	}
 	if len(rows) > listPerPage {
-		by := h - 110
-		bw := (c.s.W - 56 - 24) / 3
-		addBtn("r:list:prev", "< prev", image.Rect(28, by, 28+bw, by+90))
-		ui.DrawTextCentered(img, c.pf.small, c.s.W/2, by+45, th.faint,
-			fmt.Sprintf("%d-%d of %d", c.rd.listFrom+1, min(c.rd.listFrom+listPerPage, len(rows)), len(rows)))
-		addBtn("r:list:next", "next >", image.Rect(c.s.W-28-bw, by, c.s.W-28, by+90))
+		by := h - 100
+		apText(img, f.body, 48, by+48, acc, "‹ Previous")
+		p.buttons = append(p.buttons, button{"r:list:prev", image.Rect(0, by, 360, by+90)})
+		apTextCenter(img, f.caption, c.s.W/2, by+38, secondary,
+			fmt.Sprintf("%d–%d of %d", c.rd.listFrom+1, min(c.rd.listFrom+listPerPage, len(rows)), len(rows)))
+		apTextRight(img, f.body, c.s.W-48, by+48, acc, "Next ›")
+		p.buttons = append(p.buttons, button{"r:list:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
 	}
 	return p
 }

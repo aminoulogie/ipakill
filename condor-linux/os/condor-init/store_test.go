@@ -273,7 +273,8 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	if len(findBooks()) != 0 {
 		t.Error("a preview should not be on the shelf")
 	}
-	tapButton(t, c, "shelf") // "< store"
+	tapButton(t, c, "chrome")
+	tapButton(t, c, "shelf") // "< Store"
 	if c.mode != modeStore || c.store.sel != top {
 		t.Fatalf("back from a preview should return to the book's page, mode %v", c.mode)
 	}

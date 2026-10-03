@@ -102,6 +102,15 @@ func openFirstBook(t *testing.T, c *console) {
 	}
 }
 
+// tapChrome taps one of the reader's controls, bringing them up first (a tap in the middle).
+func tapChrome(t *testing.T, c *console, id string) {
+	t.Helper()
+	if !c.rd.chrome {
+		tapButton(t, c, "chrome")
+	}
+	tapButton(t, c, id)
+}
+
 // pressWord long-presses the word with chapter index idx on the current page.
 func pressWord(t *testing.T, c *console, idx int) {
 	t.Helper()
@@ -142,6 +151,8 @@ func TestReadingSession(t *testing.T) {
 
 	// Settings: bigger text keeps the first word on screen; theme and font change.
 	word := c.book.pages[c.book.page][0].word
+	tapButton(t, c, "chrome")
+	shot(t, c, "reader-chrome")
 	tapButton(t, c, "settings")
 	shot(t, c, "reader-settings")
 	tapButton(t, c, "r:set:size:+")
@@ -182,6 +193,11 @@ func TestReadingSession(t *testing.T) {
 		t.Fatalf("finished %v %v", c.book.finished, c.lib.Finished)
 	}
 	saved := c.lib.Progress[c.book.path]
+	if saved.Pct != 100 || saved.Opened == "" {
+		t.Errorf("progress for the library: %+v", saved)
+	}
+	c.setMode(modeBooks)
+	shot(t, c, "reader-library")
 
 	// A fresh start reopens the book where it was left, with the same settings.
 	c2 := testConsole(t)
@@ -195,7 +211,7 @@ func TestReadingSession(t *testing.T) {
 func TestLineByLine(t *testing.T) {
 	c := readerConsole(t)
 	openFirstBook(t, c)
-	tapButton(t, c, "linemode")
+	tapChrome(t, c, "linemode")
 	if !c.lib.Prefs.LineFocus || c.book.line != 0 {
 		t.Fatal("line mode should start on the page's first line")
 	}
@@ -325,7 +341,7 @@ func TestSelectHighlightAndList(t *testing.T) {
 	pressWord(t, c, c.book.pages[c.book.page][0].words[0].idx)
 	tapButton(t, c, "r:hl")
 	tapButton(t, c, "r:ink:blossom")
-	tapButton(t, c, "marks")
+	tapChrome(t, c, "marks")
 	shot(t, c, "reader-marks")
 	if c.rd.view != "marks" {
 		t.Fatal("marks list not open")
@@ -342,7 +358,7 @@ func TestSelectHighlightAndList(t *testing.T) {
 		t.Fatalf("after remove: %+v", c.lib.Marks[c.book.path])
 	}
 	// Contents.
-	tapButton(t, c, "contents")
+	tapChrome(t, c, "contents")
 	drawMu.Unlock()
 	waitFor(t, "titles", func() bool { return c.book.titles != nil })
 	drawMu.Lock()

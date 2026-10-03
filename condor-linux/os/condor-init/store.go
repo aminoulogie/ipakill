@@ -320,53 +320,53 @@ func (c *console) storeSearch() {
 	c.showPage()
 }
 
-// Layout of the grid page (page coordinates; the screen is 1200 wide).
+// Layout of the store (page coordinates; the screen is 1200 wide), after Apple's Book Store.
 const (
-	gridTop   = 470
-	gridCols  = 3
+	gridTop   = 590
+	gridCols  = 4
 	gridRows  = 2
 	gridGap   = 36
-	gridCellW = (1200 - 2*48 - (gridCols-1)*gridGap) / gridCols // 344
-	gridCover = gridCellW * 7 / 5                               // 481: covers are about 5:7
-	gridCellH = gridCover + 128
+	gridCellW = (1200 - 2*48 - (gridCols-1)*gridGap) / gridCols // 249
+	gridCover = gridCellW * 3 / 2                               // 373
+	gridCellH = gridCover + 124
 	perView   = gridCols * gridRows
 )
 
 var (
-	storeSearchR = image.Rect(48, 130, 1200-48-200, 220)
-	storeGoR     = image.Rect(1200-48-180, 130, 1200-48, 220)
+	storeSearchR = image.Rect(48, 236, 1200-48-180, 326)
+	storeGoR     = image.Rect(1200-48-170, 236, 1200-48, 326)
 )
 
-// drawSearchBox redraws just the search box (fast, for each key). Caller holds drawMu.
+// drawSearchBox redraws just the search field (fast, for each key). Caller holds drawMu.
 func (c *console) drawSearchBox() {
 	r := storeSearchR
 	img := image.NewRGBA(r)
-	ui.Fill(img, r, pgBG)
+	ui.Fill(img, r, apBG)
 	c.searchBox(img)
 	c.s.blitRGBA(img, r.Min.X, r.Min.Y+c.barH)
 	c.s.Flush()
 }
 
+// searchBox is an iOS search field: a magnifier, then the search or its placeholder.
 func (c *console) searchBox(img *image.RGBA) {
+	f := apple()
 	st := &c.store
 	r := storeSearchR
-	bg := pgCard
+	ui.RoundRect(img, r, 22, apCard2)
+	cx, cy := r.Min.X+44, (r.Min.Y+r.Max.Y)/2-4
+	ring(img, cx, cy, 13, 5, 1, apSecondary, apSecondary)
+	line(img, cx+10, cy+10, cx+20, cy+20, 6, apSecondary)
+	text, col := st.query, apLabel
 	if st.typing {
-		bg = pgBtn
-	}
-	ui.RoundRect(img, r, 18, bg)
-	text, col := st.query, pgText
-	if st.typing {
-		text = st.editing + "_"
+		text = st.editing + "|"
 	}
 	if text == "" {
-		text, col = "search books, authors...", pgMuted
+		text, col = "Books, Authors", apSecondary
 	}
-	// Show the end of a long search, where the typing is.
-	for text != "" && ui.TextWidth(c.pf.body, text) > r.Dx()-60 {
+	for text != "" && ui.TextWidth(f.body, text) > r.Dx()-110 { // show the end, where the typing is
 		text = string([]rune(text)[1:])
 	}
-	ui.DrawText(img, c.pf.body, r.Min.X+30, r.Min.Y+58, col, text)
+	apText(img, f.body, r.Min.X+84, r.Min.Y+58, col, text)
 }
 
 // badge is the line under a cover: free and where, or a price, or info only.
@@ -391,6 +391,28 @@ func (it *storeItem) badge() (string, bool) {
 	return "info only", false
 }
 
+// capsules lays out pill buttons across rows, wrapping at the margin.
+func capsules(p *page, x, y, right int, ids, labels []string, on string) int {
+	f := apple()
+	px := x
+	for i, id := range ids {
+		w := ui.TextWidth(f.captionBold, labels[i]) + 56
+		if px+w > right {
+			px, y = x, y+84
+		}
+		r := image.Rect(px, y, px+w, y+66)
+		bg, fg := apCard2, apLabel
+		if id == on {
+			bg, fg = apOrange, apBG
+		}
+		ui.RoundRect(p.img, r, 33, bg)
+		apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
+		p.buttons = append(p.buttons, button{id, r})
+		px += w + 16
+	}
+	return y + 66
+}
+
 // storePage is the cover grid, or one book's page.
 func (c *console) storePage() *page {
 	st := &c.store
@@ -410,154 +432,143 @@ func (c *console) storePage() *page {
 	if st.sel != nil {
 		return c.storeBookPage()
 	}
+	f := apple()
 	h := c.s.H - c.barH
-	pn := newPen(c.s.W, h, c.pf)
-	pn.btn("home", "< home", image.Rect(pn.mx-12, 20, pn.mx+240, 110), pgBtn, pgText)
-	pn.text(c.pf.title, pgText, pn.mx+280, 88, "store")
-	lang := storeLangs[st.lang]
-	if lang == "" {
-		lang = "all"
-	}
-	pn.btn("s:lang", "lang: "+lang, image.Rect(c.s.W-pn.mx-280, 20, c.s.W-pn.mx, 110), pgBtn, pgText)
+	img := canvas(c.s.W, h)
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img}
+	mx := 48
 
-	c.searchBox(pn.p.img)
-	pn.p.buttons = append(pn.p.buttons, button{"s:search", storeSearchR})
-	goLabel := "search"
+	iconBack(img, mx, 64, apOrange)
+	apText(img, f.body, mx+30, 76, apOrange, "Home")
+	p.buttons = append(p.buttons, button{"home", image.Rect(0, 10, 260, 120)})
+	lang := "All Languages"
+	if l := storeLangs[st.lang]; l != "" {
+		lang = languageLabel(l)
+	}
+	apTextRight(img, f.body, c.s.W-mx, 76, apOrange, lang)
+	p.buttons = append(p.buttons, button{"s:lang", image.Rect(c.s.W-420, 10, c.s.W, 120)})
+	apText(img, f.largeTitle, mx, 200, apLabel, "Book Store")
+
+	c.searchBox(img)
+	p.buttons = append(p.buttons, button{"s:search", storeSearchR})
+	goLabel := "Search"
 	if st.query != "" && !st.typing {
-		goLabel = "clear"
+		goLabel = "Cancel"
 	}
-	pn.btn("s:go", goLabel, storeGoR, pgSel, pgDark)
+	apTextCenter(img, f.body, (storeGoR.Min.X+storeGoR.Max.X)/2, (storeGoR.Min.Y+storeGoR.Max.Y)/2, apOrange, goLabel)
+	p.buttons = append(p.buttons, button{"s:go", storeGoR})
 
-	pn.y = storeGoR.Max.Y
 	head := ""
-	if st.query == "" { // browsing: topics
-		for row := 0; row < 2; row++ {
-			var ids, labels []string
-			for i := row * 5; i < row*5+5; i++ {
-				ids = append(ids, fmt.Sprintf("s:topic%d", i))
-				labels = append(labels, storeTopics[i].label)
-			}
-			pn.smallRow(ids, labels, fmt.Sprintf("s:topic%d", st.topic))
+	if st.query == "" { // browsing: topics as capsules
+		var ids, labels []string
+		for i, tp := range storeTopics {
+			ids = append(ids, fmt.Sprintf("s:topic%d", i))
+			labels = append(labels, strings.ToUpper(tp.label[:1])+tp.label[1:])
 		}
-		head = strings.ToUpper(storeTopics[st.topic].label) + " ON PROJECT GUTENBERG"
-	} else { // searching: how each source did
-		pn.y += 50
+		capsules(p, mx, 352, c.s.W-mx, ids, labels, fmt.Sprintf("s:topic%d", st.topic))
+		head = strings.ToUpper(storeTopics[st.topic].label[:1]) + storeTopics[st.topic].label[1:] + " on Project Gutenberg"
+	} else { // searching: how each library did
 		var parts []string
 		for s := 0; s < numSources; s++ {
 			switch v := st.srcState[s]; v {
 			case "":
 			case "...":
-				parts = append(parts, sourceShort[s]+" ...")
+				parts = append(parts, sourceShort[s]+" …")
 			case "failed":
 				parts = append(parts, sourceShort[s]+" failed")
 			default:
 				parts = append(parts, sourceShort[s]+" "+v)
 			}
 		}
-		pn.text(c.pf.small, pgMuted, pn.mx, pn.y, clip(c.pf.small, strings.Join(parts, "  ·  "), c.s.W-2*pn.mx))
-		pn.y += 50
-		pn.text(c.pf.small, pgMuted, pn.mx, pn.y, "full free books first, then books to look at before buying")
-		head = fmt.Sprintf("RESULTS FOR \"%s\"", strings.ToUpper(st.query))
+		apText(img, f.caption, mx, 400, apSecondary, clip(f.caption, strings.Join(parts, "  ·  "), c.s.W-2*mx))
+		apText(img, f.caption, mx, 444, apSecondary, "Free full books first, then books to look at before buying")
+		head = "Results for “" + st.query + "”"
 	}
-	pn.text(c.pf.small, pgAccent, pn.mx, gridTop-24, clip(c.pf.small, head, c.s.W-2*pn.mx))
+	apText(img, f.headline, mx, gridTop-30, apLabel, clip(f.headline, head, c.s.W-2*mx))
 
 	switch {
 	case len(st.results) == 0 && st.pending > 0:
-		pn.text(c.pf.body, pgMuted, pn.mx, gridTop+80, "looking for books...")
+		apText(img, f.body, mx, gridTop+80, apSecondary, "Looking for books…")
 	case len(st.results) == 0:
-		msg := "nothing found"
+		msg := "No Results"
 		if len(st.errs) > 0 {
-			msg = "can't reach the libraries: is Wi-Fi on?"
+			msg = "Can't reach the libraries. Is Wi-Fi on?"
 		}
-		pn.text(c.pf.body, pgText, pn.mx, gridTop+80, msg)
-		pn.y = gridTop + 100
+		apText(img, f.title, mx, gridTop+90, apLabel, msg)
+		y := gridTop + 110
 		for _, e := range st.errs {
-			for _, l := range wrapText(c.pf.small, e, c.s.W-2*pn.mx) {
-				pn.y += 40
-				pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
-			}
+			y = drawParagraphs(img, f.caption, e, mx, y+10, c.s.W-2*mx, 38, y+200, apSecondary)
 		}
-		pn.y += 20
-		pn.row([]string{"s:retry"}, []string{"retry"}, "", false)
+		r := image.Rect(mx, y+40, mx+300, y+136)
+		ui.RoundRect(img, r, 48, apOrange)
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apBG, "Try Again")
+		p.buttons = append(p.buttons, button{"s:retry", r})
 	}
 
 	st.view = min(st.view, max(len(st.results)-1, 0)/perView*perView)
 	for i := st.view; i < len(st.results) && i < st.view+perView; i++ {
 		it := st.results[i]
 		col, row := (i-st.view)%gridCols, (i-st.view)/gridCols
-		x, y := pn.mx+col*(gridCellW+gridGap), gridTop+row*(gridCellH+20)
+		x, y := mx+col*(gridCellW+gridGap), gridTop+row*(gridCellH+16)
 		cr := image.Rect(x, y, x+gridCellW, y+gridCover)
-		c.drawCover(pn.p.img, cr, it)
-		pn.text(c.pf.small, pgText, x, cr.Max.Y+40, clip(c.pf.small, it.title, gridCellW))
-		pn.text(c.pf.small, pgMuted, x, cr.Max.Y+78, clip(c.pf.small, it.author, gridCellW))
+		shadowRect(img, cr)
+		c.drawCover(img, cr, it)
+		apText(img, f.captionBold, x, cr.Max.Y+40, apLabel, clip(f.captionBold, it.title, gridCellW))
+		apText(img, f.caption, x, cr.Max.Y+76, apSecondary, clip(f.caption, it.author, gridCellW))
 		badge, free := it.badge()
-		bc := pgMuted
+		bc := apSecondary
 		if free {
-			bc = pgAccent
+			bc = apOrange
 		}
-		pn.text(c.pf.small, bc, x, cr.Max.Y+116, clip(c.pf.small, badge, gridCellW))
-		pn.p.buttons = append(pn.p.buttons, button{fmt.Sprintf("s:item%d", i), image.Rect(x, y, x+gridCellW, y+gridCellH)})
+		apText(img, f.captionBold, x, cr.Max.Y+112, bc, clip(f.captionBold, badge, gridCellW))
+		p.buttons = append(p.buttons, button{fmt.Sprintf("s:item%d", i), image.Rect(x, y, x+gridCellW, y+gridCellH)})
 	}
 
 	if !st.typing && len(st.results) > 0 {
-		pn.y = h - 124
+		by := h - 100
 		more := ""
 		if st.hasMore || st.pending > 0 {
 			more = "+"
 		}
-		ids := []string{"s:prev", "s:count", "s:next"}
-		labels := []string{"< prev", fmt.Sprintf("%d-%d of %d%s", st.view+1, min(st.view+perView, len(st.results)), len(st.results), more), "next >"}
-		pn.row(ids, labels, "", false)
+		apText(img, f.body, mx, by+48, apOrange, "‹ Previous")
+		p.buttons = append(p.buttons, button{"s:prev", image.Rect(0, by, 360, by+90)})
+		apTextCenter(img, f.caption, c.s.W/2, by+38, apSecondary,
+			fmt.Sprintf("%d–%d of %d%s", st.view+1, min(st.view+perView, len(st.results)), len(st.results), more))
+		apTextRight(img, f.body, c.s.W-mx, by+48, apOrange, "Next ›")
+		p.buttons = append(p.buttons, button{"s:next", image.Rect(c.s.W-360, by, c.s.W, by+90)})
 	}
-	return pn.p
+	return p
 }
 
-// smallRow is row with shorter buttons in the small font.
-func (pn *pen) smallRow(ids, labels []string, selected string) {
-	pn.y += 16
-	gap := 14
-	w := (pn.W - 2*pn.mx - gap*(len(ids)-1)) / len(ids)
-	for i := range ids {
-		x := pn.mx + i*(w+gap)
-		bg, fg := pgBtn, pgText
-		if ids[i] == selected {
-			bg, fg = pgSel, pgDark
-		}
-		r := image.Rect(x, pn.y, x+w, pn.y+70)
-		ui.RoundRect(pn.p.img, r, 16, bg)
-		ui.DrawTextCentered(pn.p.img, pn.f.small, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
-		pn.p.buttons = append(pn.p.buttons, button{ids[i], r})
-	}
-	pn.y += 70
-}
-
-// storeBookPage shows one book: big cover, title, where to get it, summary.
+// storeBookPage is a book's page: big cover, Get and Sample, where to get it, about.
 func (c *console) storeBookPage() *page {
+	f := apple()
 	st := &c.store
 	it := st.sel
 	h := c.s.H - c.barH
-	pn := newPen(c.s.W, h, c.pf)
-	pn.btn("s:back", "< back", image.Rect(pn.mx-12, 20, pn.mx+240, 110), pgBtn, pgText)
+	img := canvas(c.s.W, h)
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img}
+	mx := 48
+	iconBack(img, mx, 64, apOrange)
+	apText(img, f.body, mx+30, 76, apOrange, "Book Store")
+	p.buttons = append(p.buttons, button{"s:back", image.Rect(0, 10, 340, 120)})
 
-	cr := image.Rect(pn.mx, 140, pn.mx+440, 140+616)
-	c.drawCover(pn.p.img, cr, it)
-	x, w := cr.Max.X+44, c.s.W-pn.mx-(cr.Max.X+44)
+	cr := image.Rect(mx, 150, mx+420, 150+630)
+	shadowRect(img, cr)
+	c.drawCover(img, cr, it)
+	x, w := cr.Max.X+44, c.s.W-mx-(cr.Max.X+44)
 	y := cr.Min.Y + 10
-	for i, l := range wrapText(c.pf.bold, it.title, w) {
+	for i, l := range layoutWords(f.title, strings.Fields(it.title), 0, w, false) {
 		if i == 5 {
 			break
 		}
-		y += 50
-		pn.text(c.pf.bold, pgText, x, y, l)
+		y += 54
+		drawWords(img, f.title, l, x, y, apLabel)
 	}
-	y += 56
-	for i, l := range wrapText(c.pf.body, it.author, w) {
-		if i == 2 {
-			break
-		}
-		pn.text(c.pf.body, pgAccent, x, y, l)
-		y += 46
-	}
+	y += 50
+	apText(img, f.body, x, y, apOrange, clip(f.body, it.author, w))
 	var meta []string
 	if it.year > 0 {
 		meta = append(meta, fmt.Sprint(it.year))
@@ -568,18 +579,18 @@ func (c *console) storeBookPage() *page {
 	if it.downloads > 0 {
 		meta = append(meta, fmt.Sprintf("%d downloads", it.downloads))
 	}
-	y += 10
-	pn.text(c.pf.small, pgMuted, x, y, clip(c.pf.small, strings.Join(meta, "  ·  "), w))
+	y += 48
+	apText(img, f.caption, x, y, apSecondary, clip(f.caption, strings.Join(meta, "  ·  "), w))
 	badge, free := it.badge()
-	bc := pgMuted
+	bc := apSecondary
 	if free {
-		bc = pgAccent
+		bc = apOrange
 	}
-	y += 50
-	pn.text(c.pf.small, bc, x, y, badge)
+	y += 44
+	apText(img, f.captionBold, x, y, bc, badge)
 
-	// Buttons under the cover.
-	pn.y = cr.Max.Y + 10
+	// Get and Sample, the store's two capsules.
+	y = cr.Max.Y + 50
 	state := st.dl[it.key]
 	if it.full() {
 		saved := state == "saved"
@@ -588,46 +599,53 @@ func (c *console) storeBookPage() *page {
 				saved = true
 			}
 		}
-		dlLabel := "download"
+		get := "Get"
 		if saved {
-			dlLabel = "open"
+			get = "Open"
 		}
-		pn.row([]string{"s:preview", "s:dl"}, []string{"read preview", dlLabel}, "", false)
-		note := "preview opens the full book now without adding it to your shelf"
+		half := (c.s.W - 2*mx - 24) / 2
+		gr := image.Rect(mx, y, mx+half, y+100)
+		ui.RoundRect(img, gr, 50, apOrange)
+		apTextCenter(img, f.headline, (gr.Min.X+gr.Max.X)/2, (gr.Min.Y+gr.Max.Y)/2, apBG, get)
+		p.buttons = append(p.buttons, button{"s:dl", gr})
+		sr := image.Rect(mx+half+24, y, c.s.W-mx, y+100)
+		ui.RoundRect(img, sr, 50, apCard2)
+		apTextCenter(img, f.headline, (sr.Min.X+sr.Max.X)/2, (sr.Min.Y+sr.Max.Y)/2, apOrange, "Sample")
+		p.buttons = append(p.buttons, button{"s:preview", sr})
+		note := "Sample opens the whole book now, without adding it to your library."
 		if state != "" && state != "saved" {
-			note = state
+			note = strings.ToUpper(state[:1]) + state[1:]
 		} else if saved {
-			note = "saved to Books: it's on your shelf in the books app too"
+			note = "In your library."
 		}
-		for _, l := range wrapText(c.pf.small, note, c.s.W-2*pn.mx) {
-			pn.y += 42
-			pn.text(c.pf.small, pgMuted, pn.mx, pn.y, l)
-		}
+		y = drawParagraphs(img, f.caption, note, mx, y+120, c.s.W-2*mx, 38, y+240, apSecondary)
 	} else {
-		pn.y += 20
-		pn.text(c.pf.body, pgText, pn.mx, pn.y+30, "not free to read: description below")
-		pn.y += 40
+		apText(img, f.headline, mx, y+40, apLabel, "Not free to read")
+		apText(img, f.caption, mx, y+84, apSecondary, "Read the description below before you buy it elsewhere.")
+		y += 110
 	}
 
-	pn.heading("WHERE TO GET IT")
+	section := func(title string) {
+		y += 30
+		ui.Fill(img, image.Rect(mx, y, c.s.W-mx, y+2), apSeparator)
+		y += 66
+		apText(img, f.headline, mx, y, apLabel, title)
+		y += 12
+	}
+	section("Where to Get It")
 	for _, o := range it.offers {
-		what := "full book, free"
+		what := "Full book, free"
 		if !o.full {
 			what = o.note
 			if o.price != "" {
 				what = o.price + ": " + o.note
 			}
 		}
-		for i, l := range wrapText(c.pf.small, sourceNames[o.src]+": "+what, c.s.W-2*pn.mx) {
-			if i == 2 {
-				break
-			}
-			pn.y += 40
-			pn.text(c.pf.small, pgText, pn.mx, pn.y, l)
-		}
+		y += 46
+		apText(img, f.callout, mx, y, apLabel, sourceNames[o.src])
+		apText(img, f.caption, mx+330, y, apSecondary, clip(f.caption, what, c.s.W-2*mx-330))
 	}
-
-	pn.heading("ABOUT")
+	section("About")
 	about := it.summary
 	if about == "" && len(it.subjects) > 0 {
 		about = "Subjects: " + strings.Join(it.subjects, "; ")
@@ -635,22 +653,11 @@ func (c *console) storeBookPage() *page {
 	if about == "" {
 		about = "No description from these libraries."
 		if it.full() {
-			about += " Tap read preview to start reading."
+			about += " Tap Sample to start reading."
 		}
 	}
-	lines := wrapText(c.pf.small, about, c.s.W-2*pn.mx)
-	maxLines := (h - 40 - pn.y) / 40
-	for i, l := range lines {
-		if i == maxLines {
-			break
-		}
-		if i == maxLines-1 && len(lines) > maxLines {
-			l = clip(c.pf.small, l+" ...", c.s.W-2*pn.mx)
-		}
-		pn.y += 40
-		pn.text(c.pf.small, pgText, pn.mx, pn.y, l)
-	}
-	return pn.p
+	drawParagraphs(img, f.callout, about, mx, y+16, c.s.W-2*mx, 44, h-30, apLabel)
+	return p
 }
 
 // fetchSummary fills in an Open Library book's description in the background.

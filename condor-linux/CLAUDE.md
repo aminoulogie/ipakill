@@ -124,7 +124,9 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
   modified boot/recovery image. Route in use: keep the signed kernel + ramdisk, hook early
   boot from **/system**, stop Android's zygote, run condor-init + Alpine (chroot).
 - The user wants a **Linux-style system** (console, terminal-first, Arch-like "build it
-  yourself" with apk), not an iPad-style UI. Alpine, not Arch (old kernel; Alpine's musl and
+  yourself" with apk), not an iPad-style UI. Exception they asked for later (2026-10-03):
+  the **Books app and Book Store look like Apple Books** (apple.go: Liberation Sans for SF,
+  dark system colours, orange accent, sheets with grabbers, callout menu, segmented control). Alpine, not Arch (old kernel; Alpine's musl and
   busybox are fine with 3.4).
 - Fallback ladder in PLAN.md if a phase is blocked.
 
@@ -250,6 +252,16 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       books finished per year. Words app: list, word page (type a meaning), review at 2/7/30
       days (Soma's review-queue). Arabic books lay out right to left. No copy (no clipboard here).
       Tests hold drawMu like the touch loop (key() takes it itself: pressKey helper).
+- [x] **Apple Books look** (apple.go, shelf.go Library, reader chrome, readerui.go sheets, store.go):
+      Library = large title, Continue Reading card (real EPUB covers via "epub:" cover URLs,
+      progress %, reading-goal ring), 4-column cover grid with NEW / % / FINISHED. Reader:
+      bare page with chapter title + "n of m" in grey; tap the middle third = controls (top bar:
+      Library, contents, highlights, line by line, Aa; bottom slider: tap to seek through the
+      book), sides turn pages; line mode keeps Soma's taps, controls via the top/bottom margins.
+      Themes & Settings sheet (A/A, brightness, theme tiles Night/Original/Calm, font list with
+      check, Customize rows with steppers and an iOS switch), dark callout menu with arrow,
+      Look Up / Translate sheet, Contents | Highlights segmented list. Book Store: iOS search
+      field, topic capsules, cover grid, book page with Get / Sample capsules.
 - [ ] microSD bind into Alpine; update over Wi-Fi
 
 Update this checklist as things are done.

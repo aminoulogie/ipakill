@@ -13,11 +13,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	xdraw "golang.org/x/image/draw"
 
+	"condor-init/epub"
 	"condor-init/ui"
 )
 
@@ -92,7 +94,18 @@ func (cc *coverCache) load(k coverKey) {
 func loadCover(url string, w, h int) (*image.RGBA, error) {
 	file := filepath.Join(coverDir, hash(url))
 	b, err := os.ReadFile(file)
-	if err != nil {
+	if strings.HasPrefix(url, "epub:") { // a book on the tablet: the cover is inside it
+		path, inside, _ := strings.Cut(strings.TrimPrefix(url, "epub:"), "#")
+		eb, err := epub.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		b, err = eb.ReadFile(inside)
+		eb.Close()
+		if err != nil {
+			return nil, err
+		}
+	} else if err != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		resp, err := webGetCtx(ctx, url)
@@ -152,9 +165,9 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 	bg := coverColors[(h&0x7fffffff)%len(coverColors)]
 	ui.Fill(img, r, bg)
 	ui.Fill(img, image.Rect(r.Min.X+r.Dx()/12, r.Min.Y, r.Min.X+r.Dx()/12+6, r.Max.Y), blend(bg, pgDark, 0.35))
-	face := c.pf.small
+	face, small := apple().captionBold, apple().caption
 	if r.Dx() > 400 {
-		face = c.pf.bold
+		face = apple().headline
 	}
 	lh := face.Metrics().Height.Ceil() + 4
 	pad := r.Dx()/12 + 22
@@ -166,5 +179,5 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 		y += lh
 		ui.DrawText(img, face, r.Min.X+pad, y, pgText, visual(l))
 	}
-	ui.DrawText(img, c.pf.small, r.Min.X+pad, r.Max.Y-36, blend(pgText, bg, 0.3), visual(clip(c.pf.small, it.author, r.Dx()-pad-18)))
+	ui.DrawText(img, small, r.Min.X+pad, r.Max.Y-36, blend(pgText, bg, 0.3), visual(clip(small, it.author, r.Dx()-pad-18)))
 }

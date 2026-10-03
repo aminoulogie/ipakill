@@ -69,6 +69,8 @@ type console struct {
 	marksVersion int
 	lastRead     time.Time
 	words        *wordBook
+	shelfFrom    int // first book on the library page
+	shelfPer     int
 	wui          wordsUI
 	clients      map[net.Conn]bool
 }
