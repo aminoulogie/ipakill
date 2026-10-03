@@ -97,9 +97,17 @@ func pushRoot(local, remote, mode string) error {
 		return fmt.Errorf("push: %s", strings.TrimSpace(out))
 	}
 	defer sh("rm " + tmp)
-	sh("su -c 'mkdir " + filepath.ToSlash(filepath.Dir(remote)) + "; cat " + tmp + " > " + remote + "; chmod " + mode + " " + remote + "'")
+	// Write next to the target and rename: overwriting a running binary in place fails
+	// with "Text file busy", while a rename just replaces the directory entry.
+	next := remote + ".new"
+	sh("su -c 'mkdir " + filepath.ToSlash(filepath.Dir(remote)) + "; cat " + tmp + " > " + next + "; chmod " + mode + " " + next + "'")
+	if got := sh("su -c 'md5 " + next + "'"); !strings.HasPrefix(got, want) {
+		sh("su -c 'rm " + next + "'")
+		return fmt.Errorf("%s md5 mismatch after copy: %q, want %s", next, got, want)
+	}
+	sh("su -c 'mv " + next + " " + remote + "'")
 	if got := sh("su -c 'md5 " + remote + "'"); !strings.HasPrefix(got, want) {
-		return fmt.Errorf("%s md5 mismatch after copy: %q, want %s", remote, got, want)
+		return fmt.Errorf("%s md5 mismatch after rename: %q, want %s", remote, got, want)
 	}
 	fmt.Printf("installed %s (md5 %s)\n", remote, want)
 	return nil

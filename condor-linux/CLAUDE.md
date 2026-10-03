@@ -28,6 +28,13 @@ anything about OS options, firmware or flashing).
 - Kernel **3.4.34** SMP PREEMPT (built 2015-11-27, gcc 4.6) → Go (needs ≥3.2) and Alpine OK.
 - Root: `su` works over adb. `/proc/cmdline` and dmesg need su.
 - Display: framebuffer `psbfb` (fb0, Intel MID PowerVR/psb driver), GPU module `sgx`.
+  **Native scanout is 1920x1200 landscape** (mode `U:1920x1200p-0`, 32 bpp XRGB: r16 g8 b0,
+  stride 7680, one page, fb rotate 0, panel mm unknown), but the tablet is used **portrait**:
+  framebuffer x=0 is the top edge, its bottom rows are the left edge. condor-init draws in
+  logical portrait 1200x1920 via one setting, `rotation` = Rot90 (`os/condor-init/screen.go`,
+  override in /data/condor/rotation). Goodix touch reports native X 0–1920, Y 0–1200 (protocol
+  B, slots 0–254), so touch maps through the same setting.
+  Backlight: /sys/class/backlight/psb-bl, max 100.
 - Touch: **Goodix Capacitive TouchScreen** (event2). Keys: `gpio-keys` (event1, volume),
   `mid_powerbtn` (event3). Accelerometer `bma250` (event0). Audio jack event4.
 - Wi-Fi/BT: Broadcom **bcmdhd** (SDIO, mmc2, wlan0 + p2p0), `cfg80211`, `bcm_bt_lpm`.
@@ -94,9 +101,9 @@ anything about OS options, firmware or flashing).
 - [x] Takeover hook installed: `/system/etc/install-recovery.sh` (stock flash_recovery service
       runs it as root at class main). Verified harmless when not armed.
 - [x] **Milestone 1** (2026-10-03): `condor takeover arm` + reboot → zygote/system_server
-      stopped, `/data/condor/condor-init` (Go, linux/386) as root draws a correct, upright
-      test pattern on psbfb (1920x1200, 32 bpp XRGB, stride 7680, single page: pan ioctl
-      EINVAL is harmless) and serves a root shell on 127.0.0.1:2323 (`adb forward`).
+      stopped, `/data/condor/condor-init` (Go, linux/386) as root draws a test pattern on
+      psbfb (colours correct, but drawn in native coordinates it appeared rotated 90°) and
+      serves a root shell on 127.0.0.1:2323 (`adb forward`).
       adbd keeps running. Backlight: /sys/class/backlight/psb-bl (was 23).
 - [ ] Milestone 2: Goodix touch (event2) → draw where touched; backlight up
 - [ ] Milestone 3: real text with a font
