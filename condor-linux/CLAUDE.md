@@ -105,7 +105,15 @@ anything about OS options, firmware or flashing).
       psbfb (colours correct, but drawn in native coordinates it appeared rotated 90°) and
       serves a root shell on 127.0.0.1:2323 (`adb forward`).
       adbd keeps running. Backlight: /sys/class/backlight/psb-bl (was 23).
-- [ ] Milestone 2: Goodix touch (event2) → draw where touched; backlight up
+- [x] Display fix: the panel scans out the read()/write() view of fb0; the mmap view is shifted
+      299 rows and ends early. condor-init draws into a RAM back buffer and flushes dirty rows
+      with write(); verified by read-back. Backlight set to 80/100 at start.
+- [x] `condor takeover push <bin>` / `restart` (restart = touch trigger + `start flash_recovery`,
+      so init launches it detached; `su ... &` doesn't survive).
+- [x] **Milestone 2** (2026-10-03): touch works. Goodix event2, protocol B, raw X 0..1920 /
+      Y 0..1200 in native fb orientation, mapped through the same Rot90 → strokes follow the
+      finger. Follow-up: some touch-downs arrive with raw Y=0 in their first frame (logged as
+      logical x=1199) → stray dot at the right edge; wait for both axes before drawing.
 - [ ] Milestone 3: real text with a font
 - [ ] Reader code: `os/` folder, PC fake screen, milestone 1 (pixels + text)
 
