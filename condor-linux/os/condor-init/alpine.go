@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"strings"
 )
@@ -24,7 +25,8 @@ func alpineVersion() string {
 }
 
 // alpineConfig is (re)written into the Alpine root at every start: the prompt, and the
-// proxy that carries internet over USB (condor net on the PC).
+// proxy (condor-init's, on 127.0.0.1:3128): through the PC when condor net runs, otherwise
+// straight out over Wi-Fi.
 var alpineConfig = map[string]string{
 	"/etc/profile.d/condor.sh": `PS1='[\u@\h \W]\$ '
 alias ll='ls -l'
@@ -41,8 +43,28 @@ func configureAlpine() {
 	for p, content := range alpineConfig {
 		os.WriteFile(alpineRoot+p, []byte(content), 0o644)
 	}
+	os.MkdirAll(alpineRoot+"/usr/local/bin", 0o755)
+	os.WriteFile(alpineRoot+"/usr/local/bin/wifi", []byte(wifiScript), 0o755)
+	os.Chmod(alpineRoot+"/usr/local/bin/wifi", 0o755)
 	repos := alpineRoot + "/etc/apk/repositories"
 	if b, err := os.ReadFile(repos); err == nil {
 		os.WriteFile(repos, []byte(strings.ReplaceAll(string(b), "https://", "http://")), 0o644)
 	}
+}
+
+// alpineBoot prepares Alpine at startup (config, mounts) and reconnects to the saved Wi-Fi
+// network, so the tablet is online without the PC.
+func alpineBoot() {
+	if !alpineInstalled() {
+		return
+	}
+	configureAlpine()
+	if err := alpineMounts(); err != nil {
+		log.Printf("alpine mounts: %v", err)
+		return
+	}
+	if err := runInAlpine("/usr/local/bin/wifi", "boot"); err != nil {
+		log.Printf("wifi boot: %v", err)
+	}
+	log.Printf("wifi boot done")
 }

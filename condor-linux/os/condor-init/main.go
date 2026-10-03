@@ -88,6 +88,7 @@ func main() {
 		}
 	}
 	go runTunnel()
+	go alpineBoot()
 	serveShell()
 }
 

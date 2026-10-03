@@ -19,7 +19,8 @@ import (
 //	PC ── adb forward ──> tunnelAddr: "DATA 7\n", then the two are spliced together
 //
 // The PC end speaks HTTP proxy (CONNECT and plain GET), so anything that honours
-// http_proxy/https_proxy (apk, wget, curl, git) reaches the internet through the PC.
+// http_proxy/https_proxy (apk, wget, curl, git) reaches the internet through the PC. When no
+// PC is connected, condor-init answers the proxy itself and goes out over Wi-Fi (proxy.go).
 const (
 	tunnelAddr = "127.0.0.1:2325"
 	proxyAddr  = "127.0.0.1:3128"
@@ -120,10 +121,12 @@ func (t *tunnel) serveProxy(addr string) error {
 		}
 		t.mu.Lock()
 		ctrl := t.ctrl
-		if ctrl == nil {
+		if ctrl == nil { // no PC: go straight out over the tablet's own network (Wi-Fi)
 			t.mu.Unlock()
-			io.WriteString(client, "HTTP/1.1 503 No internet: run 'condor net' on the PC\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-			client.Close()
+			go func() {
+				defer client.Close()
+				serveProxyConn(client, directDial)
+			}()
 			continue
 		}
 		t.next++

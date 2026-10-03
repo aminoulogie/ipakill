@@ -22,10 +22,11 @@ func TestTunnelSplicesTabletClientToPC(t *testing.T) {
 	go tn.serveProxy(pl.Addr().String())
 	time.Sleep(50 * time.Millisecond)
 
-	// Before the PC connects, programs get a clear 503.
+	// Before the PC connects, condor-init proxies directly; an unreachable host gives a 502.
 	c, _ := net.Dial("tcp", pl.Addr().String())
+	fmt.Fprint(c, "GET http://127.0.0.1:1/ HTTP/1.1\r\nHost: x\r\n\r\n")
 	b, _ := io.ReadAll(c)
-	if !strings.Contains(string(b), "503") {
+	if !strings.Contains(string(b), "502") {
 		t.Fatalf("without PC: %q", b)
 	}
 
