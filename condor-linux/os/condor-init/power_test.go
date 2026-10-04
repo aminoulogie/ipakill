@@ -14,6 +14,10 @@ func testConsole(t *testing.T) *console {
 	}
 	// Defaults, whatever a settings file on this machine says.
 	c.cfg = savedSettings{Brightness: 80, ScreenOff: 5}
+	// A fresh dictionary of saved words in a temp folder, no background fetching.
+	oldDir, oldDict, oldBg := dictDir, dict, dictBackground
+	dictDir, dict, dictBackground = t.TempDir(), newDictStore(), false
+	t.Cleanup(func() { dictDir, dict, dictBackground = oldDir, oldDict, oldBg })
 	setPalette(true)
 	return c
 }

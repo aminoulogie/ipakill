@@ -116,6 +116,8 @@ type readerPrefs struct {
 	TranslateTo  string  `json:"translate_to"`
 	GoalMinutes  int     `json:"goal_minutes"`
 	BooksPerYear int     `json:"books_per_year"`
+	// NoOfflineDict: don't fetch the open book's words for offline Look Up (dict.go).
+	NoOfflineDict bool `json:"no_offline_dict"`
 }
 
 type bookProgress struct {
@@ -437,6 +439,7 @@ func (c *console) openBookAt(path string) {
 	c.lastRead = time.Now()
 	c.saveProgress() // opened now: first under Continue
 	go c.loadTitles(c.book)
+	c.startDictFetch() // its words, for Look Up without internet
 	c.setMode(modeReader)
 }
 

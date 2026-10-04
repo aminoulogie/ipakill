@@ -7,8 +7,22 @@ import (
 )
 
 // Every transition ends exactly on the screen it leads to, after drawing frames.
+// sameBelowBar compares two native-layout screens below the status bar: the bar's clock can
+// tick between two draws.
+func sameBelowBar(c *console, a, b []byte) bool {
+	for fy := 0; fy < c.s.fbH; fy++ {
+		row := fy*c.s.stride + 4*c.barH // logical y >= barH is native x >= barH
+		if !bytes.Equal(a[row:fy*c.s.stride+4*c.s.fbW], b[row:fy*c.s.stride+4*c.s.fbW]) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 	c := testConsole(t)
+	drawMu.Lock() // like the touch loop: background loaders wait
+	defer drawMu.Unlock()
 	c.cfg.Animations = true
 	c.showPage()
 	for _, tc := range []struct {
@@ -22,7 +36,7 @@ func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 		}
 		end := append([]byte(nil), c.s.buf...)
 		c.redrawAll()
-		if !bytes.Equal(end, c.s.buf) {
+		if !sameBelowBar(c, end, c.s.buf) {
 			t.Errorf("%s: ended off the new screen", tc.kind)
 		}
 	}

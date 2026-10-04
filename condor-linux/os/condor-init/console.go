@@ -50,6 +50,7 @@ type console struct {
 	kb             *keyboard
 	tu             termUI                   // scrollback, selection, copy and paste (termui.go)
 	locked         bool                     // the lock screen is up (lock.go)
+	df             dictFetch                // the open book's words, saved for offline Look Up (dict.go)
 	glyphs         map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
 	barH           int                      // status bar height at the top
 	screenOn       bool

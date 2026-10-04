@@ -344,6 +344,13 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       (Settings > Display > Lock Screen switch, cfg no_lock_screen). Screen off: cpufreq
       governors → powersave and `iw dev wlan0 set power_save on`, restored on wake (only when
       /system/bin/linker exists, i.e. on the tablet). Not verified on the tablet yet.
+- [x] **Offline dictionary** (2026-10-04, dict.go): every Look Up result is saved in
+      /data/condor/dict/<lang>.jsonl (append-only; "none" entries for words with no page), and
+      Look Up asks the saved words first (lookupSaved). Opening a book fetches its distinct words
+      (lowercase, elisions stripped, from the current chapter on) in the background, one every
+      300 ms; no internet = retry each minute. Customize: Offline Dictionary switch
+      (prefs no_offline_dict) + status line. Tests: dict_test.go (testConsole isolates dictDir,
+      no background fetch).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

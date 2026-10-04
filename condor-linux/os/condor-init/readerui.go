@@ -593,7 +593,7 @@ func (c *console) drawSettings(p *page, th readerTheme) {
 	// Text and reading.
 	apText(p.img, f.captionBold, x+8, y, secondary, "TEXT & READING")
 	y += 16
-	const rows, rh = 6, 88
+	const rows, rh = 7, 88
 	grp = image.Rect(x, y, x+iw, y+rows*rh)
 	ui.RoundRect(p.img, grp, 22, fill)
 	row := func(i int, name string) (cy, right int) {
@@ -625,8 +625,11 @@ func (c *console) drawSettings(p *page, th readerTheme) {
 	iconChevronRight(p.img, right-12, cy, secondary)
 	p.buttons = append(p.buttons, button{"r:set:trnext", image.Rect(x+iw/2, cy-rh/2, x+iw, cy+rh/2)})
 	stepper(5, "Daily Goal", "r:set:goal", fmt.Sprintf("%d min", pr.GoalMinutes))
+	cy, right = row(6, "Offline Dictionary")
+	sw = iosSwitch(p.img, right, cy, !pr.NoOfflineDict, th.dark)
+	p.buttons = append(p.buttons, button{"r:set:offdict", sw.Inset(-14)})
 	y = grp.Max.Y + 34
-	drawParagraphs(p.img, f.caption, fmt.Sprintf("Line by line: tap for the next line, the left edge to go back, hold a line to jump to it. Today you read %d of %d minutes.",
+	drawParagraphs(p.img, f.caption, c.dictStatus()+fmt.Sprintf(" Today you read %d of %d minutes.",
 		c.lib.readingToday(), pr.GoalMinutes), x+8, y-26, iw-16, 34, r.Max.Y-10, secondary)
 	p.buttons = append(p.buttons, button{"r:panel", r})
 }
@@ -688,7 +691,7 @@ func (c *console) ask(kind string) {
 		var tr *translation
 		var err error
 		if kind == "meaning" {
-			look, err = lookupWord(ctx, pn.query, from)
+			look, err = lookupSaved(ctx, pn.query, from)
 		} else {
 			tr, err = translateText(ctx, pn.query, from, pn.lang)
 		}
@@ -742,7 +745,7 @@ func (c *console) keepWord() {
 	if e.Meaning == "" {
 		word, lang := e.Word, e.Lang
 		go func() {
-			look, err := lookupWord(context.Background(), word, lang)
+			look, err := lookupSaved(context.Background(), word, lang)
 			if err != nil || look == nil {
 				return
 			}
@@ -938,6 +941,15 @@ func (c *console) applySetting(s string) bool {
 		}
 		c.invalidatePage()
 		return c.theme().bold != wasBold // Bold sets the text in another face: lay it out again
+	case "offdict":
+		pr.NoOfflineDict = !pr.NoOfflineDict
+		if pr.NoOfflineDict {
+			c.df.gen++ // stops the fetch
+			c.df.total = 0
+		} else {
+			c.startDictFetch()
+		}
+		c.invalidatePage()
 	case "turn":
 		if arg == "slide" || arg == "curl" || arg == "none" {
 			pr.PageTurn = arg

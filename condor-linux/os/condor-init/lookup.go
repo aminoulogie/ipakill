@@ -257,9 +257,19 @@ func lookupWord(ctx context.Context, word, lang string) (*wordLookup, error) {
 	}
 	if !reached {
 		log.Printf("lookup %q: %v", term, lastErr)
-		return nil, errors.New("could not reach the dictionary: is Wi-Fi on?")
+		return nil, errUnreachable
 	}
-	return nil, fmt.Errorf("no definition found for \"%s\"", term)
+	return nil, &noDefinitionError{term}
+}
+
+// errUnreachable: no dictionary answered (no internet).
+var errUnreachable = errors.New("could not reach the dictionary: is Wi-Fi on?")
+
+// noDefinitionError: the dictionary answered, and has no entry for the word.
+type noDefinitionError struct{ term string }
+
+func (e *noDefinitionError) Error() string {
+	return fmt.Sprintf("no definition found for \"%s\"", e.term)
 }
 
 // elision: French and Italian articles and pronouns run into the next word ("l'asile",
