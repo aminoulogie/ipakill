@@ -106,8 +106,13 @@ func (c *console) redrawAll() {
 	c.s.markRows(0, c.s.fbH-1)
 	c.drawBar()
 	if c.mode == modeTerminal {
-		c.t.MarkAll()
-		c.render()
+		if c.tu.back > 0 || c.tu.selOn {
+			c.renderView()
+		} else {
+			c.t.MarkAll()
+			c.render()
+			c.drawShortcuts()
+		}
 		if c.kb.visible {
 			c.kb.draw()
 		}

@@ -1,6 +1,10 @@
 package vt
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func feed(t *Term, s string) { t.Write([]byte(s)) }
 
@@ -97,5 +101,36 @@ func TestResizeKeepsCursorLine(t *testing.T) {
 	feed(term, "\r\nf") // writing still works at the new size
 	if term.Text(3) != "f" {
 		t.Fatalf("row 3 = %q", term.Text(3))
+	}
+}
+
+func TestScrollback(t *testing.T) {
+	term := New(10, 3)
+	for i := 0; i < 6; i++ {
+		feed(term, fmt.Sprintf("line%d\r\n", i))
+	}
+	// Screen: line4, line5, (empty); scrollback: line0..line3.
+	if term.History() != 4 {
+		t.Fatalf("history %d", term.History())
+	}
+	text := func(cells []Cell) string {
+		s := ""
+		for _, c := range cells {
+			s += string(c.Ch)
+		}
+		return strings.TrimRight(s, " ")
+	}
+	if got := text(term.View(0, 0)); got != "line4" {
+		t.Errorf("live top %q", got)
+	}
+	if got := text(term.View(0, 2)); got != "line2" {
+		t.Errorf("2 back %q", got)
+	}
+	if got := text(term.View(0, 99)); got != "line0" {
+		t.Errorf("far back %q", got)
+	}
+	feed(term, "\x1b[H\x1b[2J\x1b[3J") // what `clear` sends
+	if term.History() != 0 {
+		t.Error("clear should forget the scrollback")
 	}
 }

@@ -45,6 +45,7 @@ type Term struct {
 	top, bot      int // scroll region, inclusive
 	cursorVisible bool
 	dirty         []bool
+	history       [][]Cell // lines that scrolled off the top, oldest first (scrollback)
 
 	state   parseState
 	params  []int
@@ -227,8 +228,19 @@ func (t *Term) lineFeed() {
 	}
 }
 
+// MaxHistory is how many lines of scrollback are kept.
+const MaxHistory = 3000
+
 func (t *Term) scrollUp(top, bot, n int) {
 	n = min(n, bot-top+1)
+	if top == 0 && bot == t.Rows-1 { // the whole screen scrolls: keep what leaves it
+		for y := 0; y < n; y++ {
+			t.history = append(t.history, append([]Cell(nil), t.cells[y*t.Cols:(y+1)*t.Cols]...))
+		}
+		if extra := len(t.history) - MaxHistory; extra > 0 {
+			t.history = append(t.history[:0:0], t.history[extra:]...)
+		}
+	}
 	copy(t.cells[top*t.Cols:], t.cells[(top+n)*t.Cols:(bot+1)*t.Cols])
 	t.clearRows(bot-n+1, bot)
 	for y := top; y <= bot; y++ {
@@ -361,6 +373,8 @@ func (t *Term) dispatch(final byte) {
 		case 1:
 			t.clearRows(0, t.cy-1)
 			t.clearCells(t.cy, 0, t.cx+1)
+		case 3: // clear also forgets the scrollback
+			t.history = nil
 		default:
 			t.clearRows(0, t.Rows-1)
 		}
@@ -497,4 +511,33 @@ func (t *Term) MarkAll() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.markAll()
+}
+
+// History is how many lines of scrollback there are.
+func (t *Term) History() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.history)
+}
+
+// View returns row y of the screen scrolled back by back lines (0 = live): the scrollback
+// followed by the screen, as one long page. Rows are padded or cut to the current width.
+func (t *Term) View(y, back int) []Cell {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	back = min(max(back, 0), len(t.history))
+	v := len(t.history) - back + y
+	row := make([]Cell, t.Cols)
+	for i := range row {
+		row[i] = Cell{Ch: ' ', FG: Default, BG: Default}
+	}
+	switch {
+	case v < 0:
+	case v < len(t.history):
+		copy(row, t.history[v])
+	case v-len(t.history) < t.Rows:
+		sy := v - len(t.history)
+		copy(row, t.cells[sy*t.Cols:(sy+1)*t.Cols])
+	}
+	return row
 }

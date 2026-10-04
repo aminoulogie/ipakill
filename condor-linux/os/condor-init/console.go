@@ -25,15 +25,16 @@ const consoleAddr = "127.0.0.1:2323"
 
 const consoleFontSize = 26 // ~73x57 cells on the 1200x1920 portrait screen
 
-// Colours: black background like a Linux tty, with the Tomorrow Night palette for ANSI colours.
+// Colours: black background, and Apple's dark-mode system colours for the 16 ANSI ones
+// (red, green, yellow, blue, purple, teal...), so the terminal matches the rest of condor.
 var (
-	consoleFG = color.RGBA{220, 223, 221, 255}
-	consoleBG = color.RGBA{0, 0, 0, 255}
+	consoleFG = rgb(0xe5e5ea)
+	consoleBG = rgb(0x000000)
 	ansi      = [16]color.RGBA{
-		{40, 42, 46, 255}, {204, 102, 102, 255}, {181, 189, 104, 255}, {240, 198, 116, 255},
-		{129, 162, 190, 255}, {178, 148, 187, 255}, {138, 190, 183, 255}, {197, 200, 198, 255},
-		{112, 120, 128, 255}, {230, 120, 120, 255}, {200, 210, 120, 255}, {250, 215, 140, 255},
-		{150, 185, 215, 255}, {200, 170, 210, 255}, {160, 210, 200, 255}, {255, 255, 255, 255},
+		rgb(0x48484a), rgb(0xff453a), rgb(0x32d74b), rgb(0xffd60a),
+		rgb(0x0a84ff), rgb(0xbf5af2), rgb(0x64d2ff), rgb(0xe5e5ea),
+		rgb(0x8e8e93), rgb(0xff6961), rgb(0x30db5b), rgb(0xffd426),
+		rgb(0x409cff), rgb(0xda8fff), rgb(0x70d7ff), rgb(0xffffff),
 	}
 )
 
@@ -47,6 +48,7 @@ type console struct {
 	mu             sync.Mutex
 	master         *os.File // the shell's pty, nil between shells
 	kb             *keyboard
+	tu             termUI                   // scrollback, selection, copy and paste (termui.go)
 	glyphs         map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
 	barH           int                      // status bar height at the top
 	screenOn       bool
@@ -121,7 +123,7 @@ func newConsole(s *Screen) (*console, error) {
 	}
 	c.rf = c.readerFontsNow()
 	c.words = loadWords()
-	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight)
+	cols, rows := (s.W-2*consolePad)/c.cw, c.rowsFor(s.H-kbHeight-accH)
 	c.offX, c.offY = (s.W-cols*c.cw)/2, c.barH+consolePad/2
 	c.t = vt.New(cols, rows)
 	c.t.Reply = c.input
@@ -157,11 +159,7 @@ func (c *console) rowsFor(h int) int { return (h - c.barH - consolePad) / c.ch }
 // grid, the shell's window size (programs get SIGWINCH), and a full redraw.
 // Caller holds drawMu (the keyboard calls it from a touch).
 func (c *console) keyboardShown(visible bool) {
-	h := c.s.H
-	if visible {
-		h -= kbHeight
-	}
-	c.t.Resize(c.t.Cols, c.rowsFor(h))
+	c.t.Resize(c.t.Cols, c.rowsFor(c.termAreaH()))
 	c.mu.Lock()
 	if c.master != nil {
 		setWinsize(c.master, c.t.Cols, c.t.Rows)
@@ -190,8 +188,10 @@ func (c *console) touchLoop() {
 					continue
 				}
 				switch {
-				case c.mode == modeTerminal:
+				case c.mode == modeTerminal && c.kb.visible && p.Y >= c.kb.y0:
 					c.kb.touch(p)
+				case c.mode == modeTerminal:
+					c.termTouch(p) // scrollback, selection, the shortcuts bar
 				case c.mode == modeStore && c.store.typing && c.skb.visible && p.Y >= c.skb.y0:
 					c.skb.touch(p)
 				case c.mode == modeWords && c.wui.edit && c.skb.visible && p.Y >= c.skb.y0:
@@ -222,6 +222,15 @@ func colorOf(i uint8, def color.RGBA, bold bool) color.RGBA {
 func (c *console) render() {
 	if !c.screenOn || c.mode != modeTerminal {
 		return // dirty marks stay; redrawAll repaints everything when the terminal shows again
+	}
+	if c.tu.back > 0 {
+		return // reading the scrollback: new output waits until the view goes live again
+	}
+	if c.tu.selOn {
+		c.t.TakeDirty()
+		c.renderView()
+		c.s.Flush()
+		return
 	}
 	rows := c.t.TakeDirty()
 	if len(rows) == 0 {
@@ -282,7 +291,8 @@ func banner() string {
 	if v := alpineVersion(); v != "" {
 		system = "Alpine Linux " + v
 	}
-	return fmt.Sprintf("\r\ncondor linux (tty1)   %s   kernel %s\r\n\r\ncondor login: root (automatic login)\r\n\r\n",
+	return fmt.Sprintf("\r\n\x1b[1;36mcondor\x1b[0m   \x1b[32m%s\x1b[0m   \x1b[90mkernel %s\x1b[0m\r\n"+
+		"\x1b[90mswipe to scroll back · hold a finger to select text\x1b[0m\r\n\r\n",
 		system, strings.TrimSpace(string(rel)))
 }
 

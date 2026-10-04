@@ -327,6 +327,12 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       GOTOOLCHAIN=auto), then the same detached installer as wifi-update (backup, restart,
       rollback); log in /tmp/condor-update.log. **Verified on the tablet 2026-10-04 (DONE).** First time (before condor-init carries it):
       curl the raw update.sh (busybox wget https went through the proxy's own fetch, which had no CA certs before c930cc5). Dry-run tested on the PC (fetch, build, installer syntax).
+- [x] **Easier terminal** (2026-10-04, termui.go, vt scrollback): 3000 lines of scrollback
+      (vt keeps lines that scroll off a full-screen region; `clear`'s ESC[3J forgets them),
+      swipe down/up to read back (pill "N lines back · tap to return"; output waits while
+      scrolled back), hold 350 ms to select + drag, shortcuts bar over the keyboard (Copy ·
+      Paste · update · clear · ls · cd .. · wifi). Apple dark system colours for ANSI,
+      coloured prompt and `ls --color`. Test: termui_test.go.
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

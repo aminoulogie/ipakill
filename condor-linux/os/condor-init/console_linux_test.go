@@ -47,7 +47,7 @@ func TestConsoleRunsAShell(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !strings.Contains(screen, "hello from condor\n") || !strings.Contains(screen, "condor login: root") {
+	if !strings.Contains(screen, "hello from condor\n") || !strings.Contains(screen, "hold a finger to select text") {
 		t.Fatalf("screen:\n%s", screen)
 	}
 	if out := os.Getenv("CONSOLE_PNG"); out != "" {

@@ -30,9 +30,10 @@ func alpineVersion() string {
 // proxy (condor-init's, on 127.0.0.1:3128): through the PC when condor net runs, otherwise
 // straight out over Wi-Fi.
 var alpineConfig = map[string]string{
-	"/etc/profile.d/condor.sh": `PS1='[\u@\h \W]\$ '
-alias ll='ls -l'
-alias la='ls -la'
+	"/etc/profile.d/condor.sh": `PS1='\[\033[1;32m\]\u@\h\[\033[0m\] \[\033[1;34m\]\W\[\033[0m\] \$ '
+alias ls='ls --color=auto'
+alias ll='ls -l --color=auto'
+alias la='ls -la --color=auto'
 export TZ=WAT-1
 export http_proxy=http://` + proxyAddr + ` https_proxy=http://` + proxyAddr + `
 export HTTP_PROXY=$http_proxy HTTPS_PROXY=$https_proxy no_proxy=localhost,127.0.0.1
