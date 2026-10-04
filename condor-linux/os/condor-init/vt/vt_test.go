@@ -148,3 +148,22 @@ func TestRichColoursMapToTheSixteen(t *testing.T) {
 		}
 	}
 }
+
+// Moving the cursor alone (arrow keys, backspace) must redraw its row, or the screen shows
+// the cursor where it was.
+func TestCursorMoveMarksItsRow(t *testing.T) {
+	term := New(20, 3)
+	feed(term, "hello")
+	term.TakeDirty()
+	feed(term, "\b\b")
+	if rows := term.TakeDirty(); len(rows) != 1 || rows[0] != 0 {
+		t.Fatalf("after backspaces dirty %v", rows)
+	}
+	feed(term, "\x1b[2;3H") // to another row: both rows
+	if rows := term.TakeDirty(); len(rows) != 2 {
+		t.Fatalf("after a jump dirty %v", rows)
+	}
+	if rows := term.TakeDirty(); len(rows) != 0 {
+		t.Fatalf("nothing moved, dirty %v", rows)
+	}
+}

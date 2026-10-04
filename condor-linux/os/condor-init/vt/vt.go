@@ -46,6 +46,9 @@ type Term struct {
 	cursorVisible bool
 	dirty         []bool
 	history       [][]Cell // lines that scrolled off the top, oldest first (scrollback)
+	shownX        int      // where the cursor was at the last TakeDirty (its row needs a redraw
+	shownY        int      // when it moves, even if no text changed: arrow keys, backspace)
+	shownVis      bool
 
 	state   parseState
 	params  []int
@@ -112,6 +115,13 @@ func (t *Term) Snapshot(y int) (row []Cell, cursorX int) {
 func (t *Term) TakeDirty() []int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.cx != t.shownX || t.cy != t.shownY || t.cursorVisible != t.shownVis {
+		if t.shownY < t.Rows {
+			t.dirty[t.shownY] = true // where the cursor was drawn
+		}
+		t.dirty[t.cy] = true // where it is now
+		t.shownX, t.shownY, t.shownVis = t.cx, t.cy, t.cursorVisible
+	}
 	var rows []int
 	for y, d := range t.dirty {
 		if d {
