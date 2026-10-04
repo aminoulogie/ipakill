@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,12 +51,21 @@ var dialer = &net.Dialer{Timeout: 15 * time.Second, Resolver: resolver}
 
 func directDial(addr string) (net.Conn, error) { return dialer.Dial("tcp", addr) }
 
-var directTransport = &http.Transport{
-	Proxy:                 nil,
-	DisableCompression:    true,
-	ResponseHeaderTimeout: 60 * time.Second,
-	DialContext:           dialer.DialContext,
-}
+// proxyRoots are the certificates the proxy trusts when it fetches an https:// URL itself
+// (busybox wget asks for those with a plain GET, not CONNECT). condor-init runs in
+// Android's root, where Go finds no certificates, so it takes Alpine's. Tests replace it.
+var proxyRoots = alpineRoots
+
+var directTransport = sync.OnceValue(func() *http.Transport {
+	return &http.Transport{
+		Proxy:                 nil,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 60 * time.Second,
+		DialContext:           dialer.DialContext,
+		TLSClientConfig:       &tls.Config{RootCAs: proxyRoots()},
+		TLSHandshakeTimeout:   20 * time.Second,
+	}
+})
 
 // serveProxyConn speaks HTTP proxy on one connection: CONNECT tunnels (https) and
 // absolute-URL requests (http), with keep-alive. dial opens CONNECT targets.
@@ -89,14 +102,19 @@ func serveProxyConn(c net.Conn, dial func(string) (net.Conn, error)) {
 		}
 		req.RequestURI = ""
 		req.Header.Del("Proxy-Connection")
-		resp, err := directTransport.RoundTrip(req)
+		resp, err := directTransport().RoundTrip(req)
 		if err != nil && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
 			// Right after boot the network can still be settling (DNS, DHCP): retry once.
 			time.Sleep(3 * time.Second)
-			resp, err = directTransport.RoundTrip(req)
+			resp, err = directTransport().RoundTrip(req)
 		}
 		if err != nil {
+			log.Printf("proxy: %s: %v", req.URL, err)
 			msg := "no internet: connect Wi-Fi (wifi connect SSID password) or run 'condor net' on the PC"
+			var ce *tls.CertificateVerificationError
+			if errors.As(err, &ce) {
+				msg = "secure connection refused: " + strings.ReplaceAll(ce.Err.Error(), "\n", " ")
+			}
 			fmt.Fprintf(c, "HTTP/1.1 502 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", msg)
 			return
 		}
