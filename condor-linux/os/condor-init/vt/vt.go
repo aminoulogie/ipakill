@@ -460,17 +460,19 @@ func (t *Term) sgr() {
 			t.fg = uint8(p - 90 + 8)
 		case p >= 100 && p <= 107:
 			t.bg = uint8(p - 100 + 8)
-		case p == 38 || p == 48: // 256-colour / truecolour: map 5;n into 0..15, skip the rest
+		case p == 38 || p == 48: // 256-colour (5;n) and truecolour (2;r;g;b): the nearest of the 16
+			c, ok := uint8(0), false
 			if i+2 < len(t.params) && t.params[i+1] == 5 {
-				c := uint8(t.params[i+2] % 16)
-				if p == 38 {
-					t.fg = c
-				} else {
-					t.bg = c
-				}
+				c, ok = nearest16(rgb256(t.params[i+2]))
 				i += 2
 			} else if i+4 < len(t.params) && t.params[i+1] == 2 {
+				c, ok = nearest16([3]int{t.params[i+2], t.params[i+3], t.params[i+4]})
 				i += 4
+			}
+			if ok && p == 38 {
+				t.fg = c
+			} else if ok {
+				t.bg = c
 			}
 		}
 	}
@@ -540,4 +542,54 @@ func (t *Term) View(y, back int) []Cell {
 		copy(row, t.cells[sy*t.Cols:(sy+1)*t.Cols])
 	}
 	return row
+}
+
+// xterm16 is xterm's own 16 colours: what programs mean by each index, used to pick the
+// nearest one for a 256-colour or truecolour request (the screen then draws condor's palette).
+var xterm16 = [16][3]int{
+	{0, 0, 0}, {205, 0, 0}, {0, 205, 0}, {205, 205, 0}, {0, 0, 238}, {205, 0, 205}, {0, 205, 205}, {229, 229, 229},
+	{127, 127, 127}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0}, {92, 92, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255},
+}
+
+// rgb256 is xterm's 256-colour palette entry n.
+func rgb256(n int) [3]int {
+	switch {
+	case n < 0 || n > 255:
+		return [3]int{229, 229, 229}
+	case n < 16:
+		return xterm16[n]
+	case n < 232: // 6x6x6 cube
+		n -= 16
+		lv := func(v int) int {
+			if v == 0 {
+				return 0
+			}
+			return 55 + 40*v
+		}
+		return [3]int{lv(n / 36), lv(n / 6 % 6), lv(n % 6)}
+	default: // greys
+		g := 8 + 10*(n-232)
+		return [3]int{g, g, g}
+	}
+}
+
+// nearest16 picks the closest of the 16 colours. A colour with some saturation keeps its
+// hue (greys only match greys), so syntax colours don't all turn grey or white.
+func nearest16(c [3]int) (uint8, bool) {
+	sat := max(c[0], c[1], c[2]) - min(c[0], c[1], c[2])
+	best, bestD := 0, 1<<62
+	for i, p := range xterm16 {
+		psat := max(p[0], p[1], p[2]) - min(p[0], p[1], p[2])
+		if (sat > 40) != (psat > 40) {
+			continue
+		}
+		d := 0
+		for k := 0; k < 3; k++ {
+			d += (c[k] - p[k]) * (c[k] - p[k])
+		}
+		if d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return uint8(best), true
 }

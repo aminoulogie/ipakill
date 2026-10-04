@@ -134,3 +134,17 @@ func TestScrollback(t *testing.T) {
 		t.Error("clear should forget the scrollback")
 	}
 }
+
+func TestRichColoursMapToTheSixteen(t *testing.T) {
+	term := New(20, 2)
+	feed(term, "\x1b[38;5;196mR\x1b[38;5;34mG\x1b[38;2;80;140;255mB\x1b[38;5;245mg\x1b[48;5;226mY\x1b[0m")
+	row, _ := term.Snapshot(0)
+	want := []struct {
+		fg, bg uint8
+	}{{9, Default}, {2, Default}, {12, Default}, {8, Default}, {8, 11}}
+	for i, w := range want {
+		if row[i].FG != w.fg || row[i].BG != w.bg {
+			t.Errorf("cell %d (%c): fg %d bg %d, want %d %d", i, row[i].Ch, row[i].FG, row[i].BG, w.fg, w.bg)
+		}
+	}
+}

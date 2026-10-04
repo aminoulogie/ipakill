@@ -34,6 +34,9 @@ var alpineConfig = map[string]string{
 alias ls='ls --color=auto'
 alias ll='ls -l --color=auto'
 alias la='ls -la --color=auto'
+# Code in colour: "apk add bat" once, then "bat file.go" (the ansi theme uses the terminal's
+# own 16 colours, the ones condor draws best).
+export BAT_THEME=ansi BAT_PAGER='less -R'
 export TZ=WAT-1
 export http_proxy=http://` + proxyAddr + ` https_proxy=http://` + proxyAddr + `
 export HTTP_PROXY=$http_proxy HTTPS_PROXY=$https_proxy no_proxy=localhost,127.0.0.1
