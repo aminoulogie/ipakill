@@ -631,14 +631,30 @@ func (c *console) drawSettings(p *page, th readerTheme) {
 	p.buttons = append(p.buttons, button{"r:panel", r})
 }
 
+// drawToast lays the current toast over any page (outside the reader). Caller holds drawMu.
+func (c *console) drawToast() {
+	if c.rd.toast == "" || !time.Now().Before(c.rd.toastUntil) {
+		return
+	}
+	f := apple()
+	w := ui.TextWidth(f.callout, c.rd.toast) + 80
+	img := image.NewRGBA(image.Rect(0, 0, w, 76))
+	ui.Fill(img, img.Rect, apBG)
+	ui.RoundRect(img, img.Rect, 38, rgb(0x2c2c2e))
+	apTextCenter(img, f.callout, w/2, 38, rgb(0xffffff), c.rd.toast)
+	c.s.blitRGBA(img, (c.s.W-w)/2, c.barH+120)
+}
+
 func (c *console) toastMsg(s string) {
 	c.rd.toast, c.rd.toastUntil = s, time.Now().Add(2*time.Second)
 	time.AfterFunc(2100*time.Millisecond, func() {
 		drawMu.Lock()
 		defer drawMu.Unlock()
-		if c.mode == modeReader && c.rd.toast == s && time.Now().After(c.rd.toastUntil) {
+		if c.rd.toast == s && time.Now().After(c.rd.toastUntil) {
 			c.rd.toast = ""
-			c.showPage()
+			if c.mode != modeTerminal {
+				c.showPage()
+			}
 		}
 	})
 }

@@ -80,6 +80,9 @@ func (c *console) showPage() {
 		c.page = c.booksHomePage()
 	}
 	c.s.blitRGBA(c.page.img, 0, c.barH)
+	if c.mode != modeReader { // the reader draws its own, under its overlays
+		c.drawToast()
+	}
 	if (c.mode == modeStore && c.store.typing) || (c.mode == modeWords && c.wui.edit) {
 		c.skb.draw()
 	}

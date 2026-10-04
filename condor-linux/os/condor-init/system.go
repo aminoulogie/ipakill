@@ -173,6 +173,13 @@ func (c *console) settingsPage() *page {
 			value(rows[0], "IP Address", ip)
 			value(rows[1], "SSH", "root@"+ip)
 			y += 2 * rh
+			if a := sendAddress(); a != "" {
+				header("Send to Books")
+				rows = groupRows(img, x, y, pw, 1, rh)
+				value(rows[0], "From a phone's browser", a)
+				y += rh
+				footer("On a phone or computer on the same Wi-Fi, open this address to send EPUB books to the Library.")
+			}
 		}
 		footer("To join a network, open Terminal and type: wifi connect \"name\" \"password\". The network is joined again at every start.")
 	case "battery":

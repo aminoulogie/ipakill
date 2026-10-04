@@ -115,12 +115,20 @@ func (c *console) shelfPage() *page {
 
 	c.booksTabs(p, "tab:library")
 	apText(img, f.serifLarge, mx, 228, apLabel, "Library")
+	if a := sendAddress(); a != "" { // Send to Books: where a phone sends books from
+		apTextRight(img, f.caption, c.s.W-mx, 190, apSecondary, "Send books from your phone:")
+		apTextRight(img, f.headline, c.s.W-mx, 230, apBlue, a)
+	}
 
 	c.shelf = findBooks()
 	if len(c.shelf) == 0 {
 		apText(img, f.title, mx, 420, apLabel, "Your library is empty")
-		y := drawParagraphs(img, f.body, "Get free books from the Book Store, or copy EPUB files to the Books folder from your PC.",
-			mx, 460, c.s.W-2*mx, 48, 700, apSecondary)
+		hint := "Get free books from the Book Store, or copy EPUB files to the Books folder from your PC."
+		if a := sendAddress(); a != "" {
+			hint = "Get free books from the Book Store, or send EPUBs from your phone: open " + a +
+				" in its browser (same Wi-Fi)."
+		}
+		y := drawParagraphs(img, f.body, hint, mx, 460, c.s.W-2*mx, 48, 700, apSecondary)
 		r := image.Rect(mx, y+30, mx+420, y+130)
 		ui.RoundRect(img, r, 50, apBlue)
 		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, apOnBlue, "Book Store")
