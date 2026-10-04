@@ -29,10 +29,18 @@ func screenPNG(t *testing.T, s *Screen, path string) {
 // tapButton lifts a finger on the centre of a page button.
 func tapButton(t *testing.T, c *console, id string) {
 	t.Helper()
-	for _, b := range c.page.buttons {
+	all := append([]button(nil), c.page.buttons...)
+	for _, btns := range c.page.rowBtns {
+		all = append(all, btns...)
+	}
+	for _, b := range all {
 		if b.id == id {
 			p := b.r.Min.Add(b.r.Max).Div(2)
-			c.pageTap(p.X, p.Y+c.barH)
+			y := p.Y + c.barH // page to screen, through the scroll below the fixed header
+			if p.Y >= c.page.header {
+				y -= c.scrollY()
+			}
+			c.pageTap(p.X, y)
 			return
 		}
 	}

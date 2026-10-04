@@ -35,9 +35,14 @@ import (
 type storeTopic struct{ label, topic string }
 
 var storeTopics = []storeTopic{
-	{"popular", ""}, {"fiction", "fiction"}, {"sci-fi", "science fiction"}, {"mystery", "detective"},
-	{"romance", "love stories"}, {"adventure", "adventure"}, {"children", "children"},
-	{"history", "history"}, {"philosophy", "philosophy"}, {"poetry", "poetry"},
+	{"popular", ""}, {"fiction", "fiction"}, {"mystery", "detective"}, {"adventure", "adventure"},
+	{"sci-fi", "science fiction"}, {"romance", "love stories"}, {"fantasy", "fairy tales"},
+	{"horror", "horror"}, {"short stories", "short stories"}, {"humor", "humor"},
+	{"classics", "classics"}, {"drama", "drama"}, {"poetry", "poetry"}, {"children", "children"},
+	{"history", "history"}, {"biography", "biography"}, {"travel", "travel"},
+	{"philosophy", "philosophy"}, {"science", "science"}, {"psychology", "psychology"},
+	{"religion", "religion"}, {"war", "war"}, {"westerns", "western"}, {"cooking", "cooking"},
+	{"art", "art"}, {"music", "music"},
 }
 
 var storeLangs = []string{"", "en", "fr", "es", "de", "it", "ar"}
@@ -133,6 +138,9 @@ func (c *console) storeLoad(more bool) {
 	st := &c.store
 	st.gen++
 	st.started = true
+	if !more {
+		c.setScroll(modeStore, 0) // a new topic or search starts at the top
+	}
 	gen := st.gen
 	if more {
 		st.remotePage++
@@ -336,7 +344,7 @@ func (c *console) storeSearch() {
 const (
 	gridTop   = 620
 	gridCols  = 4
-	gridRows  = 2
+	gridRows  = 6 // a tall page that scrolls (scroll.go)
 	gridGap   = 36
 	gridCellW = (1200 - 2*48 - (gridCols-1)*gridGap) / gridCols // 249
 	gridCover = gridCellW * 3 / 2                               // 373
@@ -403,26 +411,38 @@ func (it *storeItem) badge() (string, bool) {
 	return "info only", false
 }
 
-// capsules lays out pill buttons across rows, wrapping at the margin.
-func capsules(p *page, x, y, right int, ids, labels []string, on string) int {
+// capsuleRow is capsules in one line that scrolls sideways (the store's topics).
+func (c *console) capsuleRow(p *page, id string, y int, ids, labels []string, on string) {
 	f := apple()
-	px := x
-	for i, id := range ids {
-		w := ui.TextWidth(f.captionBold, labels[i]) + 56
-		if px+w > right {
-			px, y = x, y+84
-		}
-		r := image.Rect(px, y, px+w, y+66)
-		bg, fg := apCard2, apLabel
-		if id == on {
-			bg, fg = apBlue, apOnBlue
-		}
-		ui.RoundRect(p.img, r, 33, bg)
-		apTextCenter(p.img, f.captionBold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
-		p.buttons = append(p.buttons, button{id, r})
-		px += w + 16
+	band := image.Rect(0, y-6, p.img.Rect.Dx(), y+72)
+	contentW := 48
+	for _, l := range labels {
+		contentW += ui.TextWidth(f.captionBold, l) + 56 + 16
 	}
-	return y + 66
+	contentW += 48 - 16
+	paint := func(img *image.RGBA) {
+		ui.Fill(img, band, apBG)
+		px := 48 - c.rowOffset(id)
+		var btns []button
+		for i, cid := range ids {
+			w := ui.TextWidth(f.captionBold, labels[i]) + 56
+			r := image.Rect(px, y, px+w, y+66)
+			px += w + 16
+			if r.Max.X < 0 || r.Min.X > img.Rect.Dx() {
+				continue
+			}
+			bg, fg := apCard2, apLabel
+			if cid == on {
+				bg, fg = apBlue, apOnBlue
+			}
+			ui.RoundRect(img, r, 33, bg)
+			apTextCenter(img, f.captionBold, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, fg, labels[i])
+			btns = append(btns, button{cid, r})
+		}
+		p.setRowButtons(id, btns)
+	}
+	paint(p.img)
+	p.addRow(id, band, contentW, paint)
 }
 
 // storePage is the cover grid, or one book's page.
@@ -445,10 +465,14 @@ func (c *console) storePage() *page {
 		return c.storeBookPage()
 	}
 	f := apple()
-	h := c.s.H - c.barH
-	img := canvas(c.s.W, h)
+	// As tall as the books on it: it scrolls.
+	st.view = min(st.view, max(len(st.results)-1, 0)/perView*perView)
+	shown := min(perView, max(len(st.results)-st.view, 0))
+	h := gridTop + (shown+gridCols-1)/gridCols*(gridCellH+16) + 180
+	img := canvas(c.s.W, max(h, c.viewH()))
+	h = img.Rect.Dy()
 	ui.Fill(img, img.Rect, apBG)
-	p := &page{img: img}
+	p := &page{img: img, header: tabsH}
 	mx := 48
 
 	c.booksTabs(p, "tab:store")
@@ -477,7 +501,7 @@ func (c *console) storePage() *page {
 			ids = append(ids, fmt.Sprintf("s:topic%d", i))
 			labels = append(labels, strings.ToUpper(tp.label[:1])+tp.label[1:])
 		}
-		capsules(p, mx, 376, c.s.W-mx, ids, labels, fmt.Sprintf("s:topic%d", st.topic))
+		c.capsuleRow(p, "s:topics", 376, ids, labels, fmt.Sprintf("s:topic%d", st.topic))
 		head = strings.ToUpper(storeTopics[st.topic].label[:1]) + storeTopics[st.topic].label[1:] + " on Project Gutenberg"
 	} else { // searching: how each library did
 		var parts []string
@@ -766,7 +790,9 @@ func (c *console) storeTap(id string) bool {
 		c.storeLoad(false)
 	case id == "s:prev":
 		st.view = max(st.view-perView, 0)
+		c.setScroll(modeStore, 0)
 	case id == "s:next":
+		c.setScroll(modeStore, 0)
 		switch {
 		case st.view+perView < len(st.results):
 			st.view += perView

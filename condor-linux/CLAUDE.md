@@ -351,6 +351,17 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       300 ms; no internet = retry each minute. Customize: Offline Dictionary switch
       (prefs no_offline_dict) + status line. Tests: dict_test.go (testConsole isolates dictDir,
       no background fetch).
+- [x] **Scrolling, Kindle-style Home, more Store categories** (2026-10-04, scroll.go,
+      bookshome.go, shelf.go, store.go; user sent Kindle/Fable/Bookmory screenshots). Pages can
+      be taller than the screen (page.header = fixed tab band tabsH; c.sc.y per mode): vertical
+      drags only re-blit a window of the tall canvas (33 ms throttle, thin scroll bar); rows
+      (page.addRow with a paint closure, buttons in page.rowBtns) move sideways by repainting
+      just that row (70 ms throttle). Taps map through the scroll (pageY). Home: Continue, Top
+      Picks, Want to Read (whole library, sideways), Popular (sideways), then 13 store rows by
+      topic/language (homeShelves; Gutenberg, 2 loads at a time, debounced homeRedrawSoon).
+      Library: 48 books per tall page; Store: 24 per tall page, 26 topics in a sideways capsule
+      row. Tests: scroll_test.go; tests switch off Home's background loads/redraws
+      (homeLoads/backgroundRedraws) and get longer waits under -race (raceOn).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

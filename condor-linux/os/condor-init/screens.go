@@ -79,7 +79,7 @@ func (c *console) showPage() {
 	default:
 		c.page = c.booksHomePage()
 	}
-	c.s.blitRGBA(c.page.img, 0, c.barH)
+	c.blitPage()              // the window of a tall page that's scrolled to
 	if c.mode != modeReader { // the reader draws its own, under its overlays
 		c.drawToast()
 	}
@@ -100,7 +100,7 @@ func (c *console) pageTap(x, y int) {
 	if c.page == nil {
 		return
 	}
-	id := c.page.hit(x, y-c.barH)
+	id := c.page.hit(x, c.pageY(y))
 	if id == "" {
 		return
 	}

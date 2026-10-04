@@ -40,9 +40,19 @@ type button struct {
 type page struct {
 	img     *image.RGBA
 	buttons []button
+	header  int                 // rows at the top that stay put when the page scrolls (the tab bar)
+	rows    []hrow              // rows that scroll sideways (scroll.go)
+	rowBtns map[string][]button // their buttons, replaced when a row moves
 }
 
 func (p *page) hit(x, y int) string {
+	for _, btns := range p.rowBtns {
+		for _, b := range btns {
+			if (image.Point{x, y}).In(b.r) {
+				return b.id
+			}
+		}
+	}
 	for _, b := range p.buttons {
 		if (image.Point{x, y}).In(b.r) {
 			return b.id

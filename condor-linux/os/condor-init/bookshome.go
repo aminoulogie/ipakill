@@ -63,7 +63,7 @@ func (c *console) readingNow() []int {
 }
 
 func (c *console) loadPopular() {
-	if c.homePopLoading || len(c.homePop) > 0 {
+	if c.homePopLoading || len(c.homePop) > 0 || !homeLoads {
 		return
 	}
 	c.homePopLoading = true
@@ -89,17 +89,11 @@ func (c *console) loadPopular() {
 
 func (c *console) booksHomePage() *page {
 	f := apple()
-	h := c.s.H - c.barH
-	img := canvas(c.s.W, h)
-	ui.Fill(img, img.Rect, apBG)
-	p := &page{img: img}
 	mx := 48
 	covers.mu.Lock()
 	covers.loaded = func() {
 		drawMu.Lock()
-		if c.mode == modeBooksHome {
-			c.showPage()
-		}
+		c.homeRedrawSoon()
 		drawMu.Unlock()
 	}
 	covers.mu.Unlock()
@@ -107,16 +101,27 @@ func (c *console) booksHomePage() *page {
 	if time.Since(c.homePopErr) > time.Minute {
 		c.loadPopular()
 	}
+	c.loadShelves()
 	item := func(b shelfBook) *storeItem {
 		return &storeItem{key: b.path, title: b.title, author: b.author, cover: b.cover}
 	}
+	now := c.readingNow()
+
+	// The page is as tall as its sections: it scrolls (scroll.go).
+	h := 228 + 120 + 400 + 40 + homeRowH + 40 + homeRowH + len(homeShelves)*homeRowH + 80
+	if len(now) > 0 {
+		h += 260
+	}
+	img := canvas(c.s.W, max(h, c.viewH()))
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img, header: tabsH}
 
 	c.booksTabs(p, "tab:home")
 	apText(img, f.serifLarge, mx, 228, apLabel, "Home")
 	y := 228
 
 	// Continue.
-	if now := c.readingNow(); len(now) > 0 {
+	if len(now) > 0 {
 		apText(img, f.serifTitle, mx, y+90, apLabel, "Continue")
 		y += 120
 		cw := (c.s.W - 2*mx - 2*24) / 3
@@ -160,22 +165,10 @@ func (c *console) booksHomePage() *page {
 	}
 	y += ph + 40
 
-	// Want to Read: the library, on the grouped band.
-	band := image.Rect(0, y, c.s.W, y+500)
+	// Want to Read: the whole library, on the grouped band, sideways.
+	band := image.Rect(0, y, c.s.W, y+homeRowH+40)
 	ui.Fill(img, band, apBand)
-	apText(img, f.serifTitle, mx, y+78, apLabel, "Want to Read")
-	iconChevronRight(img, mx+ui.TextWidth(f.serifTitle, "Want to Read")+18, y+62, apSecondary)
-	p.buttons = append(p.buttons, button{"tab:library", image.Rect(0, y, c.s.W/2, y+100)})
-	apText(img, f.caption, mx, y+118, apSecondary, "Books you'd like to read next.")
-	cy := y + 150
-	const cw, chh, gap = 150, 225, 33
-	if len(c.shelf) == 0 {
-		apText(img, f.body, mx, cy+80, apSecondary, "Your library is empty.")
-		r := image.Rect(mx, cy+120, mx+340, cy+210)
-		ui.RoundRect(img, r, 45, apBlue)
-		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, rgb(0xffffff), "Book Store")
-		p.buttons = append(p.buttons, button{"tab:store", r})
-	}
+	c.rowTitle(p, y, "Want to Read", "Books you'd like to read next.", "tab:library")
 	order := make([]int, 0, len(c.shelf))
 	for i, b := range c.shelf { // started books first, then new ones; finished ones last
 		if _, ok := c.lib.Progress[b.path]; ok && c.lib.Finished[b.path] == "" {
@@ -187,49 +180,219 @@ func (c *console) booksHomePage() *page {
 			order = append(order, i)
 		}
 	}
-	for k, i := range order[:min(len(order), 6)] {
-		b := c.shelf[i]
-		x := mx + k*(cw+gap)
-		r := image.Rect(x, cy+chh-chh, x+cw, cy+chh)
-		shadowRect(img, r)
-		c.drawCover(img, r, item(b))
-		by := r.Max.Y + 34
-		if pr, ok := c.lib.Progress[b.path]; ok {
-			apText(img, f.caption, x, by+8, apSecondary, fmt.Sprintf("%d%%", pr.Pct))
-		} else {
-			nb := image.Rect(x, by-16, x+70, by+18)
-			ui.RoundRect(img, nb, 17, apNewBadge)
-			apTextCenter(img, textFace("inter-bold", fonts.InterBold, true, 20), (nb.Min.X+nb.Max.X)/2, (nb.Min.Y+nb.Max.Y)/2, rgb(0xffffff), "NEW")
-		}
-		iconDots(img, r.Max.X-22, by, apSecondary)
-		p.buttons = append(p.buttons, button{fmt.Sprintf("book%d", i), image.Rect(x, cy, x+cw, by+24)})
+	if len(c.shelf) == 0 {
+		apText(img, f.body, mx, y+230, apSecondary, "Your library is empty.")
+		r := image.Rect(mx, y+270, mx+340, y+360)
+		ui.RoundRect(img, r, 45, apBlue)
+		apTextCenter(img, f.headline, (r.Min.X+r.Max.X)/2, (r.Min.Y+r.Max.Y)/2, rgb(0xffffff), "Book Store")
+		p.buttons = append(p.buttons, button{"tab:store", r})
 	}
+	var mine []rowItem
+	for _, i := range order {
+		b := c.shelf[i]
+		ri := rowItem{it: item(b), id: fmt.Sprintf("book%d", i), badge: "NEW"}
+		if pr, ok := c.lib.Progress[b.path]; ok {
+			ri.badge, ri.caption = "", fmt.Sprintf("%d%%", pr.Pct)
+		}
+		mine = append(mine, ri)
+	}
+	c.coverRow(p, "home:mine", y+150, mine, apBand)
 	y = band.Max.Y
 
 	// The most read free books.
-	apText(img, f.serifTitle, mx, y+86, apLabel, "Popular Free Books")
-	iconChevronRight(img, mx+ui.TextWidth(f.serifTitle, "Popular Free Books")+18, y+70, apSecondary)
-	p.buttons = append(p.buttons, button{"tab:store", image.Rect(0, y, c.s.W/2, y+110)})
-	apText(img, f.caption, mx, y+126, apSecondary, "See what readers love right now.")
-	cy = y + 160
-	switch {
-	case len(c.homePop) > 0:
-		for k, it := range c.homePop[:min(len(c.homePop), 6)] {
-			x := mx + k*(cw+gap)
-			r := image.Rect(x, cy, x+cw, cy+chh)
-			shadowRect(img, r)
-			c.drawCover(img, r, it)
-			p.buttons = append(p.buttons, button{fmt.Sprintf("home:pop:%d", k), r})
+	c.rowTitle(p, y, "Popular Free Books", "See what readers love right now.", "tab:store")
+	var pop []rowItem
+	for k, it := range c.homePop {
+		pop = append(pop, rowItem{it: it, id: fmt.Sprintf("home:pop:%d", k), caption: it.title})
+	}
+	c.rowOrStatus(p, "home:pop", y+150, pop, c.homePopLoading, "Connect to Wi-Fi to see the Book Store.")
+	y += homeRowH + 40
+
+	// Kindle-style shelves of the store, a row per category.
+	for si, sh := range homeShelves {
+		c.rowTitle(p, y, sh.title, sh.sub, fmt.Sprintf("home:all:%d", si))
+		st := c.homeShelf[si]
+		var items []rowItem
+		loading := st == nil || st.loading
+		if st != nil {
+			for k, it := range st.items {
+				items = append(items, rowItem{it: it, id: fmt.Sprintf("home:sh:%d:%d", si, k), caption: it.title})
+			}
 		}
-	case c.homePopLoading:
-		apText(img, f.callout, mx, cy+60, apSecondary, "Loading…")
-	default:
-		apText(img, f.callout, mx, cy+60, apSecondary, "Connect to Wi-Fi to see the Book Store.")
+		c.rowOrStatus(p, fmt.Sprintf("home:sh:%d", si), y+150, items, loading, "Couldn't load these. Is Wi-Fi on?")
+		y += homeRowH
 	}
 	return p
 }
 
-// drawTopPick draws one of the illustrated cards.
+// --- rows of covers --------------------------------------------------------------------------
+
+const (
+	tabsH    = 130 // the tab bar's band at the top of the books pages: it stays put
+	homeRowH = 460 // a row's title and covers
+	rowCW    = 150 // cover size in rows
+	rowCH    = 225
+	rowGap   = 33
+)
+
+// homeShelves are Home's store rows, Kindle style: Project Gutenberg by topic or language.
+var homeShelves = []struct{ title, sub, topic, lang string }{
+	{"Mystery & Detective", "Clues, crimes and great detectives.", "detective", ""},
+	{"Adventure", "Voyages, quests and daring escapes.", "adventure", ""},
+	{"Science Fiction", "Other worlds and other times.", "science fiction", ""},
+	{"Romance", "Love stories from the classics.", "love stories", ""},
+	{"Livres en français", "Les classiques, en version originale.", "", "fr"},
+	{"Fantasy & Fairy Tales", "Myths, magic and enchanted lands.", "fairy tales", ""},
+	{"Horror & Ghost Stories", "Haunted houses and things in the dark.", "horror", ""},
+	{"Short Stories", "Something to finish tonight.", "short stories", ""},
+	{"Philosophy", "Ideas that shaped the world.", "philosophy", ""},
+	{"Poetry", "Verse to read slowly.", "poetry", ""},
+	{"History", "True stories of the past.", "history", ""},
+	{"Humor", "Books to make you laugh.", "humor", ""},
+	{"Children's Classics", "For young readers, and everyone.", "children", ""},
+}
+
+type homeShelfState struct {
+	items   []*storeItem
+	loading bool
+	failed  time.Time
+}
+
+// loadShelves fetches the store rows that aren't loaded, two at a time. Caller holds drawMu.
+func (c *console) loadShelves() {
+	if c.homeShelf == nil {
+		c.homeShelf = map[int]*homeShelfState{}
+	}
+	if !homeLoads {
+		return
+	}
+	busy := 0
+	for _, st := range c.homeShelf {
+		if st.loading {
+			busy++
+		}
+	}
+	for si := range homeShelves {
+		if busy >= 2 {
+			return
+		}
+		st := c.homeShelf[si]
+		if st != nil && (st.loading || len(st.items) > 0 || time.Since(st.failed) < time.Minute) {
+			continue
+		}
+		st = &homeShelfState{loading: true}
+		c.homeShelf[si] = st
+		busy++
+		sh := homeShelves[si]
+		pref := c.store.preferOPDS
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), sourceTimeout)
+			res, err := searchGutenberg(ctx, storeSearch{topic: sh.topic, lang: sh.lang, page: 1}, &pref)
+			cancel()
+			drawMu.Lock()
+			defer drawMu.Unlock()
+			st.loading = false
+			c.store.preferOPDS = c.store.preferOPDS || pref
+			if err != nil || len(res.items) == 0 {
+				st.failed = time.Now()
+			} else {
+				st.items = mergeItems(nil, res.items)
+			}
+			c.loadShelves() // the next ones
+			c.homeRedrawSoon()
+		}()
+	}
+}
+
+// rowTitle is a row's serif title with a chevron (tap: see all) and its line under it.
+func (c *console) rowTitle(p *page, y int, title, sub, id string) {
+	f := apple()
+	apText(p.img, f.serifTitle, 48, y+86, apLabel, title)
+	iconChevronRight(p.img, 48+ui.TextWidth(f.serifTitle, title)+18, y+70, apSecondary)
+	p.buttons = append(p.buttons, button{id, image.Rect(0, y+20, 48+ui.TextWidth(f.serifTitle, title)+60, y+110)})
+	apText(p.img, f.caption, 48, y+126, apSecondary, sub)
+}
+
+type rowItem struct {
+	it      *storeItem
+	id      string // its button
+	caption string // under the cover
+	badge   string // "NEW"
+}
+
+// rowOrStatus draws a row, or a line saying it's loading or why it's empty.
+func (c *console) rowOrStatus(p *page, id string, y int, items []rowItem, loading bool, empty string) {
+	switch {
+	case len(items) > 0:
+		c.coverRow(p, id, y, items, apBG)
+	case loading:
+		apText(p.img, apple().callout, 48, y+60, apSecondary, "Loading…")
+	default:
+		apText(p.img, apple().callout, 48, y+60, apSecondary, empty)
+	}
+}
+
+// coverRow draws covers in a row that scrolls sideways, on bg, and registers it so a finger
+// can move it (its paint is called again at each new offset).
+func (c *console) coverRow(p *page, id string, y int, items []rowItem, bg color.RGBA) {
+	f := apple()
+	band := image.Rect(0, y-10, c.s.W, y+rowCH+80)
+	contentW := 2*48 + len(items)*(rowCW+rowGap) - rowGap
+	paint := func(img *image.RGBA) {
+		ui.Fill(img, band, bg)
+		off := c.rowOffset(id)
+		var btns []button
+		for k, ri := range items {
+			x := 48 + k*(rowCW+rowGap) - off
+			if x+rowCW < 0 || x > c.s.W {
+				continue // off the screen
+			}
+			r := image.Rect(x, y, x+rowCW, y+rowCH)
+			shadowRect(img, r)
+			c.drawCover(img, r, ri.it)
+			by := r.Max.Y + 40
+			switch {
+			case ri.badge != "":
+				nb := image.Rect(x, by-24, x+70, by+10)
+				ui.RoundRect(img, nb, 17, apNewBadge)
+				apTextCenter(img, textFace("inter-bold", fonts.InterBold, true, 20), (nb.Min.X+nb.Max.X)/2, (nb.Min.Y+nb.Max.Y)/2, rgb(0xffffff), ri.badge)
+			case ri.caption != "":
+				apText(img, f.caption, x, by, apSecondary, clip(f.caption, ri.caption, rowCW))
+			}
+			btns = append(btns, button{ri.id, image.Rect(x, y, x+rowCW, by+16)})
+		}
+		p.setRowButtons(id, btns)
+	}
+	paint(p.img)
+	p.addRow(id, band, contentW, paint)
+}
+
+// backgroundRedraws: things arriving in the background (rows, covers) redraw Home; homeLoads:
+// Home fetches its store rows. Tests turn both off (their consoles end before the arrivals),
+// except the store test, which loads Home's rows from its fake libraries.
+var backgroundRedraws, homeLoads = true, true
+
+// homeRedrawSoon redraws Home a moment from now, once for many changes (covers arriving,
+// rows loading), and not while a finger is scrolling. Caller holds drawMu.
+func (c *console) homeRedrawSoon() {
+	if c.homeRedrawQueued || !backgroundRedraws {
+		return
+	}
+	c.homeRedrawQueued = true
+	time.AfterFunc(400*time.Millisecond, func() {
+		drawMu.Lock()
+		defer drawMu.Unlock()
+		c.homeRedrawQueued = false
+		if c.sc.drag {
+			c.homeRedrawSoon()
+			return
+		}
+		if c.mode == modeBooksHome && c.screenOn && !c.locked {
+			c.showPage()
+		}
+	})
+}
+
 func (c *console) drawTopPick(img *image.RGBA, r image.Rectangle, tp topPick) {
 	f := apple()
 	shadow(img, r, 26, 0.10)
@@ -295,6 +458,34 @@ func (c *console) homeTap(id string) bool {
 		for i, t := range storeTopics {
 			if t.topic == topPicks[k].topic {
 				st.topic = i
+			}
+		}
+		c.mode = modeStore
+		c.storeLoad(false)
+		c.showPage()
+	case strings.HasPrefix(id, "home:sh:"):
+		var si, k int
+		fmt.Sscanf(id, "home:sh:%d:%d", &si, &k)
+		if st := c.homeShelf[si]; st != nil && k < len(st.items) {
+			c.store.sel = st.items[k]
+			c.fetchSummary(c.store.sel)
+			c.setMode(modeStore)
+		}
+	case strings.HasPrefix(id, "home:all:"): // the row's chevron: that topic in the store
+		var si int
+		fmt.Sscanf(id, "home:all:%d", &si)
+		sh, st := homeShelves[si], &c.store
+		st.query, st.sel, st.topic = "", nil, 0
+		for i, t := range storeTopics {
+			if t.topic == sh.topic && sh.topic != "" {
+				st.topic = i
+			}
+		}
+		if sh.lang != "" {
+			for i, l := range storeLangs {
+				if l == sh.lang {
+					st.lang = i
+				}
 			}
 		}
 		c.mode = modeStore

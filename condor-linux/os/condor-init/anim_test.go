@@ -55,11 +55,13 @@ func TestTransitionsEndOnTheNewScreen(t *testing.T) {
 
 func TestAnimationsAreTimeBoxed(t *testing.T) {
 	c := testConsole(t)
+	drawMu.Lock() // like the touch loop: background loaders wait
+	defer drawMu.Unlock()
 	c.cfg.Animations = true
 	c.showPage()
 	start := time.Now()
 	c.transition("push", c.fullSheet(), func() { c.setMode(modeSettings) })
-	if d := time.Since(start); d > durPush+300*time.Millisecond {
+	if d := time.Since(start); d > durPush+300*time.Millisecond && !raceOn { // (a stopwatch: not under -race)
 		t.Errorf("push took %v", d)
 	}
 	animScale = 0

@@ -128,6 +128,9 @@ func newFakeLibraries(t *testing.T, gutendexHangs bool) *fakeLibraries {
 	bookDirs = []string{storeDir}
 	webClient = func() *http.Client { return f.srv.Client() }
 	gutenbergTimeout = 300 * time.Millisecond
+	if raceOn { // everything is slower, and Home's rows ask at the same time
+		gutenbergTimeout = 3 * time.Second
+	}
 	t.Cleanup(func() {
 		// A check that failed while holding drawMu would leave the fake server's handlers
 		// (which take drawMu) and so srv.Close stuck: report the failure instead of hanging.
@@ -163,7 +166,11 @@ func (f *fakeLibraries) asked(prefix string) []string {
 // waitFor polls cond under drawMu.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 300; i++ {
+	tries := 300 // 6 s
+	if raceOn {
+		tries = 1500
+	}
+	for i := 0; i < tries; i++ {
 		drawMu.Lock()
 		ok := cond()
 		drawMu.Unlock()
@@ -184,6 +191,8 @@ func shot(t *testing.T, c *console, name string) {
 func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	f := newFakeLibraries(t, false)
 	c := testConsole(t)
+	homeLoads = true // Home's rows, from the fake libraries
+	t.Cleanup(func() { drawMu.Lock(); homeLoads = false; drawMu.Unlock() })
 	drawMu.Lock()
 	c.booksTap("tab:store") // straight in: Home would ask Gutenberg for its own list
 	drawMu.Unlock()
@@ -315,7 +324,9 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	if c.mode != modeReader {
 		t.Errorf("open after download: mode %v", c.mode)
 	}
-	// Home: the books being read, top picks, the library, the most read free books.
+	// Home: the books being read, top picks, the library, the most read free books. (Home may
+	// have been drawn while the libraries were "offline" above: start its loads afresh.)
+	c.homePop, c.homePopErr, c.homeShelf = nil, time.Time{}, nil
 	c.setMode(modeBooksHome)
 	drawMu.Unlock()
 	waitFor(t, "popular on Home", func() bool { return len(c.homePop) > 0 })
@@ -323,6 +334,41 @@ func TestStoreBrowseSearchPreviewDownload(t *testing.T) {
 	drawMu.Lock()
 	c.showPage()
 	shot(t, c, "books-home")
+	// The store's rows below load too, and the page scrolls down to them.
+	drawMu.Unlock()
+	waitFor(t, "Home's store rows", func() bool {
+		if len(c.homeShelf) < len(homeShelves) {
+			return false
+		}
+		for _, st := range c.homeShelf {
+			if st.loading {
+				return false
+			}
+		}
+		return true
+	})
+	drawMu.Lock()
+	c.showPage()
+	if c.page.img.Rect.Dy() <= c.viewH() {
+		t.Fatalf("Home should be taller than the screen: %d", c.page.img.Rect.Dy())
+	}
+	c.pageTouch(TouchPoint{Down: true, X: 600, Y: 1700})
+	c.pageTouch(TouchPoint{Moved: true, X: 600, Y: 300})
+	c.pageTouch(TouchPoint{Up: true, X: 600, Y: 300})
+	if c.scrollY() != 1400 {
+		t.Fatalf("scrolled to %d, want 1400", c.scrollY())
+	}
+	shot(t, c, "books-home-scrolled")
+	if st := c.homeShelf[0]; st == nil || len(st.items) == 0 {
+		t.Fatal("the first store row should have books")
+	}
+	tapButton(t, c, "home:sh:0:0")
+	if c.mode != modeStore || c.store.sel == nil {
+		t.Fatalf("a row's book should open its store page: mode %v", c.mode)
+	}
+	c.store.sel = nil
+	c.sc.y[modeBooksHome] = 0 // back to the top, where the top picks are
+	c.setMode(modeBooksHome)
 	if len(c.readingNow()) != 1 {
 		t.Errorf("continue: %v", c.readingNow())
 	}

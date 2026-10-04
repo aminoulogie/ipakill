@@ -100,18 +100,29 @@ const (
 	libCellW = (1200 - 2*48 - (libCols-1)*libGap) / libCols // 249
 	libCover = libCellW * 3 / 2                             // 373
 	libCellH = libCover + 70
-	libRows  = 2
+	libPer   = libCols * 12 // books on one Library page: it's tall, it scrolls
 )
 
 // shelfPage is the Library: the book being read in a "continue reading" card with the
 // reading goal, then every book as a cover with how far along it is.
 func (c *console) shelfPage() *page {
 	f := apple()
-	h := c.s.H - c.barH
-	img := canvas(c.s.W, h)
-	ui.Fill(img, img.Rect, apBG)
-	p := &page{img: img}
 	mx := 48
+	// As tall as its books (it scrolls): the header, the Continue card, the grid.
+	c.shelf = findBooks()
+	h := 270 + 76 + 160
+	for _, b := range c.shelf {
+		if pr, ok := c.lib.Progress[b.path]; ok && pr.Opened != "" && c.lib.Finished[b.path] == "" {
+			h += 500
+			break
+		}
+	}
+	c.shelfFrom = min(c.shelfFrom, max(len(c.shelf)-1, 0)/libPer*libPer)
+	h += (min(libPer, len(c.shelf)-c.shelfFrom) + libCols - 1) / libCols * (libCellH + 20)
+	img := canvas(c.s.W, max(h, c.viewH()))
+	h = img.Rect.Dy()
+	ui.Fill(img, img.Rect, apBG)
+	p := &page{img: img, header: tabsH}
 
 	c.booksTabs(p, "tab:library")
 	apText(img, f.serifLarge, mx, 228, apLabel, "Library")
@@ -189,10 +200,7 @@ func (c *console) shelfPage() *page {
 	apText(img, f.serifTitle, mx, y+44, apLabel, "All Books")
 	apTextRight(img, f.caption, c.s.W-mx, y+40, apSecondary, map[bool]string{true: "1 book", false: fmt.Sprintf("%d books", len(c.shelf))}[len(c.shelf) == 1])
 	y += 76
-	per := libCols * libRows
-	if last < 0 {
-		per = libCols * 3
-	}
+	per := libPer
 	c.shelfFrom = min(c.shelfFrom, (len(c.shelf)-1)/per*per)
 	for i := c.shelfFrom; i < len(c.shelf) && i < c.shelfFrom+per; i++ {
 		b := c.shelf[i]

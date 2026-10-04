@@ -18,6 +18,8 @@ func testConsole(t *testing.T) *console {
 	oldDir, oldDict, oldBg := dictDir, dict, dictBackground
 	dictDir, dict, dictBackground = t.TempDir(), newDictStore(), false
 	t.Cleanup(func() { dictDir, dict, dictBackground = oldDir, oldDict, oldBg })
+	// Nothing from Home in the background (not put back: stray arrivals read them later).
+	backgroundRedraws, homeLoads = false, false
 	setPalette(true)
 	return c
 }
