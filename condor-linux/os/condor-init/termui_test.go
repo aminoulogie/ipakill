@@ -90,3 +90,41 @@ func cellsText(cells []vt.Cell) string {
 	}
 	return strings.TrimRight(sb.String(), " ")
 }
+
+// Tap on the line being typed: the cursor moves there (as arrow keys). Slide on the space
+// bar: the cursor follows the finger.
+func TestTerminalCursorTapAndTrackpad(t *testing.T) {
+	c := testConsole(t)
+	c.mode = modeTerminal
+	c.t.Write([]byte("$ echo hello world"))
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.master = w
+	c.mu.Unlock()
+	drawMu.Lock()
+	c.redrawAll()
+	cx, cy := c.t.Cursor()
+	y := c.offY + cy*c.ch + c.ch/2
+	c.termTouch(TouchPoint{Down: true, X: c.offX + 7*c.cw + 2, Y: y})
+	c.termTouch(TouchPoint{Up: true, X: c.offX + 7*c.cw + 2, Y: y})
+	var space *kbKey
+	for _, k := range c.kb.layers[0][5] {
+		if k.out == " " {
+			space = k
+		}
+	}
+	sx, sy := (space.r.Min.X+space.r.Max.X)/2, c.kb.y0+(space.r.Min.Y+space.r.Max.Y)/2
+	c.kb.touch(TouchPoint{Slot: 1, Down: true, X: sx, Y: sy})
+	c.kb.touch(TouchPoint{Slot: 1, Moved: true, X: sx + 3*trackStep, Y: sy})
+	c.kb.touch(TouchPoint{Slot: 1, Up: true, X: sx + 3*trackStep, Y: sy})
+	drawMu.Unlock()
+	w.Close()
+	got, _ := io.ReadAll(r)
+	want := strings.Repeat("\x1b[D", cx-7) + strings.Repeat("\x1b[C", 3)
+	if string(got) != want {
+		t.Fatalf("typed %q, want %q", got, want)
+	}
+}

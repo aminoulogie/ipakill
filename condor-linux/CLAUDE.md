@@ -331,7 +331,9 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       (vt keeps lines that scroll off a full-screen region; `clear`'s ESC[3J forgets them),
       swipe down/up to read back (pill "N lines back · tap to return"; output waits while
       scrolled back), hold 350 ms to select + drag, shortcuts bar over the keyboard (Copy ·
-      Paste · update · clear · ls · cd .. · wifi). Apple dark system colours for ANSI,
+      Paste · update · clear · ls · cd .. · wifi), tap the typed line to put the cursor there,
+      space bar = trackpad (slide), held keys repeat after 280 ms and speed up 45→15 ms.
+      256-colour/truecolour map to the nearest of 16 (bat: BAT_THEME=ansi). Apple dark system colours for ANSI,
       coloured prompt and `ls --color`. Test: termui_test.go.
 - [ ] microSD bind into Alpine
 
@@ -353,4 +355,6 @@ Update this checklist as things are done.
 
 ## Conventions
 - Go code in `cli/` (Windows tool) and `os/` (tablet userspace). `gofmt`, `go vet` before commit.
+- The tablet is **32-bit (386)**: before pushing condor-init, `GOOS=linux GOARCH=386 go build` and
+  `GOARCH=386 go test ./...` (a 1<<62 constant once broke the tablet's own `update` build).
 - Commit to the `condor-linux` branch. No model names in commits.

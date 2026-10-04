@@ -577,7 +577,7 @@ func rgb256(n int) [3]int {
 // hue (greys only match greys), so syntax colours don't all turn grey or white.
 func nearest16(c [3]int) (uint8, bool) {
 	sat := max(c[0], c[1], c[2]) - min(c[0], c[1], c[2])
-	best, bestD := 0, 1<<62
+	best, bestD := 0, 1<<30 // fits a 32-bit int: the tablet is 386
 	for i, p := range xterm16 {
 		psat := max(p[0], p[1], p[2]) - min(p[0], p[1], p[2])
 		if (sat > 40) != (psat > 40) {

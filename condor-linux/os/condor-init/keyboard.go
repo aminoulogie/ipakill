@@ -27,8 +27,11 @@ const (
 	kbRows   = 6
 	kbHeight = kbRows*kbRowH + 2*kbPad
 
-	repeatDelay = 450 * time.Millisecond
-	repeatEvery = 70 * time.Millisecond
+	repeatDelay = 280 * time.Millisecond // before a held key repeats
+	repeatEvery = 45 * time.Millisecond  // then this often, speeding up to repeatFast
+	repeatFast  = 15 * time.Millisecond
+
+	trackStep = 22 // pixels of finger travel per character, sliding on the space bar
 )
 
 type keyAction int
@@ -133,6 +136,9 @@ type keyboard struct {
 	pressed  map[int]*kbKey // touch slot -> key under it
 	repeats  map[int]chan struct{}
 	repeated map[int]bool
+	track    map[int]int // slot -> x where the space bar's trackpad last moved the cursor
+	downX    map[int]int
+	tracked  map[int]bool
 	send     func([]byte)
 	onHide   func(visible bool) // console relayout
 	big      font.Face
@@ -146,6 +152,7 @@ func newKeyboard(s *Screen, send func([]byte), onHide func(bool)) (*keyboard, er
 	small := textFace("inter", fonts.InterRegular, false, 28)
 	kb := &keyboard{s: s, y0: s.H - kbHeight, layers: kbLayout(), visible: true,
 		pressed: map[int]*kbKey{}, repeats: map[int]chan struct{}{}, repeated: map[int]bool{},
+		track: map[int]int{}, tracked: map[int]bool{}, downX: map[int]int{},
 		send: send, onHide: onHide, big: big, small: small}
 	kb.layout()
 	return kb, nil
@@ -333,6 +340,38 @@ func (kb *keyboard) touch(p TouchPoint) {
 		return
 	}
 	prev := kb.pressed[p.Slot]
+	// The space bar is a trackpad, as on iOS: hold it and slide, and the cursor follows.
+	if prev != nil && prev.out == " " && prev.act == actType && kb.dark {
+		if p.Moved {
+			if _, on := kb.track[p.Slot]; !on && abs(p.X-kb.downX[p.Slot]) > trackStep {
+				kb.track[p.Slot] = kb.downX[p.Slot]
+				kb.tracked[p.Slot] = true
+			}
+			if last, on := kb.track[p.Slot]; on {
+				for ; p.X-last >= trackStep; last += trackStep {
+					kb.send([]byte("\x1b[C"))
+				}
+				for ; last-p.X >= trackStep; last -= trackStep {
+					kb.send([]byte("\x1b[D"))
+				}
+				kb.track[p.Slot] = last
+				return
+			}
+		}
+		if p.Up && kb.tracked[p.Slot] {
+			delete(kb.track, p.Slot)
+			delete(kb.tracked, p.Slot)
+			delete(kb.pressed, p.Slot)
+			kb.drawKey(prev, false)
+			kb.s.Flush()
+			return // slid: no space typed
+		}
+	}
+	if p.Down {
+		kb.downX[p.Slot] = p.X
+		delete(kb.track, p.Slot)
+		delete(kb.tracked, p.Slot)
+	}
 	switch {
 	case p.Down || p.Moved:
 		key := kb.keyAt(p.X, p.Y)
@@ -383,7 +422,8 @@ func (kb *keyboard) startRepeat(slot int, key *kbKey) {
 			return
 		case <-time.After(repeatDelay):
 		}
-		t := time.NewTicker(repeatEvery)
+		every := repeatEvery
+		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
 			drawMu.Lock()
@@ -400,6 +440,10 @@ func (kb *keyboard) startRepeat(slot int, key *kbKey) {
 			case <-stop:
 				return
 			case <-t.C:
+			}
+			if every > repeatFast { // the longer it's held, the faster it goes
+				every = max(every*9/10, repeatFast)
+				t.Reset(every)
 			}
 		}
 	}()

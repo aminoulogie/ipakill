@@ -281,7 +281,8 @@ func (c *console) termTouch(p TouchPoint) {
 			c.kb.visible = true
 			c.kb.onHide(true)
 			return
-		default:
+		default: // a tap on the line being typed puts the cursor there
+			c.tapCursor(p.X, p.Y)
 			return
 		}
 		c.renderView()
@@ -298,4 +299,23 @@ func itoa(n int) string {
 		b = append([]byte{byte('0' + n%10)}, b...)
 	}
 	return string(b)
+}
+
+// tapCursor moves the shell's cursor to the tapped column when the tap is on the cursor's
+// row, by typing the arrow keys the shell understands. Caller holds drawMu.
+func (c *console) tapCursor(x, y int) {
+	cx, cy := c.t.Cursor()
+	row := (y - c.offY) / c.ch
+	if y < c.offY || row != cy {
+		return
+	}
+	col := min(max((x-c.offX+c.cw/2)/c.cw, 0), c.t.Cols-1)
+	key := "\x1b[C"
+	n := col - cx
+	if n < 0 {
+		key, n = "\x1b[D", -n
+	}
+	if n > 0 {
+		c.input([]byte(strings.Repeat(key, n)))
+	}
 }
