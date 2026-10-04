@@ -143,6 +143,9 @@ func (c *console) pageTap(x, y int) {
 		c.cfg.Brightness = min(max(c.cfg.Brightness+step, 10), 100)
 		setBacklight(c.cfg.Brightness)
 		c.cfg.save()
+	case "lock":
+		c.cfg.NoLock = !c.cfg.NoLock
+		c.cfg.save()
 	case "anim":
 		c.cfg.Animations = !c.cfg.Animations
 		c.cfg.save()

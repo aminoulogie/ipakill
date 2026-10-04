@@ -32,6 +32,8 @@ func wifiAddr() string {
 // barColours: the bar takes the colour of the screen under it, like iPadOS's.
 func (c *console) barColours() (bg, fg color.RGBA) {
 	switch {
+	case c.locked:
+		return rgb(0x000000), rgb(0xffffff)
 	case c.mode == modeTerminal:
 		return rgb(0x000000), rgb(0xffffff)
 	case c.mode == modeReader && c.book != nil:
@@ -105,6 +107,10 @@ func (c *console) redrawAll() {
 	clear(c.s.buf)
 	c.s.markRows(0, c.s.fbH-1)
 	c.drawBar()
+	if c.locked {
+		c.drawLock()
+		return
+	}
 	if c.mode == modeTerminal {
 		if c.tu.back > 0 || c.tu.selOn {
 			c.renderView()
@@ -127,6 +133,9 @@ func (c *console) statusLoop() {
 	for range time.Tick(20 * time.Second) {
 		drawMu.Lock()
 		c.drawBar()
+		if c.locked && c.screenOn {
+			c.drawLock() // its clock
+		}
 		if err := c.s.Flush(); err != nil {
 			log.Printf("flush: %v", err)
 		}

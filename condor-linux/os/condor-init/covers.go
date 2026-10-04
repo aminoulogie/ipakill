@@ -151,6 +151,15 @@ var coverColors = []color.RGBA{
 	{0x6b, 0x5a, 0x3b, 255}, {0x55, 0x3b, 0x6b, 255}, {0x2f, 0x5d, 0x6e, 255},
 }
 
+// placeholderColour is the made-up cover's colour for a book (the same every time).
+func placeholderColour(key string) color.RGBA {
+	h := 0
+	for _, ch := range key {
+		h = h*31 + int(ch)
+	}
+	return coverColors[(h&0x7fffffff)%len(coverColors)]
+}
+
 // drawCover draws a book's cover in r: the real one if loaded, else a made-up one with the
 // title and author (shown while loading, and for books that have none).
 func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
@@ -158,11 +167,7 @@ func (c *console) drawCover(img *image.RGBA, r image.Rectangle, it *storeItem) {
 		xdraw.Draw(img, r, cv, image.Point{}, xdraw.Src)
 		return
 	}
-	h := 0
-	for _, ch := range it.key {
-		h = h*31 + int(ch)
-	}
-	bg := coverColors[(h&0x7fffffff)%len(coverColors)]
+	bg := placeholderColour(it.key)
 	ui.Fill(img, r, bg)
 	ui.Fill(img, image.Rect(r.Min.X+r.Dx()/12, r.Min.Y, r.Min.X+r.Dx()/12+6, r.Max.Y), blend(bg, pgDark, 0.35))
 	if r.Dx() < 120 { // too small for a title: the colour and the spine say "a book"

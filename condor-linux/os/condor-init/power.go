@@ -33,7 +33,7 @@ func (c *console) key(code uint16, value int32) {
 		if !c.screenOn {
 			return
 		}
-		if c.mode == modeReader && c.book != nil { // in a book the volume keys turn pages (or lines)
+		if c.mode == modeReader && c.book != nil && !c.locked { // (not behind the lock screen) // in a book the volume keys turn pages (or lines)
 			if c.rd.view == "" && !c.overlayOpen() {
 				if code == keyVolumeDown {
 					c.readerTap("next")
@@ -66,11 +66,14 @@ func (c *console) setScreen(on bool) {
 	if !on {
 		setBacklight(0)
 		blankScreen(c.s, true)
+		powerSave(true)
 		log.Printf("screen off")
 		return
 	}
+	powerSave(false)
 	blankScreen(c.s, false)
 	c.lastInput = time.Now()
+	c.locked = !c.cfg.NoLock // wake on the lock screen: the book's cover, the time
 	c.redrawAll()
 	setBacklight(c.cfg.Brightness)
 	log.Printf("screen on")

@@ -171,6 +171,8 @@ type savedSettings struct {
 	// Light: the light look (Apple Books' white). Dark, like a Kindle's dark mode, is the
 	// default.
 	Light bool `json:"light"`
+	// NoLock: wake straight into condor, without the lock screen (cover, time).
+	NoLock bool `json:"no_lock_screen"`
 }
 
 const settingsPath = condorHome + "/settings.json"

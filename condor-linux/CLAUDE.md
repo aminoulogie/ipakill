@@ -335,6 +335,15 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       space bar = trackpad (slide), held keys repeat after 280 ms and speed up 45→15 ms.
       256-colour/truecolour map to the nearest of 16 (bat: BAT_THEME=ansi). Apple dark system colours for ANSI,
       coloured prompt and `ls --color`. Test: termui_test.go.
+- [x] **Send to Books** (2026-10-04, sendbooks.go): http on the Wi-Fi address (:80, else :8080),
+      local-network clients only; multipart upload of EPUBs into /data/media/0/Books under safe
+      names (letters/marks/digits, " (2)" for duplicates), kept only if epub.Open works, max
+      300 MB; Library + Settings > Wi-Fi show the address; toast "N books received".
+- [x] **Lock screen + power save** (2026-10-04, lock.go): waking shows time, date and the book
+      being read (cover, title, progress) on the cover's colour; tap opens condor where it was
+      (Settings > Display > Lock Screen switch, cfg no_lock_screen). Screen off: cpufreq
+      governors → powersave and `iw dev wlan0 set power_save on`, restored on wake (only when
+      /system/bin/linker exists, i.e. on the tablet). Not verified on the tablet yet.
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

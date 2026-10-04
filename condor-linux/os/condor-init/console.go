@@ -49,6 +49,7 @@ type console struct {
 	master         *os.File // the shell's pty, nil between shells
 	kb             *keyboard
 	tu             termUI                   // scrollback, selection, copy and paste (termui.go)
+	locked         bool                     // the lock screen is up (lock.go)
 	glyphs         map[glyphKey]*image.RGBA // rendered cells, reused (fonts are slow to rasterize)
 	barH           int                      // status bar height at the top
 	screenOn       bool
@@ -179,6 +180,12 @@ func (c *console) touchLoop() {
 				return // only the power button wakes the screen
 			}
 			for _, p := range pts {
+				if c.locked { // the lock screen: a tap opens condor where it was
+					if p.Up {
+						c.unlock()
+					}
+					continue
+				}
 				// The left of the status bar ("‹ Books" in Terminal and Settings) goes back to
 				// the Books app from any screen.
 				if p.Up && p.Y < c.barH && p.X < c.s.W/3 {
