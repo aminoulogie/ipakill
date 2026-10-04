@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -227,28 +228,57 @@ func lookupWord(ctx context.Context, word, lang string) (*wordLookup, error) {
 		lang = "en"
 	}
 	reached := false
-	for _, t := range uniq(term, strings.ToLower(term)) {
+	var lastErr error
+	for _, t := range lookupForms(term) {
 		raw, err := fetchRaw(ctx, wiktionaryURL+"/"+url.PathEscape(t))
-		if err == nil {
+		if answered(err) { // a 404 is the dictionary saying "no such page", not a lost network
 			reached = true
-			if r := parseWiktionary(raw, lang, term); r != nil {
+		} else {
+			lastErr = err
+		}
+		if err == nil {
+			if r := parseWiktionary(raw, lang, t); r != nil {
 				return r, nil
 			}
 		}
 	}
 	if lang == "en" {
 		raw, err := fetchRaw(ctx, datamuseURL+"?sp="+url.QueryEscape(term)+"&md=dp&max=1")
-		if err == nil {
+		if answered(err) {
 			reached = true
+		} else {
+			lastErr = err
+		}
+		if err == nil {
 			if r := parseDatamuse(raw, term); r != nil {
 				return r, nil
 			}
 		}
 	}
 	if !reached {
+		log.Printf("lookup %q: %v", term, lastErr)
 		return nil, errors.New("could not reach the dictionary: is Wi-Fi on?")
 	}
 	return nil, fmt.Errorf("no definition found for \"%s\"", term)
+}
+
+// elision: French and Italian articles and pronouns run into the next word ("l'asile",
+// "qu'il", "dell'anno"): the dictionary has the word without them.
+var elision = regexp.MustCompile(`(?i)^(l|d|j|m|n|s|t|c|qu|jusqu|lorsqu|puisqu|quoiqu|dell|all|nell|sull|un)['’]`)
+
+// lookupForms are the spellings to ask the dictionary for, best first: as selected, in lower
+// case, without an elided article, without an English possessive.
+func lookupForms(term string) []string {
+	forms := []string{term, strings.ToLower(term)}
+	if bare := elision.ReplaceAllString(term, ""); bare != term && bare != "" {
+		forms = append(forms, bare, strings.ToLower(bare))
+	}
+	for _, s := range []string{"'s", "’s"} {
+		if b, ok := strings.CutSuffix(term, s); ok && b != "" {
+			forms = append(forms, b, strings.ToLower(b))
+		}
+	}
+	return uniq(forms...)
 }
 
 func uniq(xs ...string) []string {

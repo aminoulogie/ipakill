@@ -391,6 +391,9 @@ func fakeDictionary(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/wiktionary/", func(w http.ResponseWriter, r *http.Request) {
 		switch strings.TrimPrefix(r.URL.Path, "/wiktionary/") {
+		case "asile":
+			io.WriteString(w, `{"fr": [{"partOfSpeech": "Noun", "language": "French", "definitions": [
+			  {"definition": "<a href=\"/wiki/asylum\">asylum</a>, refuge"}]}]}`)
 		case "road":
 			io.WriteString(w, `{"en": [{"partOfSpeech": "Noun", "language": "English", "definitions": [
 			  {"definition": "A <a href=\"/wiki/way\">way</a> used for travelling between places.",
@@ -522,6 +525,16 @@ func TestLookupErrors(t *testing.T) {
 	}
 	if _, err := translateText(t.Context(), strings.Repeat("a", 500), "en", "fr"); err == nil {
 		t.Error("too long should be refused")
+	}
+	// "l'asile": Wiktionary has no page for it (404, which is not "offline"), but has "asile".
+	for _, sel := range []string{"l'asile", "L’asile", "d'asile"} {
+		r, err := lookupWord(t.Context(), sel, "fr")
+		if err != nil || r.senses[0].definition != "asylum, refuge" {
+			t.Errorf("%s: %+v %v", sel, r, err)
+		}
+	}
+	if _, err := lookupWord(t.Context(), "zzyzx", "fr"); err == nil || !strings.Contains(err.Error(), "no definition") {
+		t.Errorf("unknown word: %v", err)
 	}
 	wiktionaryURL, datamuseURL = "http://127.0.0.1:1/w", "http://127.0.0.1:1/d"
 	if _, err := lookupWord(t.Context(), "road", "en"); err == nil || !strings.Contains(err.Error(), "could not reach") {

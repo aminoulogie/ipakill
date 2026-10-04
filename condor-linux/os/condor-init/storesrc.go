@@ -442,8 +442,12 @@ func searchArchive(ctx context.Context, q storeSearch) (sourceResult, error) {
 var reTag = regexp.MustCompile(`<[^>]*>`)
 
 func stripTags(s string) string {
-	return strings.Join(strings.Fields(reTag.ReplaceAllString(s, " ")), " ")
+	s = strings.Join(strings.Fields(reTag.ReplaceAllString(s, " ")), " ")
+	// A tag closed just before punctuation leaves a space in front of it ("asylum , refuge").
+	return reSpacePunct.ReplaceAllString(s, "$1")
 }
+
+var reSpacePunct = regexp.MustCompile(` ([,.)])`)
 
 // archiveEPUBs lists an Internet Archive item's EPUB files.
 func archiveEPUBs(ctx context.Context, id string) ([]string, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"image"
 	"log"
@@ -99,9 +100,20 @@ func webGetCtx(ctx context.Context, u string) (*http.Response, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("%s: %s", u, resp.Status)
+		return nil, &httpStatusError{u, resp.Status}
 	}
 	return resp, nil
+}
+
+// httpStatusError: the server answered, but not with the page (404 and the like).
+type httpStatusError struct{ url, status string }
+
+func (e *httpStatusError) Error() string { return e.url + ": " + e.status }
+
+// answered: err came from a server that was reached (not a network failure).
+func answered(err error) bool {
+	var se *httpStatusError
+	return err == nil || errors.As(err, &se)
 }
 
 func shortErr(err error) string {
