@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"log"
 	"os"
 	"strings"
@@ -39,6 +40,12 @@ export HTTP_PROXY=$http_proxy HTTPS_PROXY=$https_proxy no_proxy=localhost,127.0.
 	"/etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 8.8.8.8\n",
 }
 
+// updateScript is update.sh: "update" in the Terminal tab gets, builds and installs the
+// latest condor-init on the tablet itself.
+//
+//go:embed update.sh
+var updateScript []byte
+
 // configureAlpine writes alpineConfig and points apk at plain-http mirrors (packages are
 // signed, so http is safe, and a plain proxy request is simpler than a CONNECT tunnel).
 func configureAlpine() {
@@ -48,6 +55,8 @@ func configureAlpine() {
 	os.MkdirAll(alpineRoot+"/usr/local/bin", 0o755)
 	os.WriteFile(alpineRoot+"/usr/local/bin/wifi", []byte(wifiScript), 0o755)
 	os.Chmod(alpineRoot+"/usr/local/bin/wifi", 0o755)
+	os.WriteFile(alpineRoot+"/usr/local/bin/update", updateScript, 0o755) // condor updates itself
+	os.Chmod(alpineRoot+"/usr/local/bin/update", 0o755)
 	repos := alpineRoot + "/etc/apk/repositories"
 	if b, err := os.ReadFile(repos); err == nil {
 		os.WriteFile(repos, []byte(strings.ReplaceAll(string(b), "https://", "http://")), 0o644)

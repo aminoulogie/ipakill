@@ -38,6 +38,7 @@ power on → signed kernel + ramdisk (stock, can't change) → Android init
 ```
 .\condor-linux\dev.cmd           build condor-init for linux/386, push + restart (or arm + reboot)
 condor-linux\wifi-update.cmd <ip>  same over Wi-Fi, no USB (IP remembered after the first time)
+update  (in the tablet's Terminal tab)  the tablet fetches, builds and installs it by itself
 condor term                      the tablet's console from the PC (Ctrl+] leaves)
 ssh root@<tablet ip> / condor ssh  same over Wi-Fi (keys set up by condor ssh setup)
 condor alpine run <cmd>          run one command inside Alpine (exit code checked)
@@ -318,6 +319,13 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       or the reader's half moon; cfg "light", default dark) switches every screen
       (setPalette: iOS dark colours, apBand/apCard/apGrouped) and books (Night theme;
       ThemeSet 3 migration puts books in Night once).
+- [x] **Update from the tablet itself** (2026-10-04): `update` in the Terminal tab (Alpine,
+      /usr/local/bin/update = os/condor-init/update.sh, embedded and written at boot). It
+      installs git + go with apk (once), clones/fetches the public repo's condor-linux branch
+      into /root/condor-src, builds condor-init on the tablet (GOTMPDIR on flash,
+      GOTOOLCHAIN=auto), then the same detached installer as wifi-update (backup, restart,
+      rollback); log in /tmp/condor-update.log. First time (before condor-init carries it):
+      wget the raw update.sh. Dry-run tested on the PC (fetch, build, installer syntax).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.
