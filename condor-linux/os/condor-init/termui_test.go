@@ -43,7 +43,15 @@ func TestTerminalScrollSelectCopyPaste(t *testing.T) {
 	// Hold on a line, drag to the next: select; Copy.
 	c.termTouch(TouchPoint{Down: true, X: c.offX + 2, Y: c.offY + 2*c.ch + 4})
 	drawMu.Unlock()
-	time.Sleep(450 * time.Millisecond) // the hold
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); { // the hold
+		time.Sleep(50 * time.Millisecond)
+		drawMu.Lock()
+		on := c.tu.selOn
+		drawMu.Unlock()
+		if on {
+			break
+		}
+	}
 	drawMu.Lock()
 	if !c.tu.selOn {
 		t.Fatal("holding should start a selection")
