@@ -1,11 +1,14 @@
 #!/bin/sh
 # update: condor updates itself, from the tablet alone (Terminal tab, or ssh). It gets the
-# latest code from GitHub, builds condor-init here with Go, then installs it the way
+# latest code from GitHub (an archive, with curl: new git can't run on this kernel, it needs
+# getrandom(), which 3.4 doesn't have), builds condor-init here with Go, then installs it the way
 # wifi-update does: a backup, a restart, and the old version put back if the new one
 # doesn't run. condor-init installs this as /usr/local/bin/update in Alpine; the first time
 # it can also be fetched:
-#   wget -O /tmp/update https://raw.githubusercontent.com/aminoulogie/ipakill/condor-linux/condor-linux/os/condor-init/update.sh && sh /tmp/update
-REPO=https://github.com/aminoulogie/ipakill.git
+#   U=https://raw.githubusercontent.com/aminoulogie/ipakill/condor-linux
+#   curl -LO $U/condor-linux/os/condor-init/update.sh
+#   sh update.sh
+REPO=aminoulogie/ipakill
 BRANCH=condor-linux
 SRC=/root/condor-src
 D=/proc/1/root/data/condor # /data/condor as init sees it (we're in Alpine's chroot)
@@ -16,19 +19,18 @@ die() { printf '\033[1;31m%s\033[0m\n' "$*"; exit 1; }
 [ "$(id -u)" = 0 ] || die "run it as root"
 [ -f $D/condor-init ] || die "can't see $D: run it on the tablet"
 
-if ! command -v go >/dev/null || ! command -v git >/dev/null; then
-	say "installing git and Go (once, about 200 MB)"
-	apk add git go || die "apk failed: is Wi-Fi on?"
+if ! command -v go >/dev/null || ! command -v curl >/dev/null; then
+	say "installing Go and curl (once, about 200 MB)"
+	apk add go curl || die "apk failed: is Wi-Fi on?"
 fi
 
 say "getting the latest code"
-if [ -d $SRC/.git ]; then
-	git -C $SRC fetch --depth 1 origin $BRANCH && git -C $SRC reset -q --hard FETCH_HEAD || die "git fetch failed: is Wi-Fi on?"
-else
-	rm -rf $SRC
-	git clone -q --depth 1 -b $BRANCH $REPO $SRC || die "git clone failed: is Wi-Fi on?"
-fi
-git -C $SRC log -1 --format='    %h %s (%cr)'
+commit=$(curl -fsSL -H "Accept: application/vnd.github.sha" https://api.github.com/repos/$REPO/commits/$BRANCH)
+rm -rf $SRC.new && mkdir -p $SRC.new
+curl -fsSL https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH | tar -xzf - -C $SRC.new ||
+	die "download failed: is Wi-Fi on?"
+rm -rf $SRC && mv $SRC.new/* $SRC && rm -rf $SRC.new || die "couldn't unpack the code"
+echo "    $BRANCH at ${commit:-?}"
 
 say "building condor-init (the first time takes several minutes)"
 mkdir -p /root/.cache/gotmp

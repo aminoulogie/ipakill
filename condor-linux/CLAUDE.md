@@ -321,11 +321,12 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       ThemeSet 3 migration puts books in Night once).
 - [x] **Update from the tablet itself** (2026-10-04): `update` in the Terminal tab (Alpine,
       /usr/local/bin/update = os/condor-init/update.sh, embedded and written at boot). It
-      installs git + go with apk (once), clones/fetches the public repo's condor-linux branch
-      into /root/condor-src, builds condor-init on the tablet (GOTMPDIR on flash,
+      installs go + curl with apk (once), downloads the public repo's condor-linux branch as
+      a codeload tarball into /root/condor-src (not git: Alpine's git needs getrandom(),
+      ENOSYS on kernel 3.4), builds condor-init on the tablet (GOTMPDIR on flash,
       GOTOOLCHAIN=auto), then the same detached installer as wifi-update (backup, restart,
       rollback); log in /tmp/condor-update.log. First time (before condor-init carries it):
-      wget the raw update.sh. Dry-run tested on the PC (fetch, build, installer syntax).
+      curl the raw update.sh (busybox wget https went through the proxy's own fetch, which had no CA certs before c930cc5). Dry-run tested on the PC (fetch, build, installer syntax).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.
