@@ -136,3 +136,38 @@ func TestTerminalCursorTapAndTrackpad(t *testing.T) {
 		t.Fatalf("typed %q, want %q", got, want)
 	}
 }
+
+// Holding ⌫: characters first, then whole words (Ctrl-W), as on iOS.
+func TestHeldBackspaceDeletesWords(t *testing.T) {
+	c := testConsole(t)
+	c.mode = modeTerminal
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.master = w
+	c.mu.Unlock()
+	var bksp *kbKey
+	for _, row := range c.kb.layers[0] {
+		for _, k := range row {
+			if k.out == "\x7f" {
+				bksp = k
+			}
+		}
+	}
+	x, y := (bksp.r.Min.X+bksp.r.Max.X)/2, c.kb.y0+(bksp.r.Min.Y+bksp.r.Max.Y)/2
+	drawMu.Lock()
+	c.kb.touch(TouchPoint{Slot: 2, Down: true, X: x, Y: y})
+	drawMu.Unlock()
+	time.Sleep(2200 * time.Millisecond)
+	drawMu.Lock()
+	c.kb.touch(TouchPoint{Slot: 2, Up: true, X: x, Y: y})
+	drawMu.Unlock()
+	w.Close()
+	got, _ := io.ReadAll(r)
+	dels, words := strings.Count(string(got), "\x7f"), strings.Count(string(got), "\x17")
+	if dels != wordDeleteAfter || words == 0 {
+		t.Fatalf("held ⌫ sent %d deletes and %d word deletes", dels, words)
+	}
+}

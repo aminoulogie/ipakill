@@ -31,6 +31,10 @@ const (
 	repeatEvery = 45 * time.Millisecond  // then this often, speeding up to repeatFast
 	repeatFast  = 15 * time.Millisecond
 
+	// Holding ⌫ in the terminal deletes characters, then (after this many) whole words.
+	wordDeleteAfter = 15
+	wordDeleteEvery = 160 * time.Millisecond
+
 	trackStep = 22 // pixels of finger travel per character, sliding on the space bar
 )
 
@@ -422,7 +426,7 @@ func (kb *keyboard) startRepeat(slot int, key *kbKey) {
 			return
 		case <-time.After(repeatDelay):
 		}
-		every := repeatEvery
+		every, n := repeatEvery, 0
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -434,14 +438,23 @@ func (kb *keyboard) startRepeat(slot int, key *kbKey) {
 			default:
 			}
 			kb.repeated[slot] = true
-			kb.send(kb.output(key))
+			n++
+			if n > wordDeleteAfter && key.out == "\x7f" && kb.dark { // held on: whole words, as on iOS
+				kb.send([]byte("\x17")) // Ctrl-W: the shell erases the word before the cursor
+				if every != wordDeleteEvery {
+					every = wordDeleteEvery
+					t.Reset(every)
+				}
+			} else {
+				kb.send(kb.output(key))
+			}
 			drawMu.Unlock()
 			select {
 			case <-stop:
 				return
 			case <-t.C:
 			}
-			if every > repeatFast { // the longer it's held, the faster it goes
+			if every > repeatFast && every != wordDeleteEvery { // the longer it's held, the faster it goes
 				every = max(every*9/10, repeatFast)
 				t.Reset(every)
 			}
