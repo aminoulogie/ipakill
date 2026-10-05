@@ -12,6 +12,7 @@ cat > stubs/libc.c <<'S'
 void __libc_init(){} int snprintf(){return 0;} long write(){return 0;} void *malloc(){return 0;}
 int usleep(){return 0;} int open(){return 0;} int ioctl(){return 0;} int close(){return 0;}
 int clock_gettime(){return 0;} void exit(){} long read(){return 0;} void *mmap(){return 0;}
+void *memset(){return 0;} void *calloc(){return 0;}
 S
 echo 'void *dlopen(){return 0;} void *dlsym(){return 0;} const char *dlerror(){return 0;}' > stubs/libdl.c
 for l in libc libdl; do
@@ -24,5 +25,15 @@ for p in gltest glanim; do
     -z norelro --no-rosegment start.o $p.o stubs/libc.so stubs/libdl.so
   echo built $p
 done
+
+# glsf draws through SurfaceFlinger, so it calls the C++ libraries (libgui, libutils,
+# libbinder). Compiled with clang++ but freestanding: no exceptions, no RTTI, no libstdc++
+# (the only class, sp, has a trivial destructor and needs no C++ runtime). Linked the same
+# way as gltest; at run time /system/bin/linker binds the stub symbols to the real libraries.
+clang++ $T -Wall -fno-exceptions -fno-rtti -nostdlib++ -fno-threadsafe-statics -c glsf.cpp -o glsf.o
+ld.lld -m elf_i386 -o glsf --dynamic-linker=/system/bin/linker --hash-style=sysv \
+  -z norelro --no-rosegment start.o glsf.o stubs/libc.so stubs/libdl.so
+echo built glsf
+
 # condor-init carries glanim inside itself (go:embed) and starts it when animations are on.
 cp glanim ../condor-init/glanim.bin
