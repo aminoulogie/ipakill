@@ -145,6 +145,9 @@ func (c *console) pageTouch(p TouchPoint) {
 				sc.from = c.rowOffset(sc.row.id)
 			}
 		}
+		if !c.cfg.SmoothScroll {
+			return // paged (the default): the page jumps when the finger lifts
+		}
 		if time.Since(sc.last) < map[bool]time.Duration{true: scrollEvery, false: rowDrawEvery}[sc.vert] {
 			return // the screen can't keep up with every move: draw a few times a second
 		}
@@ -154,7 +157,12 @@ func (c *console) pageTouch(p TouchPoint) {
 			return
 		}
 		moved := sc.moved
-		if moved {
+		switch {
+		case moved && !c.cfg.SmoothScroll:
+			sc.drag = false
+			c.pageJump(p.X-sc.x0, p.Y-sc.y0)
+			return
+		case moved:
 			c.scrollTo(p.X-sc.x0, p.Y-sc.y0)
 		}
 		sc.drag = false
@@ -190,4 +198,45 @@ func (c *console) scrollTo(dx, dy int) {
 		c.blitPage()
 		c.s.Flush()
 	}
+}
+
+// pageJump is paged scrolling, as on a Kindle: a swipe moves the page by a screen (or a row by
+// the covers it shows), in one redraw. Following the finger costs a full-screen copy per step,
+// which this tablet's processor can do only a few times a second.
+func (c *console) pageJump(dx, dy int) {
+	sc := &c.sc
+	if sc.vert {
+		ih, vh := c.page.img.Rect.Dy(), c.viewH()
+		if ih <= vh {
+			return
+		}
+		step := vh - c.page.header - 160 // keep a little of the last screen in view
+		if dy > 0 {
+			step = -step // finger down: back up the page
+		}
+		y := min(max(c.scrollY()+step, 0), ih-vh)
+		if y == c.scrollY() {
+			return
+		}
+		sc.y[c.mode] = y
+		c.blitPage()
+		c.s.Flush()
+		return
+	}
+	r := sc.row
+	step := (r.r.Dx() - 2*48) / (rowCW + rowGap) * (rowCW + rowGap) // the covers on screen
+	if step <= 0 || r.id == "s:topics" {
+		step = r.r.Dx() / 2
+	}
+	if dx > 0 {
+		step = -step // finger right: back to the start of the row
+	}
+	off := min(max(c.rowOffset(r.id)+step, 0), max(r.contentW-r.r.Dx(), 0))
+	if off == c.rowOffset(r.id) {
+		return
+	}
+	sc.x[r.id] = off
+	r.paint(c.page.img)
+	c.blitPage()
+	c.s.Flush()
 }

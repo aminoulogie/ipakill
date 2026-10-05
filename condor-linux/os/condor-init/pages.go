@@ -183,6 +183,8 @@ type savedSettings struct {
 	Light bool `json:"light"`
 	// NoLock: wake straight into condor, without the lock screen (cover, time).
 	NoLock bool `json:"no_lock_screen"`
+	// SmoothScroll: pages follow the finger. Off (the default): a swipe jumps a screen.
+	SmoothScroll bool `json:"smooth_scroll"`
 }
 
 const settingsPath = condorHome + "/settings.json"

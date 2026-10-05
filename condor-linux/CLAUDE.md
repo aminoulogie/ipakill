@@ -359,6 +359,9 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       just that row (70 ms throttle). Taps map through the scroll (pageY). Home: Continue, Top
       Picks, Want to Read (whole library, sideways), Popular (sideways), then 13 store rows by
       topic/language (homeShelves; Gutenberg, 2 loads at a time, debounced homeRedrawSoon).
+      Paged by default (Kindle): a swipe jumps a screen / a row by its visible covers in one
+      redraw (following the finger costs a 9 MB framebuffer write per step: laggy on the Atom);
+      Settings > Display > "Follow Finger When Scrolling" (cfg smooth_scroll) for drag mode.
       Library: 48 books per tall page; Store: 24 per tall page, 26 topics in a sideways capsule
       row. Tests: scroll_test.go; tests switch off Home's background loads/redraws
       (homeLoads/backgroundRedraws) and get longer waits under -race (raceOn).

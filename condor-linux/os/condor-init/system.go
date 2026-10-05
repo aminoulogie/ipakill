@@ -253,6 +253,11 @@ func (c *console) settingsPage() *page {
 		iosSwitch(img, rows[0].Max.X-24, (rows[0].Min.Y+rows[0].Max.Y)/2, c.cfg.Animations, apDark)
 		p.buttons = append(p.buttons, button{"anim", rows[0]})
 		y += rh
+		rows = groupRows(img, x, y, pw, 1, rh)
+		apText(img, f.body, rows[0].Min.X+30, rows[0].Min.Y+56, apLabel, "Follow Finger When Scrolling")
+		iosSwitch(img, rows[0].Max.X-24, (rows[0].Min.Y+rows[0].Max.Y)/2, c.cfg.SmoothScroll, apDark)
+		p.buttons = append(p.buttons, button{"smoothscroll", rows[0]})
+		y += rh
 		footer("Off: every screen appears at once, like an e-reader. Animations are drawn by the processor and are slower.")
 	case "general":
 		header("About")

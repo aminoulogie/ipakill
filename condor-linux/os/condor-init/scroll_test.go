@@ -13,6 +13,7 @@ func TestScrollPageAndRow(t *testing.T) {
 	drawMu.Lock()
 	defer drawMu.Unlock()
 	c.mode = modeWords
+	c.cfg.SmoothScroll = true // following the finger (paged: TestPagedScrolling)
 	var items []rowItem
 	for k := 0; k < 20; k++ {
 		items = append(items, rowItem{it: &storeItem{key: fmt.Sprint(k), title: fmt.Sprint("Book ", k)}, id: fmt.Sprint("b", k), caption: fmt.Sprint("Book ", k)})
@@ -58,5 +59,50 @@ func TestScrollPageAndRow(t *testing.T) {
 	}
 	if got := c.pageY(c.barH + 50); got != 50 {
 		t.Fatalf("pageY on the header %d", got)
+	}
+}
+
+// Paged (the default): a swipe jumps a screen down or back, a row by the covers it shows, in
+// one redraw, and stops at the ends.
+func TestPagedScrolling(t *testing.T) {
+	c := testConsole(t)
+	drawMu.Lock()
+	defer drawMu.Unlock()
+	c.mode = modeWords
+	var items []rowItem
+	for k := 0; k < 20; k++ {
+		items = append(items, rowItem{it: &storeItem{key: fmt.Sprint(k)}, id: fmt.Sprint("b", k)})
+	}
+	c.page = &page{img: canvas(c.s.W, 4000), header: tabsH}
+	c.coverRow(c.page, "row", 600, items, apBG)
+	c.blitPage()
+	swipe := func(x0, y0, x1, y1 int) {
+		c.pageTouch(TouchPoint{Down: true, X: x0, Y: y0})
+		c.pageTouch(TouchPoint{Moved: true, X: x1, Y: y1})
+		c.pageTouch(TouchPoint{Up: true, X: x1, Y: y1})
+	}
+	step := c.viewH() - tabsH - 160
+	swipe(600, 1800, 600, 1500) // a short swipe up is enough
+	if c.scrollY() != step {
+		t.Fatalf("after a swipe up: %d, want %d", c.scrollY(), step)
+	}
+	swipe(600, 1800, 600, 1500)
+	swipe(600, 1800, 600, 1500)
+	if c.scrollY() != 4000-c.viewH() {
+		t.Fatalf("should stop at the end: %d", c.scrollY())
+	}
+	swipe(600, 1000, 600, 1300) // down: back
+	if c.scrollY() != 4000-c.viewH()-step {
+		t.Fatalf("after a swipe down: %d", c.scrollY())
+	}
+	c.sc.y[c.mode] = 0
+	y := c.barH + 600 + rowCH/2
+	swipe(900, y, 700, y)
+	if got, want := c.rowOffset("row"), 6*(rowCW+rowGap); got != want {
+		t.Fatalf("row after a swipe left: %d, want %d", got, want)
+	}
+	swipe(700, y, 900, y)
+	if c.rowOffset("row") != 0 {
+		t.Fatalf("row after a swipe right: %d", c.rowOffset("row"))
 	}
 }
