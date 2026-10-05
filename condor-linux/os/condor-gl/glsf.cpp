@@ -153,7 +153,27 @@ int main(int argc, char **argv) {
 	const EGLint cfgAttr[] = {0x3033, 4, 0x3040, 4, 0x3024, 8, 0x3023, 8, 0x3022, 8, 0x3038};
 	EGLConfig cfg; EGLint n = 0;
 	if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &n) || n < 1) fail("eglChooseConfig 0x%x\n", eglGetError());
-	EGLSurface surf = eglCreateWindowSurface(dpy, cfg, surface.p, 0);
+	// eglCreateWindowSurface wants an ANativeWindow*, not the Surface*. In C++ the compiler
+	// adds the offset of the ANativeWindow base inside Surface when it converts one to the
+	// other (the boot animation passes s.get()); calling through dlsym we must do it by hand.
+	// ANativeWindow starts with android_native_base_t, whose first word is the magic '_wnd',
+	// so find it inside the object rather than assuming the offset.
+	const u32 WND_MAGIC = 0x5f776e64;
+	void *window = 0;
+	for (int off = 0; off <= 64; off += 4) {
+		if (*(u32 *)((char *)surface.p + off) == WND_MAGIC) {
+			window = (char *)surface.p + off;
+			say("step: ANativeWindow found %d bytes into the Surface\n", off);
+			break;
+		}
+	}
+	if (!window) {
+		say("step: no ANativeWindow magic in the first 64 bytes of the Surface; words:");
+		for (int off = 0; off < 48; off += 4) say(" %08x", *(u32 *)((char *)surface.p + off));
+		say("\n");
+		fail("cannot find the ANativeWindow inside the Surface\n");
+	}
+	EGLSurface surf = eglCreateWindowSurface(dpy, cfg, window, 0);
 	if (!surf) fail("eglCreateWindowSurface 0x%x\n", eglGetError());
 	const EGLint ctxAttr[] = {0x3098, 2, 0x3038};
 	EGLContext ctx = eglCreateContext(dpy, cfg, 0, ctxAttr);
