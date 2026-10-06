@@ -81,10 +81,12 @@ type console struct {
 	homePopErr       time.Time
 	homeShelf        map[int]*homeShelfState // Home's store rows (bookshome.go)
 	homeRedrawQueued bool
-	setPane          string // Settings: the pane shown
-	readerFrom       mode   // where the open book was opened from, for "Library"
-	animA, animB     []byte // the screen before and after a transition (native layout)
-	gpu              gpuDev // animations on the GPU (gpu.go), nil when they're on the CPU
+	setPane          string     // Settings: the pane shown
+	readerFrom       mode       // where the open book was opened from, for "Library"
+	animA, animB     []byte     // the screen before and after a transition (native layout)
+	gpu              gpuDev     // animations on the GPU (gpu.go), nil when they're on the CPU
+	disp             gpuDisplay // the GPU showing the screen (gpu.go), nil when it's the framebuffer
+	pageGen          int        // bumped whenever the page is drawn (the GPU's copy is then stale)
 	gpuStarting      bool
 	gpuFailed        bool
 	wui              wordsUI

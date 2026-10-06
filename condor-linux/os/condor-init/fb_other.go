@@ -17,3 +17,5 @@ func blankScreen(s *Screen, off bool) {}
 func waitVsync(s *Screen) bool { return false }
 
 func refreshHz(s *Screen) float64 { return 0 }
+
+func reclaimFramebuffer(s *Screen) {}

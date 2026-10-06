@@ -71,6 +71,7 @@ func (c *console) animBufs() (a, b []byte) {
 // new one: "push" (forward), "pop" (back), "rise" (a sheet in rect r rising by its height).
 // Caller holds drawMu.
 func (c *console) transition(kind string, r image.Rectangle, change func()) {
+	c.gpuSettle() // a page still showing from the GPU is drawn into the screen first
 	if !c.animOK() {
 		change()
 		return

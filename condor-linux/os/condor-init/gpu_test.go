@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"math"
 	"testing"
 )
@@ -10,15 +11,51 @@ import (
 type softGPU struct {
 	s           *Screen
 	old, nu     []byte
-	screen      []byte
+	screen      []byte // what the GPU shows
 	frames      int
 	last, loads int
+
+	// As the screen's display (gpuDisplay): condorsf.cpp's screen image, page and overlay.
+	scr      []byte
+	page     *image.RGBA
+	over     []quad
+	presents int
+	uploads  int // pages uploaded whole
 }
 
 func newSoftGPU(s *Screen) *softGPU {
 	n := len(s.buf)
-	return &softGPU{s: s, old: make([]byte, n), nu: make([]byte, n), screen: make([]byte, n)}
+	return &softGPU{s: s, old: make([]byte, n), nu: make([]byte, n), screen: make([]byte, n), scr: make([]byte, n)}
 }
+
+func (g *softGPU) screenBuf() []byte { return g.scr }
+func (g *softGPU) failed() error     { return nil }
+
+func (g *softGPU) present(lo, hi int) error {
+	g.presents++
+	copy(g.screen, g.scr)
+	for _, k := range g.over {
+		g.draw(k)
+	}
+	return nil
+}
+
+func (g *softGPU) pageLoad(img *image.RGBA) error {
+	g.uploads++
+	g.page = image.NewRGBA(img.Rect)
+	copy(g.page.Pix, img.Pix)
+	return nil
+}
+
+func (g *softGPU) pageRows(img *image.RGBA, y0, y1 int) error {
+	for y := y0; y < y1; y++ {
+		copy(g.page.Pix[g.page.PixOffset(0, y):g.page.PixOffset(0, y+1)], img.Pix[img.PixOffset(0, y):img.PixOffset(0, y+1)])
+	}
+	return nil
+}
+
+func (g *softGPU) overlay(q []quad)  { g.over = q; g.present(0, 0) }
+func (g *softGPU) overlayOff() error { g.over = nil; return nil }
 
 func (g *softGPU) images() (old, nu []byte) { return g.old, g.nu }
 func (g *softGPU) load() error              { g.loads++; return nil }
@@ -40,6 +77,26 @@ func (g *softGPU) frame(q []quad, last bool) error {
 
 func (g *softGPU) draw(k quad) {
 	s := g.s
+	if k.kind == gpuPage { // logical coordinates: each native pixel's centre, turned back
+		for py := 0; py < s.fbH; py++ {
+			lx := float32(s.fbH) - (float32(py) + 0.5)
+			if lx < k.x0 || lx >= k.x1 {
+				continue
+			}
+			for px := 0; px < s.fbW; px++ {
+				ly := float32(px) + 0.5
+				if ly < k.y0 || ly >= k.y1 {
+					continue
+				}
+				u := int(k.u0 + (lx-k.x0)*(k.u1-k.u0)/(k.x1-k.x0))
+				v := int(k.v0 + (ly-k.y0)*(k.v1-k.v0)/(k.y1-k.y0))
+				p := g.page.Pix[g.page.PixOffset(u, v):]
+				d := g.screen[py*s.stride+4*px:]
+				d[0], d[1], d[2] = p[2], p[1], p[0]
+			}
+		}
+		return
+	}
 	lo := func(a, b float32) float32 { return min(a, b) }
 	hi := func(a, b float32) float32 { return max(a, b) }
 	for py := max(int(math.Ceil(float64(lo(k.y0, k.y1)-0.5))), 0); py < s.fbH && float32(py)+0.5 < hi(k.y0, k.y1); py++ {
@@ -55,8 +112,11 @@ func (g *softGPU) draw(k quad) {
 				continue
 			}
 			src := g.old
-			if k.kind == gpuNew {
+			switch k.kind {
+			case gpuNew:
 				src = g.nu
+			case 2:
+				src = g.scr
 			}
 			u := min(max(int(math.Floor(float64(k.u0+fx*(k.u1-k.u0)))), 0), s.fbW-1)
 			v := min(max(int(math.Floor(float64(k.v0+fy*(k.v1-k.v0)))), 0), s.fbH-1)

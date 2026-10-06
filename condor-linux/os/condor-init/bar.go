@@ -104,6 +104,7 @@ func (c *console) drawBar() {
 
 // redrawAll repaints everything: status bar, console, keyboard. Caller holds drawMu.
 func (c *console) redrawAll() {
+	c.endGPUScroll()
 	clear(c.s.buf)
 	c.s.markRows(0, c.s.fbH-1)
 	c.drawBar()

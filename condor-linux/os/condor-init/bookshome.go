@@ -383,7 +383,7 @@ func (c *console) homeRedrawSoon() {
 		drawMu.Lock()
 		defer drawMu.Unlock()
 		c.homeRedrawQueued = false
-		if c.sc.drag {
+		if c.sc.drag || c.sc.gpuOn {
 			c.homeRedrawSoon()
 			return
 		}

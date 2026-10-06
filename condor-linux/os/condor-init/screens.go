@@ -65,6 +65,8 @@ func (c *console) showPage() {
 	if !c.screenOn {
 		return
 	}
+	c.endGPUScroll()
+	c.pageGen++
 	switch {
 	case c.mode == modeSettings:
 		c.page = c.settingsPage()
@@ -152,7 +154,18 @@ func (c *console) pageTap(x, y int) {
 	case "anim":
 		c.cfg.Animations = !c.cfg.Animations
 		c.cfg.save()
-		c.wantGPU()
+	case "gpu":
+		if gpuEnabled() {
+			os.Remove(gpuFlag)
+			if c.disp != nil { // back to the framebuffer: a clean start is the sure way
+				c.powerAction("restart")
+				return
+			}
+		} else {
+			os.WriteFile(gpuFlag, nil, 0o644)
+			c.gpuFailed = false
+			c.wantGPU()
+		}
 	case "off0", "off1", "off5", "off10":
 		fmt.Sscanf(id, "off%d", &c.cfg.ScreenOff)
 		c.cfg.save()

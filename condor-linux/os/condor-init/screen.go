@@ -91,7 +91,8 @@ type bitfield struct{ offset, length, msbRight uint32 }
 // read()/write() view. Row tags written through mmap showed up 299 rows earlier via read().
 type Screen struct {
 	buf              []byte      // back buffer, native layout (stride * fbH)
-	dev              io.WriterAt // the framebuffer device; nil in tests
+	dev              io.WriterAt // where Flush writes: the framebuffer, or the GPU (gpu.go); nil in tests
+	fbDev            io.WriterAt // the framebuffer device itself
 	stride, bpp      int
 	fbW, fbH         int // native
 	W, H             int // logical
@@ -103,7 +104,7 @@ type Screen struct {
 
 func newScreen(dev io.WriterAt, fbW, fbH, stride, bpp int, red, green, blue bitfield, rot Rotation) *Screen {
 	w, h := rot.size(fbW, fbH)
-	return &Screen{buf: make([]byte, stride*fbH), dev: dev, stride: stride, bpp: bpp,
+	return &Screen{buf: make([]byte, stride*fbH), dev: dev, fbDev: dev, stride: stride, bpp: bpp,
 		fbW: fbW, fbH: fbH, W: w, H: h, rot: rot, red: red, green: green, blue: blue,
 		dirtyLo: fbH, dirtyHi: -1}
 }

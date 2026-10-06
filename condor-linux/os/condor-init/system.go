@@ -258,7 +258,19 @@ func (c *console) settingsPage() *page {
 		iosSwitch(img, rows[0].Max.X-24, (rows[0].Min.Y+rows[0].Max.Y)/2, c.cfg.SmoothScroll, apDark)
 		p.buttons = append(p.buttons, button{"smoothscroll", rows[0]})
 		y += rh
-		footer("Off: every screen appears at once, like an e-reader. Animations are drawn by the processor and are slower.")
+		rows = groupRows(img, x, y, pw, 1, rh)
+		apText(img, f.body, rows[0].Min.X+30, rows[0].Min.Y+56, apLabel, "Draw With the GPU")
+		iosSwitch(img, rows[0].Max.X-24, (rows[0].Min.Y+rows[0].Max.Y)/2, gpuEnabled(), apDark)
+		p.buttons = append(p.buttons, button{"gpu", rows[0]})
+		y += rh
+		switch {
+		case c.disp != nil:
+			footer("The GPU shows the screen: pages follow your finger at 60 frames a second, and animations are smooth. Turning it off restarts the tablet.")
+		case c.gpuStarting:
+			footer("Starting the GPU...")
+		default:
+			footer("Off: every screen appears at once, like an e-reader. On: the GPU shows the screen (through Android's SurfaceFlinger), so scrolling follows your finger at 60 frames a second.")
+		}
 	case "general":
 		header("About")
 		ver := alpineVersion()

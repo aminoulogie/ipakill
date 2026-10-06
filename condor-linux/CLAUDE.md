@@ -309,8 +309,7 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       FramebufferNativeWindow is shown (fb0 virtual 1920x1200, pan 0,0; power off/on doesn't
       restore condor either; reboot does). Android displays via Intel's hardware composer,
       which only SurfaceFlinger drives. Readback + write() would cost what the CPU path costs.
-      The GPU path now only starts if /data/condor/gpu exists (experiments). Animations stay
-      on the CPU (off by default).
+      (Superseded 2026-10-06: the SurfaceFlinger route below works; glanim is no longer used.)
 - [x] **Books is the whole system, dark by default** (2026-10-03, user: "boot to kindle directly
       with dark mode, no launcher; terminal and settings as tabs"). No home screen (launcher,
       wallpaper and app icons deleted). condor starts on Books Home; tab bar: Home · Library ·
@@ -365,6 +364,27 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       Library: 48 books per tall page; Store: 24 per tall page, 26 topics in a sideways capsule
       row. Tests: scroll_test.go; tests switch off Home's background loads/redraws
       (homeLoads/backgroundRedraws) and get longer waits under -race (raceOn).
+- [x] **GPU through SurfaceFlinger works** (2026-10-06, os/condor-gl/glsf.cpp): on this panel only
+      SurfaceFlinger reaches the screen. glsf asks it for a full-screen layer (libgui's C++ API
+      called by mangled name through dlsym: sp<T> returns use a callee-popped hidden pointer on
+      i386; EGL needs the ANativeWindow found by its '_wnd' magic 8 bytes into the Surface).
+      SurfaceFlinger is commented out of init.rc (Android runs it in system_server), so
+      /system/bin/surfaceflinger is run directly. Verified on the tablet: 58-59 fps, condor's
+      screen, red, gradient all shown (gl-sf.cmd).
+- [x] **condor draws through the GPU** (2026-10-06, gpu.go, gpu_linux.go, gpuscroll.go,
+      os/condor-gl/condorsf.cpp → condorsf.bin): Settings > Display & Brightness > "Draw With the
+      GPU" (flag /data/condor/gpu, off by default). condor-init starts SurfaceFlinger + the
+      condorsf helper, which keeps a layer; the screen buffer (s.buf) moves into shared memory
+      (/dev/condor-gl.shm) and Screen.dev becomes gpuWriter: Flush = upload the changed rows +
+      show. Tall pages (≤ 10000 rows) are uploaded once (pageGen/texGen) and scrolled as an
+      overlay quad at 60 fps, always following the finger, with a fling (tau 0.45 s); sideways
+      rows repaint + upload their strip; lifting settles (blitPage + overlayOff). Animations
+      use the same helper (quads, as glanim). Safety: /data/condor/gpu.trying until 10 s after
+      the layer is up (found at boot = GPU turned off); any helper error → back to the
+      framebuffer (SurfaceFlinger killed, FBIOBLANK cycle) and the flag removed; a leftover
+      SurfaceFlinger with the GPU off is stopped. Turning it off restarts the tablet. Tests:
+      gpuscroll_test.go (software model of the helper; overlay pixels == blitPage). **Not yet
+      run on the tablet.**
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

@@ -35,6 +35,12 @@ type scrollState struct {
 	y0    int
 	from  int // scroll or row offset when the finger touched down
 	last  time.Time
+
+	// The GPU (gpuscroll.go): the page is shown from its copy on the GPU while gpuOn.
+	gpuOn   bool
+	texGen  int // c.pageGen of the page on the GPU (0: none)
+	fling   int // bumped to stop a fling
+	samples []scrollSample
 }
 
 const (
@@ -125,7 +131,8 @@ func (c *console) pageTouch(p TouchPoint) {
 		if c.page == nil {
 			return
 		}
-		sc.drag, sc.moved, sc.row = true, false, nil
+		sc.fling++ // a finger on a flinging page catches it (the overlay stays until it lifts)
+		sc.drag, sc.moved, sc.row, sc.samples = true, false, nil, nil
 		sc.x0, sc.y0, sc.from = p.X, p.Y, c.scrollY()
 		py := c.pageY(p.Y)
 		for i := range c.page.rows {
@@ -145,6 +152,25 @@ func (c *console) pageTouch(p TouchPoint) {
 				sc.from = c.rowOffset(sc.row.id)
 			}
 		}
+		if c.gpuScrolls() { // the GPU follows the finger, every frame
+			switch {
+			case sc.vert && c.page.img.Rect.Dy() <= c.viewH():
+				return
+			case sc.vert:
+				if c.gpuScrollTo(sc.from - dy) {
+					c.sample(c.scrollY())
+					return
+				}
+			case time.Since(sc.last) < scrollEvery:
+				return
+			default:
+				sc.last = time.Now()
+				r := sc.row
+				if c.gpuRowTo(r, min(max(sc.from-dx, 0), max(r.contentW-r.r.Dx(), 0))) {
+					return
+				}
+			}
+		}
 		if !c.cfg.SmoothScroll {
 			return // paged (the default): the page jumps when the finger lifts
 		}
@@ -157,6 +183,18 @@ func (c *console) pageTouch(p TouchPoint) {
 			return
 		}
 		moved := sc.moved
+		if sc.gpuOn {
+			sc.drag = false
+			if moved && sc.vert {
+				c.gpuRelease()
+				return
+			}
+			c.gpuSettle()
+			if !moved {
+				c.pageTap(p.X, p.Y)
+			}
+			return
+		}
 		switch {
 		case moved && !c.cfg.SmoothScroll:
 			sc.drag = false

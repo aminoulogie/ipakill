@@ -24,6 +24,7 @@ import (
 
 // drawLock paints the lock screen under the status bar. Caller holds drawMu.
 func (c *console) drawLock() {
+	c.endGPUScroll()
 	f := apple()
 	w, h := c.s.W, c.s.H-c.barH
 	img := canvas(w, h)

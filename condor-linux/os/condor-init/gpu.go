@@ -9,15 +9,39 @@ import (
 	"time"
 )
 
-func gpuEnabled() bool { _, err := os.Stat("/data/condor/gpu"); return err == nil }
+// gpuFlag turns on drawing through the GPU (Settings > Display & Brightness). gpuTrying
+// exists while a start hasn't been confirmed: if condor-init finds it at boot, the last try
+// went wrong (the tablet hung or restarted), and the GPU stays off.
+const (
+	gpuFlag   = condorHome + "/gpu"
+	gpuTrying = condorHome + "/gpu.trying"
+)
 
-// Animations on the GPU. The tablet's PowerVR SGX544 works only through Android's own
-// drivers, so a small bionic program (os/condor-gl/glanim.c, carried inside condor-init)
-// opens the framebuffer with them, and condor-init drives it: the screen before and after a
-// change go into memory both share, and each frame is a handful of quads, rectangles of
-// those two pictures put somewhere on the screen, which the GPU composes and shows at the
-// panel's vertical blank (60 a second). The CPU then only works out where the rectangles
-// go. Anything wrong with the GPU and the animations fall back to the CPU frames (anim.go).
+func gpuEnabled() bool { _, err := os.Stat(gpuFlag); return err == nil }
+
+var gpuTriedAtBoot bool
+
+// gpuSafeToTry is false, once, when the previous start was never confirmed.
+func gpuSafeToTry() bool {
+	if gpuTriedAtBoot {
+		return true
+	}
+	gpuTriedAtBoot = true
+	if _, err := os.Stat(gpuTrying); err == nil {
+		log.Printf("GPU: the last start wasn't confirmed; GPU drawing is off (turn it on again in Settings)")
+		os.Remove(gpuTrying)
+		os.Remove(gpuFlag)
+		return false
+	}
+	return true
+}
+
+// Drawing through the GPU (gpu_linux.go, os/condor-gl/condorsf.cpp). On this tablet only
+// SurfaceFlinger reaches the panel, so with the GPU on, condor runs it and shows its whole
+// screen on a SurfaceFlinger layer: it still draws with the processor, into memory the GPU
+// helper shares, and the helper shows the rows that changed. On top of that the GPU does what
+// the processor can't do 60 times a second: tall pages scroll by moving a picture of the page
+// (gpuscroll.go), and screen changes animate as quads of the pictures before and after.
 
 // quad is one rectangle of a frame, in the framebuffer's native pixels (glanim.c's layout).
 type quad struct {
@@ -38,9 +62,27 @@ const (
 type gpuDev interface {
 	images() (old, nu []byte)        // shared with the GPU, the framebuffer's native layout
 	load() error                     // upload both pictures
-	frame(q []quad, last bool) error // show a frame; the last one also brings the display home
+	frame(q []quad, last bool) error // show a frame
 	close()
 }
+
+// gpuDisplay is the GPU showing the whole screen.
+type gpuDisplay interface {
+	gpuDev
+	screenBuf() []byte                          // the screen, shared: condor draws into it
+	present(lo, hi int) error                   // native rows lo..hi changed: show the screen
+	pageLoad(img *image.RGBA) error             // the page (logical), for scrolling
+	pageRows(img *image.RGBA, y0, y1 int) error // the page's rows y0..y1-1 changed
+	overlay(q []quad)                           // drawn over the screen until overlayOff; latest wins
+	overlayOff() error
+	failed() error
+}
+
+// pageMaxRows is the tallest page the GPU scrolls (taller ones scroll on the CPU).
+const pageMaxRows = 10000
+
+// gpuPage is a quad of the page: x y in logical screen pixels, u v in the page's pixels.
+const gpuPage = 4
 
 // encodeFrame is a frame command for glanim.
 func encodeFrame(q []quad, last bool) []byte {
@@ -189,34 +231,115 @@ func (c *console) gpuFrames(d time.Duration, build func(t float64) []quad) bool 
 	return true
 }
 
-// wantGPU starts the GPU helper in the background when animations are on (once).
-//
-// Off unless /data/condor/gpu exists: tested on the tablet (gl-show), the GPU draws
-// correctly but its frames never reach the panel (black screen). Android shows them through
-// Intel's hardware composer, which only SurfaceFlinger drives; without it the display
-// plane the driver flips to isn't shown. Kept for experiments.
+// wantGPU starts drawing through the GPU in the background when it's turned on (once).
+// condor keeps drawing on the framebuffer until the GPU's layer is up.
 func (c *console) wantGPU() {
-	if !c.cfg.Animations || c.gpu != nil || c.gpuStarting || c.gpuFailed || !gpuEnabled() {
+	if c.disp == nil && !c.gpuStarting && (!gpuEnabled() || !gpuSafeToTry()) && leftoverSurfaceFlinger() {
+		// A SurfaceFlinger from an earlier condor (an update, a rollback) would hide the
+		// framebuffer: stop it.
+		log.Printf("GPU: off, but SurfaceFlinger is running: stopping it")
+		stopSurfaceFlinger()
+		reclaimFramebuffer(c.s)
+		c.s.markRows(0, c.s.fbH-1)
+		c.s.Flush()
+	}
+	if c.disp != nil || c.gpuStarting || c.gpuFailed || !gpuEnabled() || !gpuSafeToTry() {
 		return
 	}
 	c.gpuStarting = true
+	os.WriteFile(gpuTrying, nil, 0o644)
+	syncDisks()
 	go func() {
 		g, err := startGPU(c.s)
 		drawMu.Lock()
 		defer drawMu.Unlock()
 		c.gpuStarting = false
 		if err != nil {
-			log.Printf("GPU: %v; animations stay on the CPU", err)
+			log.Printf("GPU: %v; drawing stays on the framebuffer", err)
 			c.gpuFailed = true
+			os.Remove(gpuTrying)
+			os.Remove(gpuFlag)
+			stopSurfaceFlinger()
+			reclaimFramebuffer(c.s)
+			c.s.markRows(0, c.s.fbH-1)
+			c.s.Flush()
+			if c.mode == modeSettings {
+				c.redrawAll()
+			}
 			return
 		}
-		log.Printf("GPU: animations on the PowerVR")
-		c.gpu = g
+		c.useGPU(g)
+		if c.mode == modeSettings {
+			c.redrawAll()
+		}
+		log.Printf("GPU: the screen is on the PowerVR, through SurfaceFlinger")
+		time.AfterFunc(10*time.Second, func() {
+			drawMu.Lock()
+			defer drawMu.Unlock()
+			if c.disp != nil {
+				os.Remove(gpuTrying)
+				log.Printf("GPU: confirmed")
+			}
+		})
 	}()
 }
 
-// dropGPU gives up on the GPU after an error. Caller holds drawMu.
+// useGPU moves the screen into the GPU's shared memory and shows it there. Caller holds
+// drawMu.
+func (c *console) useGPU(g gpuDisplay) {
+	scr := g.screenBuf()
+	copy(scr, c.s.buf)
+	c.s.buf = scr
+	c.s.dev = &gpuWriter{c: c, g: g}
+	c.gpu, c.disp = g, g
+	c.s.markRows(0, c.s.fbH-1)
+	c.s.Flush()
+}
+
+// gpuWriter is the screen's device while the GPU shows it: a Flush shows the rows that
+// changed. If the GPU fails, the screen goes back to the framebuffer.
+type gpuWriter struct {
+	c *console
+	g gpuDisplay
+}
+
+func (w *gpuWriter) WriteAt(p []byte, off int64) (int, error) {
+	s := w.c.s
+	lo := int(off) / s.stride
+	hi := (int(off)+len(p))/s.stride - 1
+	if err := w.g.present(lo, hi); err != nil {
+		w.c.gpuLost(err)
+		return s.fbDev.WriteAt(p, off)
+	}
+	return len(p), nil
+}
+
+// gpuLost puts the screen back on the framebuffer after a GPU failure, and turns the GPU off
+// for the next start. Caller holds drawMu.
+func (c *console) gpuLost(err error) {
+	if c.disp == nil {
+		return
+	}
+	log.Printf("GPU: %v; back to drawing on the framebuffer", err)
+	c.disp.close()
+	c.gpu, c.disp = nil, nil
+	c.gpuFailed = true
+	c.sc.gpuOn = false
+	os.Remove(gpuFlag)
+	os.Remove(gpuTrying)
+	stopSurfaceFlinger()
+	c.s.dev = c.s.fbDev
+	reclaimFramebuffer(c.s)
+	c.s.markRows(0, c.s.fbH-1)
+	c.s.Flush()
+}
+
+// dropGPU gives up on the GPU after an error in an animation. Caller holds drawMu.
 func (c *console) dropGPU(err error) {
+	if c.disp != nil {
+		c.gpuLost(err)
+		return
+	}
 	log.Printf("GPU: %v; animations back on the CPU", err)
 	c.gpu.close()
 	c.gpu = nil

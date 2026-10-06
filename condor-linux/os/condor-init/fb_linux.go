@@ -97,9 +97,9 @@ func setBacklight(percent int) {
 
 // blankScreen powers the panel down (FB_BLANK_POWERDOWN) or back up.
 func blankScreen(s *Screen, off bool) {
-	f, ok := s.dev.(*os.File)
-	if !ok {
-		return
+	f, ok := s.fbDev.(*os.File)
+	if !ok || s.dev != s.fbDev {
+		return // SurfaceFlinger drives the panel while the GPU shows the screen: backlight only
 	}
 	mode := uintptr(fbBlankUnblank)
 	if off {
@@ -117,7 +117,7 @@ var vsyncBroken bool
 // waitVsync waits for the panel's next vertical blank, so an animation frame lands whole.
 // Drivers without FBIO_WAITFORVSYNC say so once; frames are then paced by the clock.
 func waitVsync(s *Screen) bool {
-	f, ok := s.dev.(*os.File)
+	f, ok := s.fbDev.(*os.File)
 	if !ok || vsyncBroken {
 		return false
 	}
@@ -132,7 +132,7 @@ func waitVsync(s *Screen) bool {
 
 // refreshHz is the panel's refresh rate from its timings (0 if the driver doesn't say).
 func refreshHz(s *Screen) float64 {
-	f, ok := s.dev.(*os.File)
+	f, ok := s.fbDev.(*os.File)
 	if !ok {
 		return 0
 	}
@@ -143,4 +143,15 @@ func refreshHz(s *Screen) float64 {
 	htotal := float64(v[0] + v[26] + v[27] + v[30]) // xres + left + right + hsync
 	vtotal := float64(v[1] + v[28] + v[29] + v[31]) // yres + upper + lower + vsync
 	return 1e12 / float64(v[25]) / htotal / vtotal  // pixclock is in picoseconds
+}
+
+// reclaimFramebuffer gets the panel showing the framebuffer again after SurfaceFlinger has
+// had it: blank and unblank, so the driver sets the display plane up afresh.
+func reclaimFramebuffer(s *Screen) {
+	f, ok := s.fbDev.(*os.File)
+	if !ok {
+		return
+	}
+	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioBlank, 4)
+	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioBlank, fbBlankUnblank)
 }
