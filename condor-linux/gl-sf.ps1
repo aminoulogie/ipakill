@@ -19,6 +19,7 @@ for ($i = 1; $i -le 10; $i++) {
     Start-Sleep 5
 }
 if (-not (Test-Path $bin)) { Write-Host "glsf isn't built. Run build.sh in os\condor-gl first." -ForegroundColor Red; exit 1 }
+Write-Host ("glsf to send: " + (Get-Item $bin).Length + " bytes, built " + (Get-Item $bin).LastWriteTime) -ForegroundColor Cyan
 & scp @ssh $bin (Join-Path $PSScriptRoot 'os\condor-gl\gl-sf.sh') "root@${Ip}:/tmp/"
 if ($LASTEXITCODE -ne 0) { Write-Host "copy failed: is the tablet on Wi-Fi at ${Ip}?" -ForegroundColor Red; exit 1 }
 Write-Host "Watch the tablet now: condor's screen moved down (6 s), then red (4 s), then a moving gradient (4 s)." -ForegroundColor Cyan
