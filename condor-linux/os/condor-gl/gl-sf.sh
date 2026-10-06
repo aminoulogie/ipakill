@@ -15,25 +15,27 @@ R=/proc/1/root
 cp /tmp/glsf $R/data/local/tmp/glsf && chmod 755 $R/data/local/tmp/glsf || exit 1
 pkill -x condor-gl 2>/dev/null # condor's own GPU helper, if animations are on
 
-A() { printf '%s; exit\n' "$1" | nc 127.0.0.1 2324 2>/dev/null | tr -d '\r' | grep -v -e tty -e 'job control' -e 'condor-init shell'; }
+A() { printf '%s\nexit\n' "$1" | nc 127.0.0.1 2324 2>/dev/null | tr -d '\r' | sed 's/^root@android:[^#]*# //' | grep -v -e tty -e 'job control' -e 'condor-init shell'; }
 sf_up() { A 'ps' | grep -q '/system/bin/surfaceflinger'; }
 echo "surfaceflinger service state: '$(A 'getprop init.svc.surfaceflinger')'"
 echo "binary: $(A 'ls -l /system/bin/surfaceflinger')"
+echo "init.rc: $(A 'grep -n -A8 "service surfaceflinger" /init.rc')"
 if ! sf_up; then
 	# Android's service, started through init (the root shell has Android's property socket).
-	A '/system/bin/start surfaceflinger' >/dev/null
+	echo "start: $(A '/system/bin/start surfaceflinger 2>&1')"
 	for i in 1 2 3 4 5 6; do sleep 1; sf_up && break; done
 fi
 if ! sf_up; then
 	# Not a service on this build: run the program itself, detached.
 	echo "start did nothing; running /system/bin/surfaceflinger directly"
 	A '/system/bin/surfaceflinger </dev/null >/data/local/tmp/sf.out 2>&1 &' >/dev/null
+	sleep 1
 	for i in 1 2 3 4 5 6; do sleep 1; sf_up && break; done
 fi
 if ! sf_up; then
 	echo "SurfaceFlinger did not start; not running glsf. Diagnostics:"
 	echo "--- sf.out"; A 'cat /data/local/tmp/sf.out'
-	echo "--- service state: '$(A 'getprop init.svc.surfaceflinger')'"
+	echo "--- processes: $(A 'ps' | grep -i -E 'surface|system_server|zygote')"
 	echo "--- logcat"; /system/bin/logcat -d -v brief '*:I' 2>&1 | tail -n 25
 	exit 1
 fi
