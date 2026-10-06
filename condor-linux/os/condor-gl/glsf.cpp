@@ -70,7 +70,9 @@ static void *need(void *h, const char *lname, const char *sym) {
 }
 
 int main(int argc, char **argv) {
-	(void)argc; (void)argv;
+	int hold = 0; /* "glsf hold N": condor screen, unmoved, for N seconds, then exit */
+        if (argc > 2 && argv[1][0] == 'h')
+                for (const char *s = argv[2]; *s >= '0' && *s <= '9'; s++) hold = hold * 10 + (*s - '0');
 	say("glsf: OpenGL ES through SurfaceFlinger, like Android's boot animation\n");
 	say("step: loading libutils, libbinder, libgui, libEGL, libGLESv2\n");
 	void *utils = lib("libutils.so"), *binder = lib("libbinder.so"), *gui = lib("libgui.so");
@@ -270,10 +272,10 @@ int main(int argc, char **argv) {
 	//    native layout, which is down on the portrait screen).
 	say(">>> WATCH THE TABLET: 6 s of condor's screen moved down\n");
 	glUniform1i(uMode, 0);
-	glUniform2f(uShift, 2.0f * 300 / FW, 0);
+	glUniform2f(uShift, hold ? 0.0f : 2.0f * 300 / FW, 0);
 	double t0 = now();
 	int frames = 0;
-	while (now() - t0 < 6) {
+	while (now() - t0 < (hold ? hold : 6)) {
 		glClearColor(0, 0, 0, 1);
 		glClear(0x4000);
 		glDrawArrays(5, 0, 4);
@@ -286,6 +288,8 @@ int main(int argc, char **argv) {
 		frames++;
 	}
 	say("     %.1f frames/s\n", frames / (now() - t0));
+        if (hold) { say("done: held the screen\n"); return 0; }
+
 
 	// 2. Red.
 	say(">>> 4 s of red\n");

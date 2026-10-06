@@ -16,13 +16,18 @@ cp /tmp/glsf $R/data/local/tmp/glsf && chmod 755 $R/data/local/tmp/glsf || exit 
 pkill -x condor-gl 2>/dev/null # condor's own GPU helper, if animations are on
 
 echo "surfaceflinger was: $(printf 'getprop init.svc.surfaceflinger; exit\n' | nc 127.0.0.1 2324 2>/dev/null | tr -d '\r' | grep -E '^(running|stopped)$')"
-/system/bin/start surfaceflinger
-sleep 3
+printf '/system/bin/start surfaceflinger; exit\n' | nc 127.0.0.1 2324 >/dev/null 2>&1
+sleep 4
+if ! printf 'ps; exit\n' | nc 127.0.0.1 2324 | grep -q surfaceflinger; then
+        echo "SurfaceFlinger did not start (not in the process list): not running glsf"
+        exit 1
+fi
+echo "SurfaceFlinger is running"
 
 /system/bin/logcat -c 2>/dev/null
 touch /tmp/gl-mark
 echo ">>> $(date +%T) WATCH THE TABLET: condor's screen moved down, then red, then a gradient"
-printf '/data/local/tmp/glsf 2>&1; echo exit code $?; exit\n' |
+printf '/data/local/tmp/glsf hold 30 2>&1; echo exit code $?; exit\n' |
 	nc 127.0.0.1 2324 | grep -v -e 'tty' -e 'job control' -e 'condor-init shell'
 
 sleep 2
