@@ -92,6 +92,8 @@ func (c *console) showPage() {
 		c.page = c.storePage()
 	case c.mode == modeWords:
 		c.page = c.wordsPage()
+	case c.mode == modeSoma:
+		c.page = c.somaPage()
 	default:
 		c.page = c.booksHomePage()
 	}
@@ -100,7 +102,7 @@ func (c *console) showPage() {
 	if c.mode != modeReader { // the reader draws its own, under its overlays
 		c.drawToast()
 	}
-	if (c.mode == modeStore && c.store.typing) || (c.mode == modeWords && c.wui.edit) {
+	if (c.mode == modeStore && c.store.typing) || (c.mode == modeWords && c.wui.edit) || (c.mode == modeSoma && c.somaUI.typing) {
 		c.skb.draw()
 	}
 	c.s.Flush()
@@ -124,7 +126,7 @@ func (c *console) pageTap(x, y int) {
 	if id != c.confirm {
 		c.confirm = ""
 	}
-	if c.booksTap(id) || c.homeTap(id) || c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) {
+	if c.booksTap(id) || c.homeTap(id) || c.storeTap(id) || c.wordsTap(id) || c.readerTap(id) || c.somaTap(id) {
 		return
 	}
 	switch {

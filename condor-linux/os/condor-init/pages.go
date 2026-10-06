@@ -30,6 +30,7 @@ const (
 	modeReader // a book open
 	modeStore  // free books to download
 	modeWords  // the word book
+	modeSoma   // Soma: habits, to-dos, calendar, reports (soma.go)
 )
 
 type button struct {

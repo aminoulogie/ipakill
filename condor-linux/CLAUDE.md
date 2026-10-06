@@ -409,6 +409,21 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       (coverLoaded): Library, Words and the lock screen now redraw when covers arrive (before,
       only Home and Store did). (7) EPUB covers: also an image named *cover*, else the first
       non-SVG picture; WebP decodes (x/image/webp).
+- [x] **Soma tab (beta)** (2026-10-06, somasync.go, somadata.go, soma.go): Soma (the user's PC/iOS
+      app, aminoulogie/kite-bay-otter-topaz) on the tablet, synced through Soma's own E2E relay
+      (src/lib/sync: crypto.ts, records.ts, engine.ts). Go port: recovery code (Crockford
+      base32 + checksum) → secret; HKDF-SHA256 salt "soma-sync-v1": AES-GCM key "records",
+      HMAC key "ids", vault "vault"(16), token "auth"(32); record id = b64url(HMAC(name)[:16]);
+      blob = b64url(iv12 + AES-GCM(JSON {key,value,t,device})). Verified against vectors from
+      Soma's own crypto.ts (somasync_test.go) both ways. Records kept in /data/condor/soma
+      (state.json; link.json 0600); pull /v1/pull?after=seq, push dirty records /v1/push;
+      newest t wins (tie: higher device); a local unsent edit isn't overwritten. Synced every
+      2 min, on opening the tab, and after each edit. Edits written like Soma's store: habit
+      tick (history[date], steps → stepLog; ramp habits: phone only), to-do toggle/add (newId,
+      todos@order), reading +min. Views: Today (habits, reading, today/week to-dos), Calendar
+      (month; day's plan blocks with times, to-dos, training, food), Reports (training 2
+      weeks, nutrition 7 days, habits this week, reading). Link: type address + code in the
+      tab, or soma-link.cmd on the PC (asks both, writes link.txt over ssh; picked up live).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

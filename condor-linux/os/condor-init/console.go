@@ -88,6 +88,7 @@ type console struct {
 	readerFrom       mode       // where the open book was opened from, for "Library"
 	animA, animB     []byte     // the screen before and after a transition (native layout)
 	gpu              gpuDev     // animations on the GPU (gpu.go), nil when they're on the CPU
+	somaUI           somaUI     // the Soma tab (soma.go)
 	disp             gpuDisplay // the GPU showing the screen (gpu.go), nil when it's the framebuffer
 	pageGen          int        // bumped whenever the page is drawn (the GPU's copy is then stale)
 	gpuStarting      bool
@@ -144,12 +145,14 @@ func newConsole(s *Screen) (*console, error) {
 	c.skb, err = newKeyboard(s, func(b []byte) { // typing on a page: the store's search, a word's meaning
 		if c.mode == modeWords {
 			c.wordsKey(b)
+		} else if c.mode == modeSoma {
+			c.somaKey(b)
 		} else {
 			c.storeKey(b)
 		}
 	}, func(visible bool) {
 		if !visible { // its hide key: stop typing
-			c.store.typing, c.wui.edit = false, false
+			c.store.typing, c.wui.edit, c.somaUI.typing = false, false, false
 			c.showPage()
 		}
 	})
@@ -211,6 +214,8 @@ func (c *console) touchLoop() {
 				case c.mode == modeStore && c.store.typing && c.skb.visible && p.Y >= c.skb.y0:
 					c.skb.touch(p)
 				case c.mode == modeWords && c.wui.edit && c.skb.visible && p.Y >= c.skb.y0:
+					c.skb.touch(p)
+				case c.mode == modeSoma && c.somaUI.typing && c.skb.visible && p.Y >= c.skb.y0:
 					c.skb.touch(p)
 				case c.mode == modeReader && c.book != nil:
 					c.readerTouch(p)

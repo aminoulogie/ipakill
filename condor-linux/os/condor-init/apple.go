@@ -301,7 +301,7 @@ func (c *console) booksTabs(p *page, on string) {
 	f := apple()
 	img := p.img
 	tabs := []struct{ id, label string }{{"tab:home", "Home"}, {"tab:library", "Library"}, {"tab:store", "Store"},
-		{"tab:words", "Words"}, {"tab:terminal", "Terminal"}, {"tab:settings", "Settings"}}
+		{"tab:words", "Words"}, {"tab:soma", "Soma"}, {"tab:terminal", "Terminal"}, {"tab:settings", "Settings"}}
 	widths := make([]int, len(tabs))
 	total := 80 // the magnifier
 	for i, t := range tabs {
@@ -353,6 +353,9 @@ func (c *console) booksTap(id string) bool {
 	case "tab:words":
 		c.wui = wordsUI{}
 		c.setMode(modeWords)
+	case "tab:soma":
+		c.setMode(modeSoma)
+		go soma.sync()
 	case "tab:terminal":
 		c.setMode(modeTerminal)
 	case "tab:settings":

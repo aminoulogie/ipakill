@@ -119,6 +119,7 @@ func main() {
 			go c.keysLoop("gpio-keys")
 			go c.idleLoop()
 			go c.serveBooks() // Send to Books, from a phone's browser
+			go somaLoop()     // Soma's data, in step with the PC and the phone
 			c.wantGPU()
 		}
 	}
