@@ -452,7 +452,7 @@ func (c *console) storePage() *page {
 		st.dl = map[string]string{}
 	}
 	covers.mu.Lock()
-	covers.loaded = func() {
+	covers.loaded = func(string) {
 		drawMu.Lock()
 		c.storeRedraw()
 		drawMu.Unlock()

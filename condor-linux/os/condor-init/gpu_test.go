@@ -233,7 +233,12 @@ func TestTransitionsOnTheGPU(t *testing.T) {
 	}
 	end := append([]byte(nil), c.s.buf...)
 	c.redrawAll()
-	if differ(end, c.s.buf, c.s, 0) != 0 {
-		t.Error("push ended off the new screen")
+	// Below the status bar (its clock may tick over meanwhile): logical y >= barH is native
+	// x >= barH in every native row.
+	for fy := 0; fy < c.s.fbH; fy++ {
+		o := fy*c.s.stride + 4*c.barH
+		if string(end[o:(fy+1)*c.s.stride]) != string(c.s.buf[o:(fy+1)*c.s.stride]) {
+			t.Fatal("push ended off the new screen")
+		}
 	}
 }

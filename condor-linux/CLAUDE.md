@@ -389,6 +389,17 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       → flag removed + reboot (gpuReboot). Turning it off restarts the tablet. Tests:
       gpuscroll_test.go (software model of the helper; overlay pixels == blitPage). **Not yet
       run on the tablet.**
+- [x] **Responsiveness** (2026-10-06): (1) touch: the Goodix sometimes reports a touch's first
+      frame with raw Y=0 (logical x 1199) — taps became swipes from the right edge and did
+      nothing; touch.go now holds such a finger until it's placed (dropped if lifted first).
+      (2) covers: memory held only 40, Home needs 100+, so covers were evicted and reloaded
+      forever, each load redrawing all 7808 rows of Home (touches waited, GPU slices went
+      stale). Now covers.go keeps scaled covers on disk too (covers/s/<hash>-<w>x<h>, raw
+      RGBA, read synchronously: shown at once after the first time, even after a restart) and
+      48 MB in memory, least recently drawn dropped. (3) a cover arriving repaints only the
+      rows holding it (hrow.covers, paintArrived), uploading their strips to the GPU. (4) the
+      visible page slices are sent to the GPU 300 ms after a page is drawn (prefetchPage), so
+      the first swipe moves at once. "slow page" in init.log = a page draw over 150 ms.
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

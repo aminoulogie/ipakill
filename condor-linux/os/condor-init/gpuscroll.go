@@ -250,3 +250,21 @@ func (c *console) fling(gen int, m mode, p *page, y0, v float64) {
 		}
 	}
 }
+
+// prefetchPage sends the page's slices around the screen to the GPU a moment after it's
+// drawn, while nothing else happens, so the first swipe moves at once. Caller holds drawMu.
+func (c *console) prefetchPage() {
+	if c.disp == nil || !c.gpuScrolls() || c.page.img.Rect.Dy() <= c.viewH() {
+		return
+	}
+	gen := c.pageGen
+	time.AfterFunc(300*time.Millisecond, func() {
+		drawMu.Lock()
+		defer drawMu.Unlock()
+		if c.pageGen != gen || c.sc.drag || c.sc.gpuOn || !c.gpuScrolls() {
+			return
+		}
+		y0, y1 := c.visible(c.scrollY())
+		c.ensureRows(y0, y1+pageSlice/2)
+	})
+}

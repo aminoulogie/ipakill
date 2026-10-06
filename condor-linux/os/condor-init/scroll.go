@@ -21,6 +21,7 @@ type hrow struct {
 	r        image.Rectangle
 	contentW int
 	paint    func(img *image.RGBA) // redraws the row at its current offset
+	covers   map[string]bool       // the covers in it (repainted alone when one arrives)
 }
 
 // scrollState: per-mode scroll positions, per-row offsets, and the finger moving them.
@@ -75,7 +76,7 @@ func (c *console) rowOffset(id string) int {
 
 // addRow registers a sideways row on p.
 func (p *page) addRow(id string, r image.Rectangle, contentW int, paint func(*image.RGBA)) {
-	p.rows = append(p.rows, hrow{id, r, contentW, paint})
+	p.rows = append(p.rows, hrow{id: id, r: r, contentW: contentW, paint: paint})
 }
 
 // setRowButtons replaces a row's buttons (they move with it).

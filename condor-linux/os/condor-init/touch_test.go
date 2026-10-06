@@ -63,3 +63,34 @@ func TestAxisScaleClamps(t *testing.T) {
 		t.Fatal("scale must clamp to the screen")
 	}
 }
+
+// The panel's first frame of a touch sometimes has Y at 0 (the right edge): the finger goes
+// down where the next frame puts it, so a tap stays a tap; one lifted unplaced is nothing.
+func TestTouchFirstFrameAtEdge(t *testing.T) {
+	d := newTouchDecoder(axisRange{0, 1920}, axisRange{0, 1200}, fbW, fbH, Rot90)
+	frames := feed(d,
+		ev{evAbs, absMTSlot, 0}, ev{evAbs, absMTTrackingID, 3},
+		ev{evAbs, absMTPositionX, 300}, ev{evAbs, absMTPositionY, 0}, ev{evSyn, synReport, 0},
+		ev{evAbs, absMTPositionY, 1100}, ev{evSyn, synReport, 0},
+		ev{evAbs, absMTTrackingID, -1}, ev{evSyn, synReport, 0},
+	)
+	if len(frames) != 3 || len(frames[0]) != 0 {
+		t.Fatalf("frames %+v", frames)
+	}
+	down, up := frames[1][0], frames[2][0]
+	if !down.Down || down.Moved || down.X != 100 || down.Y != 299 {
+		t.Fatalf("down %+v, want at (100, 299)", down)
+	}
+	if !up.Up || up.X != down.X || up.Y != down.Y {
+		t.Fatalf("up %+v: a tap should lift where it went down", up)
+	}
+	frames = feed(d,
+		ev{evAbs, absMTTrackingID, 4}, ev{evAbs, absMTPositionY, 0}, ev{evSyn, synReport, 0},
+		ev{evAbs, absMTTrackingID, -1}, ev{evSyn, synReport, 0},
+	)
+	for _, f := range frames {
+		if len(f) != 0 {
+			t.Fatalf("an unplaced touch reported %+v", f)
+		}
+	}
+}

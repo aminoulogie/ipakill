@@ -18,6 +18,10 @@ func testConsole(t *testing.T) *console {
 	oldDir, oldDict, oldBg := dictDir, dict, dictBackground
 	dictDir, dict, dictBackground = t.TempDir(), newDictStore(), false
 	t.Cleanup(func() { dictDir, dict, dictBackground = oldDir, oldDict, oldBg })
+	// Covers from a temp folder, in a fresh cache.
+	oldCovDir, oldCovers := coverDir, covers
+	coverDir, covers = t.TempDir(), newCoverCache()
+	t.Cleanup(func() { coverDir, covers = oldCovDir, oldCovers })
 	// Nothing from Home in the background (not put back: stray arrivals read them later).
 	backgroundRedraws, homeLoads = false, false
 	setPalette(true)

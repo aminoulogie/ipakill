@@ -40,6 +40,7 @@ type TouchPoint struct {
 	PrevX    int // logical position in the previous frame (valid when Moved)
 	PrevY    int
 	tracking bool
+	unplaced bool // down, but the panel hasn't said where yet (see frame)
 }
 
 // touchDecoder turns raw input events into per-frame finger states.
@@ -99,6 +100,26 @@ func (d *touchDecoder) frame() []TouchPoint {
 		}
 		d.changed[i] = false
 		f := &d.fingers[i]
+		// This Goodix panel sometimes reports a finger's first frame with Y at 0 (the screen's
+		// right edge, logical x 1199), then its real place in the next frame: seen as a jump from the edge,
+		// a tap became a swipe and landed nowhere. Such a finger goes down only once it's
+		// placed; one lifted before that never touched anything.
+		placed := f.RawY > d.yr.min
+		if f.Down && !placed {
+			f.Down, f.unplaced = false, !f.Up
+			f.Up = false
+			continue
+		}
+		if f.unplaced {
+			if f.Up {
+				f.Up, f.unplaced = false, false
+				continue
+			}
+			if !placed {
+				continue
+			}
+			f.Down, f.unplaced = true, false
+		}
 		x, y := d.rot.fromFB(d.xr.scale(f.RawX, d.fbW), d.yr.scale(f.RawY, d.fbH), d.fbW, d.fbH)
 		f.Moved = !f.Down && !f.Up && (x != f.X || y != f.Y)
 		f.PrevX, f.PrevY = f.X, f.Y

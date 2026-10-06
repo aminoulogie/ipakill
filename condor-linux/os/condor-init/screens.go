@@ -88,7 +88,8 @@ func (c *console) showPage() {
 	default:
 		c.page = c.booksHomePage()
 	}
-	c.blitPage()              // the window of a tall page that's scrolled to
+	c.blitPage() // the window of a tall page that's scrolled to
+	c.prefetchPage()
 	if c.mode != modeReader { // the reader draws its own, under its overlays
 		c.drawToast()
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"fmt"
 	"image"
@@ -23,8 +24,11 @@ import (
 	"condor-init/ui"
 )
 
-// Book covers for the store: fetched once, kept on disk in /data/condor/covers, decoded and
-// scaled in the background (three at a time), and kept in memory at the sizes drawn.
+// Book covers: fetched once and kept on the tablet for good, twice: the image as it came
+// (/data/condor/covers/<hash>) and, once scaled to a size it's drawn at, that too, ready to
+// show (/data/condor/covers/s/<hash>-<w>x<h>: raw pixels, no decoding). A cover seen once
+// appears at once from then on, everywhere, even after a restart. In memory, the most
+// recently drawn covers are kept, up to coverMemBytes (all of Home's, and more).
 
 var coverDir = condorHome + "/covers"
 
@@ -35,36 +39,79 @@ type coverKey struct {
 
 type coverCache struct {
 	mu      sync.Mutex
-	imgs    map[coverKey]*image.RGBA
-	order   []coverKey // oldest first, for trimming
+	imgs    map[coverKey]*list.Element // values: *coverEntry
+	lru     *list.List                 // most recently drawn at the front
+	bytes   int
 	pending map[coverKey]bool
 	failed  map[string]bool
 	sem     chan struct{}
-	loaded  func() // called (without locks) when a cover is ready
+	loaded  func(url string) // called (without locks) when a cover is ready
 }
 
-const coverMemMax = 40 // scaled covers kept in memory (~0.7 MB each at grid size)
+type coverEntry struct {
+	k   coverKey
+	img *image.RGBA
+}
 
-var covers = &coverCache{imgs: map[coverKey]*image.RGBA{}, pending: map[coverKey]bool{},
-	failed: map[string]bool{}, sem: make(chan struct{}, 3)}
+const coverMemBytes = 48 << 20
 
-// get returns the cover scaled to fill w x h, or nil while it loads (or if it can't).
+var covers = newCoverCache()
+
+func newCoverCache() *coverCache {
+	return &coverCache{imgs: map[coverKey]*list.Element{}, lru: list.New(), pending: map[coverKey]bool{},
+		failed: map[string]bool{}, sem: make(chan struct{}, 3)}
+}
+
+// get returns the cover scaled to fill w x h, or nil while it loads (or if it can't). A cover
+// already scaled on the tablet is read at once (a few milliseconds), so pages draw with it.
 func (cc *coverCache) get(url string, w, h int) *image.RGBA {
 	if url == "" {
 		return nil
 	}
 	k := coverKey{url, w, h}
 	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	if img := cc.imgs[k]; img != nil {
+	if e := cc.imgs[k]; e != nil {
+		cc.lru.MoveToFront(e)
+		img := e.Value.(*coverEntry).img
+		cc.mu.Unlock()
 		return img
 	}
 	if cc.pending[k] || cc.failed[url] {
+		cc.mu.Unlock()
+		return nil
+	}
+	cc.mu.Unlock()
+	if img := readScaled(k); img != nil {
+		cc.mu.Lock()
+		cc.keep(k, img)
+		cc.mu.Unlock()
+		return img
+	}
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.pending[k] {
 		return nil
 	}
 	cc.pending[k] = true
 	go cc.load(k)
 	return nil
+}
+
+// keep puts a cover in memory, dropping the least recently drawn beyond the budget. Caller
+// holds cc.mu.
+func (cc *coverCache) keep(k coverKey, img *image.RGBA) {
+	if e := cc.imgs[k]; e != nil {
+		cc.lru.MoveToFront(e)
+		return
+	}
+	cc.imgs[k] = cc.lru.PushFront(&coverEntry{k, img})
+	cc.bytes += len(img.Pix)
+	for cc.bytes > coverMemBytes && cc.lru.Len() > 1 {
+		old := cc.lru.Back().Value.(*coverEntry)
+		cc.lru.Remove(cc.lru.Back())
+		delete(cc.imgs, old.k)
+		cc.bytes -= len(old.img.Pix)
+	}
 }
 
 func (cc *coverCache) load(k coverKey) {
@@ -77,17 +124,34 @@ func (cc *coverCache) load(k coverKey) {
 		log.Printf("store: cover %s: %v", k.url, err)
 		cc.failed[k.url] = true
 	} else {
-		cc.imgs[k] = img
-		cc.order = append(cc.order, k)
-		for len(cc.order) > coverMemMax {
-			delete(cc.imgs, cc.order[0])
-			cc.order = cc.order[1:]
-		}
+		cc.keep(k, img)
+		writeScaled(k, img)
 	}
 	loaded := cc.loaded
 	cc.mu.Unlock()
-	if loaded != nil {
-		loaded()
+	if loaded != nil && err == nil {
+		loaded(k.url)
+	}
+}
+
+// scaledFile is where a cover scaled to w x h is kept.
+func scaledFile(k coverKey) string {
+	return filepath.Join(coverDir, "s", fmt.Sprintf("%s-%dx%d", hash(k.url), k.w, k.h))
+}
+
+func readScaled(k coverKey) *image.RGBA {
+	b, err := os.ReadFile(scaledFile(k))
+	if err != nil || len(b) != 4*k.w*k.h {
+		return nil
+	}
+	return &image.RGBA{Pix: b, Stride: 4 * k.w, Rect: image.Rect(0, 0, k.w, k.h)}
+}
+
+func writeScaled(k coverKey, img *image.RGBA) {
+	f := scaledFile(k)
+	os.MkdirAll(filepath.Dir(f), 0o755)
+	if os.WriteFile(f+".new", img.Pix, 0o644) == nil {
+		os.Rename(f+".new", f)
 	}
 }
 

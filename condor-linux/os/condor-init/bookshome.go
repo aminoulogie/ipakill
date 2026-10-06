@@ -91,9 +91,9 @@ func (c *console) booksHomePage() *page {
 	f := apple()
 	mx := 48
 	covers.mu.Lock()
-	covers.loaded = func() {
+	covers.loaded = func(url string) {
 		drawMu.Lock()
-		c.homeRedrawSoon()
+		c.coverArrived(url)
 		drawMu.Unlock()
 	}
 	covers.mu.Unlock()
@@ -365,6 +365,87 @@ func (c *console) coverRow(p *page, id string, y int, items []rowItem, bg color.
 	}
 	paint(p.img)
 	p.addRow(id, band, contentW, paint)
+	r := &p.rows[len(p.rows)-1]
+	r.covers = map[string]bool{}
+	for _, ri := range items {
+		if ri.it != nil && ri.it.cover != "" {
+			r.covers[ri.it.cover] = true
+		}
+	}
+}
+
+// coverArrived notes a cover that has just loaded; a moment later, the rows showing it are
+// repainted (not the whole page: Home is thousands of rows tall, and covers arrive by the
+// dozen). Caller holds drawMu.
+func (c *console) coverArrived(url string) {
+	if c.arrived == nil {
+		c.arrived = map[string]bool{}
+	}
+	c.arrived[url] = true
+	if c.arrivedQueued || !backgroundRedraws {
+		return
+	}
+	c.arrivedQueued = true
+	time.AfterFunc(150*time.Millisecond, func() {
+		drawMu.Lock()
+		defer drawMu.Unlock()
+		c.arrivedQueued = false
+		c.paintArrived()
+	})
+}
+
+// paintArrived repaints the rows holding the covers that arrived, and shows them. Caller
+// holds drawMu.
+func (c *console) paintArrived() {
+	arrived := c.arrived
+	c.arrived = nil
+	if c.mode != modeBooksHome || !c.screenOn || c.locked || c.page == nil || len(arrived) == 0 {
+		return // drawn with the covers next time Home is
+	}
+	if c.sc.drag && !c.sc.gpuOn { // the processor is following a finger: after it lifts
+		for u := range arrived {
+			c.coverArrived(u)
+		}
+		return
+	}
+	shown := map[string]bool{}
+	var painted []image.Rectangle
+	for i := range c.page.rows {
+		r := &c.page.rows[i]
+		hit := false
+		for u := range arrived {
+			if r.covers[u] {
+				hit, shown[u] = true, true
+			}
+		}
+		if hit {
+			r.paint(c.page.img)
+			painted = append(painted, r.r)
+		}
+	}
+	if len(shown) < len(arrived) { // a cover outside the rows (Continue, a card): all of Home
+		c.homeRedrawSoon()
+	}
+	if len(painted) == 0 {
+		return
+	}
+	sy, hh := c.scrollY(), c.page.header
+	for _, r := range painted {
+		if c.disp != nil {
+			c.uploadStrip(r.Min.Y, r.Max.Y)
+		}
+		if c.sc.gpuOn {
+			continue // the GPU shows the page now; it's drawn into the screen when it stops
+		}
+		v := r.Intersect(image.Rect(0, sy+hh, c.s.W, sy+c.viewH()))
+		if !v.Empty() {
+			c.s.blitRGBA(c.page.img.SubImage(v).(*image.RGBA), 0, c.barH+v.Min.Y-sy)
+		}
+	}
+	if c.sc.gpuOn {
+		c.disp.overlay(c.scrollQuads(sy, c.sc.drag))
+	}
+	c.s.Flush()
 }
 
 // backgroundRedraws: things arriving in the background (rows, covers) redraw Home; homeLoads:

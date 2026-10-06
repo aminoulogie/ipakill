@@ -80,6 +80,8 @@ type console struct {
 	homePopLoading   bool
 	homePopErr       time.Time
 	homeShelf        map[int]*homeShelfState // Home's store rows (bookshome.go)
+	arrived          map[string]bool         // covers loaded since Home's rows were last repainted
+	arrivedQueued    bool
 	homeRedrawQueued bool
 	setPane          string     // Settings: the pane shown
 	readerFrom       mode       // where the open book was opened from, for "Library"
