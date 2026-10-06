@@ -37,9 +37,11 @@ const takeoverHook = `#!/system/bin/sh
 # Neither present -> normal Android.
 #
 # Crash-loop guard: a counter is bumped before condor-init starts and cleared by condor-init
-# once it has run a while. If condor-init keeps dying early, the counter reaches the limit and
-# this hook boots Android and turns autostart off, so the tablet is never trapped: at worst it
-# returns to Android on its own after a few reboots.
+# once it has run a while (see bootguard.go). If condor-init keeps dying early, the counter
+# reaches the limit and this hook boots Android and turns autostart off, so the tablet is never
+# trapped: at worst it returns to Android on its own after a few reboots. The limit is 5, not 3,
+# so a run of power-starved boots on a dying battery (condor-init starts but the tablet loses
+# power before it clears the counter) doesn't look like a crash loop and strand you in Android.
 C=/data/condor
 [ -f $C/autostart ] || [ -f $C/takeover ] || exit 0
 rm -f $C/takeover
@@ -47,7 +49,7 @@ N=$(cat $C/bootfail 2>/dev/null)
 N=$((N+0+1))
 echo $N > $C/bootfail
 sync
-if [ $N -ge 3 ]; then
+if [ $N -ge 5 ]; then
   rm -f $C/bootfail $C/autostart
   echo "fallback to android after $N tries $(date)" >> $C/hook.log
   exit 0
@@ -143,7 +145,7 @@ func takeoverAuto(args []string) error {
 	}
 	fmt.Println("autostart ON: every boot now goes straight into condor.")
 	fmt.Println("to go back to Android:  condor takeover auto off   (then condor reboot)")
-	fmt.Println("safety net: if condor-init ever fails to start 3 boots running, the tablet")
+	fmt.Println("safety net: if condor-init ever fails to start 5 boots running, the tablet")
 	fmt.Println("falls back to Android and turns autostart off by itself.")
 	return nil
 }

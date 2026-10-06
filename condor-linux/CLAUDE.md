@@ -12,7 +12,7 @@ power on → signed kernel + ramdisk (stock, can't change) → Android init
   → init runs /system/etc/install-recovery.sh as root (service flash_recovery, class main)
       = our hook (cli/takeover.go: takeoverHook). If /data/condor/autostart (every boot) or
         /data/condor/takeover (one-shot) exists: stop bootanim + zygote, exec condor-init.
-        Crash-loop guard: /data/condor/bootfail counter; at 3 the hook boots Android and
+        Crash-loop guard: /data/condor/bootfail counter; at 5 the hook boots Android and
         deletes autostart. condor-init clears it after 25 s (bootguard.go).
   → /data/condor/condor-init (os/condor-init, Go, linux/386, runs as root, logs to init.log)
       - fixes the clock (no RTC battery: floor = its own install mtime), hostname "condor"
