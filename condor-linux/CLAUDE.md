@@ -380,9 +380,12 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       overlay quad at 60 fps, always following the finger, with a fling (tau 0.45 s); sideways
       rows repaint + upload their strip; lifting settles (blitPage + overlayOff). Animations
       use the same helper (quads, as glanim). Safety: /data/condor/gpu.trying until 10 s after
-      the layer is up (found at boot = GPU turned off); any helper error → back to the
-      framebuffer (SurfaceFlinger killed, FBIOBLANK cycle) and the flag removed; a leftover
-      SurfaceFlinger with the GPU off is stopped. Turning it off restarts the tablet. Tests:
+      the layer is up (found at boot = GPU turned off). **Once SurfaceFlinger has had the panel,
+      the framebuffer never shows again until a reboot** (verified 2026-10-06: killing it +
+      FBIOBLANK powerdown/unblank left the screen black). So: a SurfaceFlinger already running
+      (left by the condor before an update) means the screen goes through the GPU for that
+      session, whatever the setting; a helper failure or failed start while SurfaceFlinger runs
+      → flag removed + reboot (gpuReboot). Turning it off restarts the tablet. Tests:
       gpuscroll_test.go (software model of the helper; overlay pixels == blitPage). **Not yet
       run on the tablet.**
 - [ ] microSD bind into Alpine

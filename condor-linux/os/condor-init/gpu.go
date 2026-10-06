@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"image"
 	"log"
 	"math"
 	"os"
+	"os/exec"
 	"time"
 )
 
@@ -234,35 +236,38 @@ func (c *console) gpuFrames(d time.Duration, build func(t float64) []quad) bool 
 // wantGPU starts drawing through the GPU in the background when it's turned on (once).
 // condor keeps drawing on the framebuffer until the GPU's layer is up.
 func (c *console) wantGPU() {
-	if c.disp == nil && !c.gpuStarting && (!gpuEnabled() || !gpuSafeToTry()) && leftoverSurfaceFlinger() {
-		// A SurfaceFlinger from an earlier condor (an update, a rollback) would hide the
-		// framebuffer: stop it.
-		log.Printf("GPU: off, but SurfaceFlinger is running: stopping it")
-		stopSurfaceFlinger()
-		reclaimFramebuffer(c.s)
-		c.s.markRows(0, c.s.fbH-1)
-		c.s.Flush()
-	}
-	if c.disp != nil || c.gpuStarting || c.gpuFailed || !gpuEnabled() || !gpuSafeToTry() {
+	if c.disp != nil || c.gpuStarting {
 		return
 	}
+	// Once SurfaceFlinger has had the panel, the framebuffer never shows again until a
+	// restart (tested: killing it and blanking/unblanking leave the screen black). So if one
+	// is running already (left by the condor before an update), the screen must go through
+	// it, whatever the setting: for this session.
+	leftover := leftoverSurfaceFlinger()
+	if !leftover && (c.gpuFailed || !gpuEnabled() || !gpuSafeToTry()) {
+		return
+	}
+	if leftover {
+		log.Printf("GPU: SurfaceFlinger is already running: the screen goes through it")
+	} else {
+		os.WriteFile(gpuTrying, nil, 0o644)
+		syncDisks()
+	}
 	c.gpuStarting = true
-	os.WriteFile(gpuTrying, nil, 0o644)
-	syncDisks()
 	go func() {
 		g, err := startGPU(c.s)
 		drawMu.Lock()
 		defer drawMu.Unlock()
 		c.gpuStarting = false
 		if err != nil {
-			log.Printf("GPU: %v; drawing stays on the framebuffer", err)
 			c.gpuFailed = true
 			os.Remove(gpuTrying)
 			os.Remove(gpuFlag)
-			stopSurfaceFlinger()
-			reclaimFramebuffer(c.s)
-			c.s.markRows(0, c.s.fbH-1)
-			c.s.Flush()
+			if leftoverSurfaceFlinger() {
+				gpuReboot(fmt.Sprintf("%v, and SurfaceFlinger has the screen", err))
+				return
+			}
+			log.Printf("GPU: %v; drawing stays on the framebuffer", err)
 			if c.mode == modeSettings {
 				c.redrawAll()
 			}
@@ -282,6 +287,18 @@ func (c *console) wantGPU() {
 			}
 		})
 	}()
+}
+
+// gpuReboot restarts the tablet with the GPU off: with SurfaceFlinger holding the panel and
+// no helper showing condor, nothing else brings the screen back.
+func gpuReboot(why string) {
+	log.Printf("GPU: %s: restarting with the GPU off", why)
+	os.Remove(gpuFlag)
+	os.Remove(gpuTrying)
+	syncDisks()
+	if err := exec.Command("/system/bin/setprop", "sys.powerctl", "reboot").Run(); err != nil {
+		log.Printf("GPU: setprop sys.powerctl reboot: %v", err)
+	}
 }
 
 // useGPU moves the screen into the GPU's shared memory and shows it there. Caller holds
@@ -314,24 +331,19 @@ func (w *gpuWriter) WriteAt(p []byte, off int64) (int, error) {
 	return len(p), nil
 }
 
-// gpuLost puts the screen back on the framebuffer after a GPU failure, and turns the GPU off
-// for the next start. Caller holds drawMu.
+// gpuLost handles the GPU helper failing while it shows the screen. SurfaceFlinger still
+// holds the panel, so the framebuffer can't show condor any more: the tablet restarts with the
+// GPU off. Caller holds drawMu.
 func (c *console) gpuLost(err error) {
 	if c.disp == nil {
 		return
 	}
-	log.Printf("GPU: %v; back to drawing on the framebuffer", err)
 	c.disp.close()
 	c.gpu, c.disp = nil, nil
 	c.gpuFailed = true
 	c.sc.gpuOn = false
-	os.Remove(gpuFlag)
-	os.Remove(gpuTrying)
-	stopSurfaceFlinger()
 	c.s.dev = c.s.fbDev
-	reclaimFramebuffer(c.s)
-	c.s.markRows(0, c.s.fbH-1)
-	c.s.Flush()
+	gpuReboot(err.Error())
 }
 
 // dropGPU gives up on the GPU after an error in an animation. Caller holds drawMu.

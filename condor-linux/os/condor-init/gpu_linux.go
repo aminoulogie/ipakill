@@ -65,6 +65,7 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 			return nil, err
 		}
 	}
+	log.Printf("GPU: starting: SurfaceFlinger")
 	if err := startSurfaceFlinger(); err != nil {
 		return nil, err
 	}
@@ -101,11 +102,13 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 	inR.Close()
 	outW.Close()
 	go cmd.Wait()
+	log.Printf("GPU: helper started (pid %d), waiting for its layer", cmd.Process.Pid)
 	g := &sfGPU{cmd: cmd, in: inW, out: outR, mem: mem, size: size, pageW: pageW, kick: make(chan struct{}, 1)}
 	if err := g.answer('R', 30*time.Second); err != nil {
 		g.close()
 		return nil, fmt.Errorf("helper didn't start: %w", err)
 	}
+	log.Printf("GPU: the helper's layer is up")
 	hideBootAnimation()
 	go func() { time.Sleep(3 * time.Second); hideBootAnimation() }()
 	go g.sender()
@@ -117,6 +120,7 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 // it inside system_server), so condor runs the program itself.
 func startSurfaceFlinger() error {
 	if procRunning("surfaceflinger") {
+		log.Printf("GPU: SurfaceFlinger already running")
 		return nil
 	}
 	lf, err := os.OpenFile(sfLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
@@ -131,8 +135,11 @@ func startSurfaceFlinger() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("surfaceflinger: %w", err)
 	}
-	go cmd.Wait()
-	log.Printf("GPU: started surfaceflinger, pid %d", cmd.Process.Pid)
+	go func() {
+		err := cmd.Wait()
+		log.Printf("GPU: SurfaceFlinger exited: %v (see %s)", err, sfLog)
+	}()
+	log.Printf("GPU: started SurfaceFlinger, pid %d", cmd.Process.Pid)
 	return nil
 }
 
@@ -141,14 +148,6 @@ func startSurfaceFlinger() error {
 func hideBootAnimation() {
 	exec.Command("/system/bin/setprop", "service.bootanim.exit", "1").Run()
 	exec.Command("/system/bin/stop", "bootanim").Run()
-}
-
-// stopSurfaceFlinger ends the compositor (when condor goes back to drawing on the
-// framebuffer itself).
-func stopSurfaceFlinger() {
-	for _, pid := range procPids("surfaceflinger") {
-		syscall.Kill(pid, syscall.SIGKILL)
-	}
 }
 
 func procPids(name string) []int {

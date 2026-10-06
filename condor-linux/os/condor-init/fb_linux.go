@@ -144,14 +144,3 @@ func refreshHz(s *Screen) float64 {
 	vtotal := float64(v[1] + v[28] + v[29] + v[31]) // yres + upper + lower + vsync
 	return 1e12 / float64(v[25]) / htotal / vtotal  // pixclock is in picoseconds
 }
-
-// reclaimFramebuffer gets the panel showing the framebuffer again after SurfaceFlinger has
-// had it: blank and unblank, so the driver sets the display plane up afresh.
-func reclaimFramebuffer(s *Screen) {
-	f, ok := s.fbDev.(*os.File)
-	if !ok {
-		return
-	}
-	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioBlank, 4)
-	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), fbioBlank, fbBlankUnblank)
-}
