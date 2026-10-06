@@ -37,10 +37,12 @@ type scrollState struct {
 	last  time.Time
 
 	// The GPU (gpuscroll.go): the page is shown from its copy on the GPU while gpuOn.
-	gpuOn   bool
-	texGen  int // c.pageGen of the page on the GPU (0: none)
-	fling   int // bumped to stop a fling
-	samples []scrollSample
+	gpuOn    bool
+	texGen   int   // c.pageGen of the page on the GPU (0: none)
+	texFail  int   // c.pageGen of a page the GPU couldn't take
+	resident []int // its slices on the GPU, least recently used first
+	fling    int   // bumped to stop a fling
+	samples  []scrollSample
 }
 
 const (

@@ -41,11 +41,16 @@ type sfGPU struct {
 	size    int // one native screen image
 	pageW   int
 
-	mu      sync.Mutex
+	mu     sync.Mutex // one command at a time
+	dead   error
+	frames int // overlay frames shown since the scroll began
+	since  time.Time
+
+	pendMu  sync.Mutex // the overlay waiting to be shown (never held while the GPU works)
 	pending []quad
 	havePen bool
+	overGen int
 	kick    chan struct{}
-	dead    error
 }
 
 // startGPU starts SurfaceFlinger (if it isn't running) and the helper, and returns once the
@@ -93,7 +98,7 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(sfHelperPath, glShmPath, strconv.Itoa(s.fbW), strconv.Itoa(s.fbH), strconv.Itoa(pageMaxRows))
+	cmd := exec.Command(sfHelperPath, glShmPath, strconv.Itoa(s.fbW), strconv.Itoa(s.fbH), strconv.Itoa(pageMaxRows), strconv.Itoa(pageSlice))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, log.Writer()
 	cmd.Env = os.Environ() // Android's, from init: ANDROID_PROPERTY_WORKSPACE, LD_LIBRARY_PATH...
 	if err := cmd.Start(); err != nil {
@@ -241,19 +246,23 @@ func (g *sfGPU) present(lo, hi int) error {
 	return g.do(words32(4, uint32(lo), uint32(hi)), 2*time.Second)
 }
 
-// pageLoad copies the page into shared memory and uploads it whole.
-func (g *sfGPU) pageLoad(img *image.RGBA) error {
-	h := img.Rect.Dy()
-	if img.Rect.Dx() != g.pageW || h > pageMaxRows {
-		return fmt.Errorf("page %dx%d too big for the GPU", img.Rect.Dx(), h)
+// pageNew tells the helper the page is now h rows, none of them on the GPU (it frees the
+// old ones).
+func (g *sfGPU) pageNew(h int) error {
+	if h > pageMaxRows {
+		return fmt.Errorf("page of %d rows too tall for the GPU", h)
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.copyRows(img, 0, h)
-	return g.do(words32(5, uint32(h)), 5*time.Second)
+	return g.do(words32(5, uint32(h)), 2*time.Second)
 }
 
+// pageRows copies rows y0..y1-1 of the page into shared memory and uploads them. A slice not
+// on the GPU yet must be sent whole (gpuscroll.go sees to it).
 func (g *sfGPU) pageRows(img *image.RGBA, y0, y1 int) error {
+	if img.Rect.Dx() != g.pageW {
+		return fmt.Errorf("page %d wide, the GPU's is %d", img.Rect.Dx(), g.pageW)
+	}
 	y0, y1 = max(y0, 0), min(y1, img.Rect.Dy())
 	if y0 >= y1 {
 		return nil
@@ -262,6 +271,13 @@ func (g *sfGPU) pageRows(img *image.RGBA, y0, y1 int) error {
 	defer g.mu.Unlock()
 	g.copyRows(img, y0, y1)
 	return g.do(words32(6, uint32(y0), uint32(y1)), 2*time.Second)
+}
+
+// pageFree takes slice k of the page off the GPU.
+func (g *sfGPU) pageFree(k int) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.do(words32(9, uint32(k)), time.Second)
 }
 
 func (g *sfGPU) copyRows(img *image.RGBA, y0, y1 int) {
@@ -273,11 +289,12 @@ func (g *sfGPU) copyRows(img *image.RGBA, y0, y1 int) {
 	}
 }
 
-// overlay shows q over the screen from now on, without waiting: the latest one wins.
+// overlay shows q over the screen from now on. It never waits (the touch loop calls it): the
+// sender shows the latest overlay as soon as the GPU is free.
 func (g *sfGPU) overlay(q []quad) {
-	g.mu.Lock()
+	g.pendMu.Lock()
 	g.pending, g.havePen = q, true
-	g.mu.Unlock()
+	g.pendMu.Unlock()
 	select {
 	case g.kick <- struct{}{}:
 	default:
@@ -286,24 +303,44 @@ func (g *sfGPU) overlay(q []quad) {
 
 // overlayOff drops the overlay (and any not yet shown); the next present shows the screen.
 func (g *sfGPU) overlayOff() error {
+	g.pendMu.Lock()
+	g.pending, g.havePen = nil, false
+	g.overGen++ // an overlay the sender has taken but not sent yet is dropped
+	g.pendMu.Unlock()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.pending, g.havePen = nil, false
+	if g.frames > 0 {
+		d := time.Since(g.since)
+		log.Printf("GPU: scroll: %d frames in %v (%.0f a second)", g.frames, d.Round(time.Millisecond), float64(g.frames)/d.Seconds())
+		g.frames = 0
+	}
 	return g.do(words32(8), time.Second)
 }
 
 func (g *sfGPU) sender() {
 	for range g.kick {
+		g.pendMu.Lock()
+		q, have, gen := g.pending, g.havePen, g.overGen
+		g.pending, g.havePen = nil, false
+		g.pendMu.Unlock()
+		if !have {
+			continue
+		}
 		g.mu.Lock()
-		if g.havePen {
-			q := g.pending
-			g.pending, g.havePen = nil, false
+		g.pendMu.Lock()
+		stale := gen != g.overGen
+		g.pendMu.Unlock()
+		if !stale {
 			b := binary.LittleEndian.AppendUint32(nil, 7)
 			b = binary.LittleEndian.AppendUint32(b, uint32(len(q)))
 			b = append(b, encodeFrame(q, false)[8:]...)
+			if g.frames == 0 {
+				g.since = time.Now()
+			}
 			if err := g.do(b, time.Second); err != nil {
 				log.Printf("GPU: overlay: %v", err)
 			}
+			g.frames++
 		}
 		dead := g.dead != nil
 		g.mu.Unlock()

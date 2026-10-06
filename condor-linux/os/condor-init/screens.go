@@ -67,6 +67,13 @@ func (c *console) showPage() {
 	}
 	c.endGPUScroll()
 	c.pageGen++
+	start := time.Now()
+	defer func() {
+		// Touches wait while a page is drawn: say when that's long enough to feel.
+		if d := time.Since(start); d > 150*time.Millisecond {
+			log.Printf("slow page: mode %d drawn in %v", c.mode, d.Round(time.Millisecond))
+		}
+	}()
 	switch {
 	case c.mode == modeSettings:
 		c.page = c.settingsPage()

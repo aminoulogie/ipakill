@@ -1,7 +1,9 @@
 package main
 
 import (
+	"log"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -29,22 +31,72 @@ func (c *console) gpuScrolls() bool {
 		c.page.img.Rect.Dx() == c.s.W
 }
 
-// ensurePageTex puts the current page on the GPU if it isn't there yet. Caller holds drawMu.
-func (c *console) ensurePageTex() bool {
-	if !c.gpuScrolls() {
+// ensureRows puts the slices of the current page holding rows y0..y1-1 on the GPU (the
+// first time, and after the page is redrawn), freeing the least recently used beyond
+// pageResident. False if the GPU can't: this page then scrolls on the processor. Caller
+// holds drawMu.
+func (c *console) ensureRows(y0, y1 int) bool {
+	if !c.gpuScrolls() || c.sc.texFail == c.pageGen {
 		return false
 	}
-	if c.sc.texGen == c.pageGen && c.pageGen != 0 {
-		return true
-	}
-	if err := c.disp.pageLoad(c.page.img); err != nil {
-		if c.disp.failed() != nil {
-			c.gpuLost(err)
+	start := time.Now()
+	img := c.page.img
+	h := img.Rect.Dy()
+	if c.sc.texGen != c.pageGen {
+		if err := c.disp.pageNew(h); err != nil {
+			return c.texFailed(err)
 		}
-		return false
+		c.sc.texGen, c.sc.resident = c.pageGen, nil
 	}
-	c.sc.texGen = c.pageGen
+	sent := 0
+	for k := max(y0, 0) / pageSlice; k*pageSlice < min(y1, h); k++ {
+		if i := slices.Index(c.sc.resident, k); i >= 0 {
+			c.sc.resident = append(slices.Delete(c.sc.resident, i, i+1), k) // most recent last
+			continue
+		}
+		if len(c.sc.resident) >= pageResident {
+			if err := c.disp.pageFree(c.sc.resident[0]); err != nil {
+				return c.texFailed(err)
+			}
+			c.sc.resident = c.sc.resident[1:]
+		}
+		if err := c.disp.pageRows(img, k*pageSlice, min((k+1)*pageSlice, h)); err != nil {
+			return c.texFailed(err)
+		}
+		c.sc.resident = append(c.sc.resident, k)
+		sent++
+	}
+	if d := time.Since(start); sent > 0 && d > 30*time.Millisecond {
+		log.Printf("GPU: %d page slices sent in %v", sent, d.Round(time.Millisecond))
+	}
 	return true
+}
+
+func (c *console) texFailed(err error) bool {
+	log.Printf("GPU: page: %v; this page scrolls on the processor", err)
+	c.sc.texFail, c.sc.texGen, c.sc.resident = c.pageGen, 0, nil
+	if c.disp.failed() != nil {
+		c.gpuLost(err)
+	}
+	return false
+}
+
+// uploadStrip sends rows y0..y1-1 again after they were repainted, where they're on the GPU.
+func (c *console) uploadStrip(y0, y1 int) bool {
+	for _, k := range c.sc.resident {
+		a, b := max(y0, k*pageSlice), min(y1, (k+1)*pageSlice)
+		if a < b {
+			if err := c.disp.pageRows(c.page.img, a, b); err != nil {
+				return c.texFailed(err)
+			}
+		}
+	}
+	return true
+}
+
+// visible: the page's rows on screen at scroll sy (under the fixed header).
+func (c *console) visible(sy int) (int, int) {
+	return sy + c.page.header, sy + c.viewH()
 }
 
 // pageQuad shows the page's rows from srcY on at logical screen rect dst.
@@ -79,10 +131,10 @@ func (c *console) scrollQuads(sy int, bar bool) []quad {
 
 // gpuScrollTo shows the page at y, under the finger or flinging. Caller holds drawMu.
 func (c *console) gpuScrollTo(y int) bool {
-	if !c.ensurePageTex() {
+	y = min(max(y, 0), max(c.page.img.Rect.Dy()-c.viewH(), 0))
+	if !c.ensureRows(c.visible(y)) {
 		return false
 	}
-	y = min(max(y, 0), max(c.page.img.Rect.Dy()-c.viewH(), 0))
 	c.sc.y[c.mode] = y
 	c.sc.gpuOn = true
 	c.disp.overlay(c.scrollQuads(y, true))
@@ -91,13 +143,13 @@ func (c *console) gpuScrollTo(y int) bool {
 
 // gpuRowTo moves a sideways row: repaint it, upload its strip, show it. Caller holds drawMu.
 func (c *console) gpuRowTo(r *hrow, off int) bool {
-	if !c.ensurePageTex() {
+	if !c.ensureRows(c.visible(c.scrollY())) {
 		return false
 	}
 	if off != c.rowOffset(r.id) {
 		c.sc.x[r.id] = off
 		r.paint(c.page.img)
-		if err := c.disp.pageRows(c.page.img, r.r.Min.Y, r.r.Max.Y); err != nil {
+		if !c.uploadStrip(r.r.Min.Y, r.r.Max.Y) {
 			return false
 		}
 	}

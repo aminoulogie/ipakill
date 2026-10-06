@@ -73,15 +73,22 @@ type gpuDisplay interface {
 	gpuDev
 	screenBuf() []byte                          // the screen, shared: condor draws into it
 	present(lo, hi int) error                   // native rows lo..hi changed: show the screen
-	pageLoad(img *image.RGBA) error             // the page (logical), for scrolling
-	pageRows(img *image.RGBA, y0, y1 int) error // the page's rows y0..y1-1 changed
+	pageNew(h int) error                        // a new page of h rows (logical), none on the GPU yet
+	pageRows(img *image.RGBA, y0, y1 int) error // upload the page's rows y0..y1-1 (a new slice whole)
+	pageFree(k int) error                       // take slice k off the GPU
 	overlay(q []quad)                           // drawn over the screen until overlayOff; latest wins
 	overlayOff() error
 	failed() error
 }
 
-// pageMaxRows is the tallest page the GPU scrolls (taller ones scroll on the CPU).
-const pageMaxRows = 10000
+// pageMaxRows is the tallest page the GPU scrolls (taller ones scroll on the CPU). The page
+// goes to the GPU in slices of pageSlice rows, only those on screen, at most pageResident of
+// them at a time (a whole page would take ~40 MB of the GPU's memory, and seconds to send).
+const (
+	pageMaxRows  = 10000
+	pageSlice    = 1024
+	pageResident = 4
+)
 
 // gpuPage is a quad of the page: x y in logical screen pixels, u v in the page's pixels.
 const gpuPage = 4

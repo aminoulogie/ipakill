@@ -78,8 +78,8 @@ func TestGPUScrollFollowsFinger(t *testing.T) {
 		}
 		shows(t, c, g, fmt.Sprint("dragging to ", y))
 	}
-	if g.uploads != 1 {
-		t.Fatalf("the page went to the GPU %d times, want once", g.uploads)
+	if g.uploads > 3 || g.partial != 0 || g.maxSlices > pageResident {
+		t.Fatalf("%d slices sent (%d in part), %d on the GPU at once", g.uploads, g.partial, g.maxSlices)
 	}
 	time.Sleep(100 * time.Millisecond) // the finger rests: no fling
 	c.pageTouch(TouchPoint{Up: true, X: 600, Y: 777})
@@ -130,6 +130,9 @@ func TestGPUFling(t *testing.T) {
 	if g.over != nil || differ(g.screen, c.s.buf, c.s, 0) != 0 {
 		t.Fatal("the fling didn't end drawn into the screen")
 	}
+	if g.partial != 0 || g.maxSlices > pageResident {
+		t.Fatalf("%d slices sent in part, %d on the GPU at once", g.partial, g.maxSlices)
+	}
 	shows(t, c, g, "after the fling")
 }
 
@@ -176,8 +179,8 @@ func TestGPURow(t *testing.T) {
 	}
 	shows(t, c, g, "row moved")
 	c.pageTouch(TouchPoint{Up: true, X: 500, Y: y + 5})
-	if g.uploads != 1 || g.over != nil {
-		t.Fatalf("%d page uploads, overlay %v", g.uploads, g.over != nil)
+	if g.uploads > 3 || g.partial != 0 || g.over != nil {
+		t.Fatalf("%d slices sent (%d in part), overlay %v", g.uploads, g.partial, g.over != nil)
 	}
 	shows(t, c, g, "row settled")
 }
@@ -196,5 +199,29 @@ func TestGPUScrollEndsOnRedraw(t *testing.T) {
 	}
 	if differ(g.screen, c.s.buf, c.s, 0) != 0 {
 		t.Fatal("the GPU doesn't show the redrawn screen")
+	}
+}
+
+// A drag down the whole page and back: slices come and go (never more than pageResident on
+// the GPU, never sent in part) and every frame shows the page exactly.
+func TestGPUScrollWholePage(t *testing.T) {
+	drawMu.Lock()
+	defer drawMu.Unlock()
+	c, g := gpuScrollConsole(t)
+	c.pageTouch(TouchPoint{Down: true, X: 600, Y: 1800})
+	for _, y := range []int{1700, 1000, 300, -300, -900, -1300, -500, 400, 1500} {
+		c.pageTouch(TouchPoint{Moved: true, X: 600, Y: y})
+		shows(t, c, g, fmt.Sprint("finger at ", y))
+	}
+	if g.partial != 0 || g.maxSlices > pageResident {
+		t.Fatalf("%d slices sent in part, %d on the GPU at once", g.partial, g.maxSlices)
+	}
+	// Redrawn: the next drag sends the page again.
+	before := g.uploads
+	c.pageGen++
+	c.pageTouch(TouchPoint{Moved: true, X: 600, Y: 1400})
+	shows(t, c, g, "after a redraw")
+	if g.uploads == before {
+		t.Fatal("a redrawn page wasn't sent again")
 	}
 }

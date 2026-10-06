@@ -16,11 +16,14 @@ type softGPU struct {
 	last, loads int
 
 	// As the screen's display (gpuDisplay): condorsf.cpp's screen image, page and overlay.
-	scr      []byte
-	page     *image.RGBA
-	over     []quad
-	presents int
-	uploads  int // pages uploaded whole
+	scr       []byte
+	page      *image.RGBA
+	over      []quad
+	presents  int
+	uploads   int          // page slices sent whole
+	slice     map[int]bool // the page's slices on the GPU
+	partial   int          // slices sent in part before being whole (a bug)
+	maxSlices int
 }
 
 func newSoftGPU(s *Screen) *softGPU {
@@ -40,16 +43,41 @@ func (g *softGPU) present(lo, hi int) error {
 	return nil
 }
 
-func (g *softGPU) pageLoad(img *image.RGBA) error {
-	g.uploads++
-	g.page = image.NewRGBA(img.Rect)
-	copy(g.page.Pix, img.Pix)
+func (g *softGPU) pageNew(h int) error {
+	g.page = image.NewRGBA(image.Rect(0, 0, g.s.W, h))
+	g.slice = map[int]bool{}
 	return nil
 }
 
+// pageRows is condorsf.cpp's: a slice not on the GPU yet must come whole.
 func (g *softGPU) pageRows(img *image.RGBA, y0, y1 int) error {
+	h := g.page.Rect.Dy()
+	for k := y0 / pageSlice; k*pageSlice < y1; k++ {
+		if !g.slice[k] {
+			if y0 > k*pageSlice || y1 < min((k+1)*pageSlice, h) {
+				g.partial++
+			}
+			g.slice[k] = true
+			g.uploads++
+		}
+	}
+	n := 0
+	for _, on := range g.slice {
+		if on {
+			n++
+		}
+	}
+	g.maxSlices = max(g.maxSlices, n)
 	for y := y0; y < y1; y++ {
 		copy(g.page.Pix[g.page.PixOffset(0, y):g.page.PixOffset(0, y+1)], img.Pix[img.PixOffset(0, y):img.PixOffset(0, y+1)])
+	}
+	return nil
+}
+
+func (g *softGPU) pageFree(k int) error {
+	g.slice[k] = false
+	for y := k * pageSlice; y < min((k+1)*pageSlice, g.page.Rect.Dy()); y++ {
+		clear(g.page.Pix[g.page.PixOffset(0, y):g.page.PixOffset(0, y+1)])
 	}
 	return nil
 }
@@ -90,6 +118,9 @@ func (g *softGPU) draw(k quad) {
 				}
 				u := int(k.u0 + (lx-k.x0)*(k.u1-k.u0)/(k.x1-k.x0))
 				v := int(k.v0 + (ly-k.y0)*(k.v1-k.v0)/(k.y1-k.y0))
+				if !g.slice[v/pageSlice] {
+					continue // not on the GPU: the screen shows through
+				}
 				p := g.page.Pix[g.page.PixOffset(u, v):]
 				d := g.screen[py*s.stride+4*px:]
 				d[0], d[1], d[2] = p[2], p[1], p[0]

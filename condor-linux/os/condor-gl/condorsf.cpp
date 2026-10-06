@@ -9,7 +9,7 @@
  * is uploaded once and scrolled by moving a quad (60 frames a second under the finger), and
  * the screen changes animate as quads of the before and after pictures (as glanim did).
  *
- *   condorsf <shared memory file> <width> <height> <page rows>
+ *   condorsf <shared memory file> <width> <height> <page rows> <slice rows>
  *
  * Shared memory: three screen images in the framebuffer's native layout (width x height,
  * B G R X bytes): 0 the screen before a change, 1 after, 2 the screen itself; then the page,
@@ -21,8 +21,10 @@
  *   2 n quads     draw a frame of n quads and show it (3: the same)
  *   4 lo hi       the screen's native rows lo..hi changed: upload them, show the screen
  *                 (with the overlay on top, if there is one)
- *   5 h           upload the page, h rows
- *   6 y0 y1       the page's rows y0..y1-1 changed: upload them
+ *   5 h           a new page, h rows: none of it on the GPU yet (the old one is freed)
+ *   6 y0 y1       upload the page's rows y0..y1-1. The page goes to the GPU in slices of
+ *                 <slice rows>; a slice not there yet must be sent whole
+ *   9 k           take slice k off the GPU
  *   7 n quads     the overlay: quads drawn over the screen, from now on; show it
  *   8             no overlay (doesn't draw: the next 4 shows the screen alone)
  * A quad is 16 words: kind, then floats x0 y0 x1 y1, u0 v0 u1 v1, a0 a1, mul, r g b, mix.
@@ -90,7 +92,7 @@ static void reply(char c) { write(1, &c, 1); }
 
 struct quad { int kind; float x0, y0, x1, y1, u0, v0, u1, v1, a0, a1, mul, r, g, b, mix; };
 #define MAXQ 64
-#define MAXCHUNK 16
+#define MAXCHUNK 64
 
 /* GL entry points, filled in main. */
 static void (*glViewport)(int, int, int, int);
@@ -116,6 +118,7 @@ static int pageW, pageMax;        /* logical page width (= H), rows it may have 
 static u32 tex[3], ptex[MAXCHUNK];
 static int loaded[3];
 static int chunk, pageH, nChunks; /* page textures: chunk rows each, the last one shorter */
+static int alloc[MAXCHUNK];       /* which of them are on the GPU */
 static int uTsize, uSolid, uNative, uMul, uTint, uMix;
 
 static void verts(const float v[4][5]) {
@@ -155,6 +158,7 @@ static void drawQuad(const quad *k) {
 	if (pageH == 0 || k->v1 <= k->v0) return;
 	glUniform1i(uNative, 0);
 	for (int c = 0; c < nChunks; c++) {
+		if (!alloc[c]) continue;
 		float cs = (float)c * chunk, ce = cs + (c == nChunks - 1 ? pageH - c * chunk : chunk);
 		float a = k->v0 > cs ? k->v0 : cs, b = k->v1 < ce ? k->v1 : ce;
 		if (a >= b) continue;
@@ -185,38 +189,47 @@ static void uploadRows(int i, int lo, int hi) {
 	glTexSubImage2D(0x0DE1, 0, 0, lo, W, hi - lo + 1, 0x1908, 0x1401, mem + i * size + (unsigned)lo * W * 4);
 }
 
-static int pageUpload(int h) {
-	if (h <= 0 || h > pageMax) return 0;
-	int n = (h + chunk - 1) / chunk;
-	if (n > MAXCHUNK) return 0;
-	while (glGetError() != 0) {}
-	for (int c = 0; c < n; c++) {
-		int rows = c == n - 1 ? h - c * chunk : chunk;
-		glBindTexture(0x0DE1, ptex[c]);
-		glTexImage2D(0x0DE1, 0, 0x1908, pageW, rows, 0, 0x1908, 0x1401, pageMem + (unsigned)c * chunk * pageW * 4);
-	}
-	if (glGetError() != 0) { pageH = 0; return 0; }
+static void pageFree(int c) {
+	if (c < 0 || c >= MAXCHUNK || !alloc[c]) return;
+	glBindTexture(0x0DE1, ptex[c]);
+	glTexImage2D(0x0DE1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0); /* gives its memory back */
+	alloc[c] = 0;
+}
+
+static int pageNew(int h) {
+	if (h < 0 || h > pageMax || (h + chunk - 1) / chunk > MAXCHUNK) return 0;
+	for (int c = 0; c < MAXCHUNK; c++) pageFree(c);
 	pageH = h;
-	nChunks = n;
+	nChunks = (h + chunk - 1) / chunk;
 	return 1;
 }
 
 static int pageRows(int y0, int y1) {
-	if (pageH == 0) return 0;
 	if (y0 < 0) y0 = 0;
 	if (y1 > pageH) y1 = pageH;
+	while (glGetError() != 0) {}
 	for (int c = 0; c < nChunks; c++) {
 		int cs = c * chunk, ce = cs + (c == nChunks - 1 ? pageH - cs : chunk);
 		int a = y0 > cs ? y0 : cs, b = y1 < ce ? y1 : ce;
 		if (a >= b) continue;
 		glBindTexture(0x0DE1, ptex[c]);
-		glTexSubImage2D(0x0DE1, 0, 0, a - cs, pageW, b - a, 0x1908, 0x1401, pageMem + (unsigned)a * pageW * 4);
+		if (!alloc[c]) {
+			glTexImage2D(0x0DE1, 0, 0x1908, pageW, ce - cs, 0, 0x1908, 0x1401, pageMem + (unsigned)cs * pageW * 4);
+			alloc[c] = 1;
+		} else {
+			glTexSubImage2D(0x0DE1, 0, 0, a - cs, pageW, b - a, 0x1908, 0x1401, pageMem + (unsigned)a * pageW * 4);
+		}
+		if (glGetError() != 0) {
+			say("page rows %d..%d: the GPU refused (out of memory?)\n", a, b);
+			pageFree(c);
+			return 0;
+		}
 	}
 	return 1;
 }
 
 int main(int argc, char **argv) {
-	if (argc < 5) fail("usage: condorsf <shm file> <width> <height> <page rows>\n");
+	if (argc < 6) fail("usage: condorsf <shm file> <width> <height> <page rows> <slice rows>\n");
 	W = num(argv[2]);
 	H = num(argv[3]);
 	pageMax = num(argv[4]);
@@ -398,7 +411,8 @@ int main(int argc, char **argv) {
 
 	int maxTex = 0;
 	glGetIntegerv(0x0D33 /* MAX_TEXTURE_SIZE */, &maxTex);
-	chunk = maxTex >= 4096 ? 4096 : maxTex >= 2048 ? 2048 : 1024;
+	chunk = num(argv[5]);
+	if (chunk <= 0 || chunk > maxTex) fail("page slices of %d rows: the GPU's limit is %d\n", chunk, maxTex);
 	glGenTextures(3, tex);
 	glGenTextures(MAXCHUNK, ptex);
 	for (int i = 0; i < 3 + MAXCHUNK; i++) {
@@ -430,7 +444,11 @@ int main(int argc, char **argv) {
 			reply('k');
 			continue;
 		case 5:
-			reply(pageUpload((int)hdr[1]) ? 'k' : 'f');
+			reply(pageNew((int)hdr[1]) ? 'k' : 'f');
+			continue;
+		case 9:
+			pageFree((int)hdr[1]);
+			reply('k');
 			continue;
 		case 2: case 3: case 7: {
 			if (hdr[1] > MAXQ) fail("%u quads\n", hdr[1]);

@@ -376,7 +376,8 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       GPU" (flag /data/condor/gpu, off by default). condor-init starts SurfaceFlinger + the
       condorsf helper, which keeps a layer; the screen buffer (s.buf) moves into shared memory
       (/dev/condor-gl.shm) and Screen.dev becomes gpuWriter: Flush = upload the changed rows +
-      show. Tall pages (≤ 10000 rows) are uploaded once (pageGen/texGen) and scrolled as an
+      show. Tall pages (≤ 10000 rows) go to the GPU in 1024-row slices, only those on screen, at
+      most 4 at a time (the whole Home page at once, ~37 MB, made touch unresponsive), and scroll as an
       overlay quad at 60 fps, always following the finger, with a fling (tau 0.45 s); sideways
       rows repaint + upload their strip; lifting settles (blitPage + overlayOff). Animations
       use the same helper (quads, as glanim). Safety: /data/condor/gpu.trying until 10 s after
