@@ -167,6 +167,28 @@ func ParseOPF(opfXML []byte, opfPath string) (*Book, error) {
 			}
 		}
 	}
+	// Books that don't say: an image whose name says cover, else the first picture in the
+	// book (usually the cover; SVG can't be shown, so not that).
+	picture := func(it item) bool {
+		return strings.HasPrefix(it.mediaType, "image/") && !strings.Contains(it.mediaType, "svg")
+	}
+	if b.CoverPath == "" {
+		for _, id := range order {
+			if it := byID[id]; picture(it) && (strings.Contains(strings.ToLower(id), "cover") ||
+				strings.Contains(strings.ToLower(path.Base(it.path)), "cover")) {
+				b.CoverPath = it.path
+				break
+			}
+		}
+	}
+	if b.CoverPath == "" {
+		for _, id := range order {
+			if it := byID[id]; picture(it) {
+				b.CoverPath = it.path
+				break
+			}
+		}
+	}
 	return b, nil
 }
 

@@ -9,7 +9,7 @@
  * is uploaded once and scrolled by moving a quad (60 frames a second under the finger), and
  * the screen changes animate as quads of the before and after pictures (as glanim did).
  *
- *   condorsf <shared memory file> <width> <height> <page rows> <slice rows>
+ *   condorsf <shared memory file> <width> <height> <page rows> <slice rows> <strip cols> <strip rows>
  *
  * Shared memory: three screen images in the framebuffer's native layout (width x height,
  * B G R X bytes): 0 the screen before a change, 1 after, 2 the screen itself; then the page,
@@ -25,12 +25,16 @@
  *   6 y0 y1       upload the page's rows y0..y1-1. The page goes to the GPU in slices of
  *                 <slice rows>; a slice not there yet must be sent whole
  *   9 k           take slice k off the GPU
+ *   10 w h        a row strip (a sideways row drawn whole, to slide on the GPU): w x h RGBA
+ *                 pixels after the page in shared memory, laid out in columns of <slice rows>
+ *                 width, one after the other (ES 2 can't upload part of a wider picture)
  *   7 n quads     the overlay: quads drawn over the screen, from now on; show it
  *   8             no overlay (doesn't draw: the next 4 shows the screen alone)
  * A quad is 16 words: kind, then floats x0 y0 x1 y1, u0 v0 u1 v1, a0 a1, mul, r g b, mix.
  *   kind 0..2   image: x y are native screen pixels, u v the image's native pixels
  *   kind 3      colour r g b, opacity a0 at y0 to a1 at y1 (native)
  *   kind 4      the page: x y are LOGICAL screen pixels, u v the page's logical pixels
+ *   kind 5      the row strip: as the page, u v in the strip's pixels
  * It writes 'R' once the layer is up, and exits on end of input or any error (saying why on
  * stderr), which takes the layer away.
  *
@@ -114,6 +118,9 @@ static int W, H;                  /* native screen */
 static unsigned size;             /* one native image */
 static unsigned char *mem;
 static unsigned char *pageMem;
+static unsigned char *stripMem;
+static int stripMaxW, stripMaxH, stripW, stripH;
+static u32 stex[MAXCHUNK];
 static int pageW, pageMax;        /* logical page width (= H), rows it may have */
 static u32 tex[3], ptex[MAXCHUNK];
 static int loaded[3];
@@ -150,6 +157,25 @@ static void drawQuad(const quad *k) {
 		float v[4][5] = {{k->x0, k->y0, k->u0, k->v0, 1}, {k->x1, k->y0, k->u1, k->v0, 1},
 		                 {k->x0, k->y1, k->u0, k->v1, 1}, {k->x1, k->y1, k->u1, k->v1, 1}};
 		verts(v);
+		return;
+	}
+	if (k->kind == 5) {
+		/* The row strip, split into columns of chunk pixels. */
+		if (stripW == 0 || k->u1 <= k->u0) return;
+		glUniform1i(uNative, 0);
+		int n = (stripW + chunk - 1) / chunk;
+		for (int c = 0; c < n; c++) {
+			float cs = (float)c * chunk, ce = cs + (c == n - 1 ? stripW - c * chunk : chunk);
+			float a = k->u0 > cs ? k->u0 : cs, b = k->u1 < ce ? k->u1 : ce;
+			if (a >= b) continue;
+			float sx = (k->x1 - k->x0) / (k->u1 - k->u0);
+			float lx0 = k->x0 + (a - k->u0) * sx, lx1 = k->x0 + (b - k->u0) * sx;
+			glBindTexture(0x0DE1, stex[c]);
+			glUniform2f(uTsize, ce - cs, stripH);
+			float v[4][5] = {{k->y0, H - lx0, a - cs, k->v0, 1}, {k->y0, H - lx1, b - cs, k->v0, 1},
+			                 {k->y1, H - lx0, a - cs, k->v1, 1}, {k->y1, H - lx1, b - cs, k->v1, 1}};
+			verts(v);
+		}
 		return;
 	}
 	if (k->kind != 4) fail("quad kind %d\n", k->kind);
@@ -228,8 +254,31 @@ static int pageRows(int y0, int y1) {
 	return 1;
 }
 
+static int stripUpload(int w, int h) {
+	if (w <= 0 || h <= 0 || w > stripMaxW || h > stripMaxH || (w + chunk - 1) / chunk > MAXCHUNK) return 0;
+	while (glGetError() != 0) {}
+	int n = (w + chunk - 1) / chunk;
+	unsigned off = 0;
+	for (int c = 0; c < n; c++) {
+		int cw = c == n - 1 ? w - c * chunk : chunk;
+		glBindTexture(0x0DE1, stex[c]);
+		glTexImage2D(0x0DE1, 0, 0x1908, cw, h, 0, 0x1908, 0x1401, stripMem + off);
+		off += (unsigned)cw * h * 4;
+	}
+	if (glGetError() != 0) {
+		say("row strip %dx%d: the GPU refused\n", w, h);
+		stripW = 0;
+		return 0;
+	}
+	stripW = w;
+	stripH = h;
+	return 1;
+}
+
 int main(int argc, char **argv) {
-	if (argc < 6) fail("usage: condorsf <shm file> <width> <height> <page rows> <slice rows>\n");
+	if (argc < 8) fail("usage: condorsf <shm file> <width> <height> <page rows> <slice rows> <strip cols> <strip rows>\n");
+	stripMaxW = num(argv[6]);
+	stripMaxH = num(argv[7]);
 	W = num(argv[2]);
 	H = num(argv[3]);
 	pageMax = num(argv[4]);
@@ -237,9 +286,10 @@ int main(int argc, char **argv) {
 	size = (unsigned)W * H * 4;
 	int shm = open(argv[1], 2 /* O_RDWR */);
 	if (shm < 0) fail("can't open %s\n", argv[1]);
-	mem = (unsigned char *)mmap(0, 3 * size + (unsigned)pageW * pageMax * 4, 3, 1, shm, 0);
+	mem = (unsigned char *)mmap(0, 3 * size + (unsigned)pageW * pageMax * 4 + (unsigned)stripMaxW * stripMaxH * 4, 3, 1, shm, 0);
 	if (mem == (unsigned char *)-1) fail("mmap %s\n", argv[1]);
 	pageMem = mem + 3 * size;
+	stripMem = pageMem + (unsigned)pageW * pageMax * 4;
 
 	void *utils = lib("libutils.so"), *binder = lib("libbinder.so"), *gui = lib("libgui.so");
 	void *egl = lib("libEGL.so"), *gl = lib("libGLESv2.so");
@@ -415,8 +465,9 @@ int main(int argc, char **argv) {
 	if (chunk <= 0 || chunk > maxTex) fail("page slices of %d rows: the GPU's limit is %d\n", chunk, maxTex);
 	glGenTextures(3, tex);
 	glGenTextures(MAXCHUNK, ptex);
-	for (int i = 0; i < 3 + MAXCHUNK; i++) {
-		glBindTexture(0x0DE1, i < 3 ? tex[i] : ptex[i - 3]);
+	glGenTextures(MAXCHUNK, stex);
+	for (int i = 0; i < 3 + 2 * MAXCHUNK; i++) {
+		glBindTexture(0x0DE1, i < 3 ? tex[i] : i < 3 + MAXCHUNK ? ptex[i - 3] : stex[i - 3 - MAXCHUNK]);
 		glTexParameteri(0x0DE1, 0x2801, 0x2600); /* NEAREST: whole pixels, exact copies */
 		glTexParameteri(0x0DE1, 0x2800, 0x2600);
 		glTexParameteri(0x0DE1, 0x2802, 0x812F); /* CLAMP_TO_EDGE (needed for any size) */
@@ -466,9 +517,10 @@ int main(int argc, char **argv) {
 			reply('k');
 			continue;
 		}
-		case 4: case 6: {
+		case 4: case 6: case 10: {
 			u32 b;
 			readAll(&b, 4);
+			if (cmd == 10) { reply(stripUpload((int)hdr[1], (int)b) ? 'k' : 'f'); continue; }
 			if (cmd == 6) { reply(pageRows((int)hdr[1], (int)b) ? 'k' : 'f'); continue; }
 			uploadRows(2, (int)hdr[1], (int)b);
 			glClear(0x4000);

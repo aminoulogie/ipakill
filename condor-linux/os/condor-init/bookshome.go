@@ -90,13 +90,6 @@ func (c *console) loadPopular() {
 func (c *console) booksHomePage() *page {
 	f := apple()
 	mx := 48
-	covers.mu.Lock()
-	covers.loaded = func(url string) {
-		drawMu.Lock()
-		c.coverArrived(url)
-		drawMu.Unlock()
-	}
-	covers.mu.Unlock()
 	c.shelf = findBooks()
 	if time.Since(c.homePopErr) > time.Minute {
 		c.loadPopular()
@@ -339,13 +332,14 @@ func (c *console) coverRow(p *page, id string, y int, items []rowItem, bg color.
 	band := image.Rect(0, y-10, c.s.W, y+rowCH+80)
 	contentW := 2*48 + len(items)*(rowCW+rowGap) - rowGap
 	paint := func(img *image.RGBA) {
-		ui.Fill(img, band, bg)
+		// img is the page, or the row's strip (as wide as the row): fill and draw all of it.
+		ui.Fill(img, image.Rect(img.Rect.Min.X, band.Min.Y, img.Rect.Max.X, band.Max.Y), bg)
 		off := c.rowOffset(id)
 		var btns []button
 		for k, ri := range items {
 			x := 48 + k*(rowCW+rowGap) - off
-			if x+rowCW < 0 || x > c.s.W {
-				continue // off the screen
+			if x+rowCW+40 < img.Rect.Min.X || x-40 > img.Rect.Max.X {
+				continue // off the picture
 			}
 			r := image.Rect(x, y, x+rowCW, y+rowCH)
 			shadowRect(img, r)
@@ -372,6 +366,52 @@ func (c *console) coverRow(p *page, id string, y int, items []rowItem, bg color.
 			r.covers[ri.it.cover] = true
 		}
 	}
+}
+
+// coverLoaded: a cover has just loaded; the screen showing it is drawn again with it.
+// Caller holds drawMu.
+func (c *console) coverLoaded(url string) {
+	switch {
+	case !c.screenOn:
+	case c.locked:
+		c.redrawSoon(func() {
+			if c.locked {
+				c.drawLock()
+			}
+		})
+	case c.mode == modeBooksHome:
+		c.coverArrived(url)
+	case c.mode == modeStore:
+		c.storeRedraw()
+	case c.mode != modeTerminal && c.mode != modeReader:
+		m := c.mode
+		c.redrawSoon(func() {
+			if c.mode == m && !c.locked {
+				c.showPage()
+			}
+		})
+	}
+}
+
+// redrawSoon runs draw once a moment from now (for many arrivals), not while a finger is
+// scrolling. Caller holds drawMu.
+func (c *console) redrawSoon(draw func()) {
+	if c.redrawQueued || !backgroundRedraws {
+		return
+	}
+	c.redrawQueued = true
+	time.AfterFunc(300*time.Millisecond, func() {
+		drawMu.Lock()
+		defer drawMu.Unlock()
+		c.redrawQueued = false
+		if c.sc.drag || c.sc.gpuOn {
+			c.redrawSoon(draw)
+			return
+		}
+		if c.screenOn {
+			draw()
+		}
+	})
 }
 
 // coverArrived notes a cover that has just loaded; a moment later, the rows showing it are
@@ -443,7 +483,7 @@ func (c *console) paintArrived() {
 		}
 	}
 	if c.sc.gpuOn {
-		c.disp.overlay(c.scrollQuads(sy, c.sc.drag))
+		c.disp.overlay(c.gpuOverlay(c.sc.drag && c.sc.vert))
 	}
 	c.s.Flush()
 }

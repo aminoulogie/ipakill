@@ -1,9 +1,11 @@
 package main
 
 import (
+	"image"
 	"log"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -129,6 +131,80 @@ func (c *console) scrollQuads(sy int, bar bool) []quad {
 	return q
 }
 
+// gpuOverlay is what the GPU draws over the screen now: the page at its scroll, the scroll
+// bar if asked, and the row being slid sideways, from its strip.
+func (c *console) gpuOverlay(bar bool) []quad {
+	sy := c.scrollY()
+	q := c.scrollQuads(sy, bar)
+	if c.sc.stripOn {
+		if r := c.rowByID(c.sc.strip); r != nil {
+			if sq, ok := c.stripQuad(r, sy); ok {
+				q = append(q, sq)
+			}
+		}
+	}
+	return q
+}
+
+func (c *console) rowByID(id string) *hrow {
+	if c.page == nil {
+		return nil
+	}
+	for i := range c.page.rows {
+		if c.page.rows[i].id == id {
+			return &c.page.rows[i]
+		}
+	}
+	return nil
+}
+
+// stripQuad shows row r from its strip, at its offset, where it is on screen at scroll sy.
+func (c *console) stripQuad(r *hrow, sy int) (quad, bool) {
+	vis := r.r.Intersect(image.Rect(0, sy+c.page.header, c.s.W, sy+c.viewH()))
+	if vis.Empty() {
+		return quad{}, false
+	}
+	off := c.rowOffset(r.id)
+	y0 := c.barH + vis.Min.Y - sy
+	return quad{kind: gpuStrip,
+		x0: 0, y0: float32(y0), x1: float32(c.s.W), y1: float32(y0 + vis.Dy()),
+		u0: float32(off), v0: float32(vis.Min.Y - r.r.Min.Y), u1: float32(off + c.s.W), v1: float32(vis.Max.Y - r.r.Min.Y),
+		mul: 1}, true
+}
+
+// ensureStrip puts row r on the GPU drawn whole (every cover), once per drawing of the page.
+// Caller holds drawMu.
+func (c *console) ensureStrip(r *hrow) bool {
+	if c.sc.strip == r.id && c.sc.stripGen == c.pageGen {
+		return true
+	}
+	if c.sc.stripFail == r.id+"@"+strconv.Itoa(c.pageGen) {
+		return false
+	}
+	if r.contentW > rowStripCols || r.r.Dy() > rowStripRows || r.contentW < c.s.W {
+		return false
+	}
+	start := time.Now()
+	img := image.NewRGBA(image.Rect(0, r.r.Min.Y, r.contentW, r.r.Max.Y))
+	saved := c.rowOffset(r.id)
+	c.sc.x[r.id] = 0
+	r.paint(img) // at offset 0 on a picture as wide as the row: every cover
+	c.sc.x[r.id] = saved
+	if err := c.disp.rowStrip(img); err != nil {
+		log.Printf("GPU: row %s: %v; it slides on the processor", r.id, err)
+		c.sc.stripFail = r.id + "@" + strconv.Itoa(c.pageGen)
+		if c.disp.failed() != nil {
+			c.gpuLost(err)
+		}
+		return false
+	}
+	c.sc.strip, c.sc.stripGen = r.id, c.pageGen
+	if d := time.Since(start); d > 30*time.Millisecond {
+		log.Printf("GPU: row %s (%dx%d) drawn and sent in %v", r.id, r.contentW, r.r.Dy(), d.Round(time.Millisecond))
+	}
+	return true
+}
+
 // gpuScrollTo shows the page at y, under the finger or flinging. Caller holds drawMu.
 func (c *console) gpuScrollTo(y int) bool {
 	y = min(max(y, 0), max(c.page.img.Rect.Dy()-c.viewH(), 0))
@@ -137,15 +213,27 @@ func (c *console) gpuScrollTo(y int) bool {
 	}
 	c.sc.y[c.mode] = y
 	c.sc.gpuOn = true
-	c.disp.overlay(c.scrollQuads(y, true))
+	c.disp.overlay(c.gpuOverlay(true))
 	return true
 }
 
-// gpuRowTo moves a sideways row: repaint it, upload its strip, show it. Caller holds drawMu.
+// gpuRowTo slides a sideways row to offset off: on the GPU from its strip, every move; or, if
+// the row can't go there whole, repainted on the processor (a few times a second). Caller
+// holds drawMu.
 func (c *console) gpuRowTo(r *hrow, off int) bool {
 	if !c.ensureRows(c.visible(c.scrollY())) {
 		return false
 	}
+	if c.ensureStrip(r) {
+		c.sc.x[r.id] = off
+		c.sc.stripOn, c.sc.gpuOn = true, true
+		c.disp.overlay(c.gpuOverlay(false))
+		return true
+	}
+	if time.Since(c.sc.last) < scrollEvery {
+		return true
+	}
+	c.sc.last = time.Now()
 	if off != c.rowOffset(r.id) {
 		c.sc.x[r.id] = off
 		r.paint(c.page.img)
@@ -154,12 +242,13 @@ func (c *console) gpuRowTo(r *hrow, off int) bool {
 		}
 	}
 	c.sc.gpuOn = true
-	c.disp.overlay(c.scrollQuads(c.scrollY(), false))
+	c.disp.overlay(c.gpuOverlay(false))
 	return true
 }
 
-// gpuSettle ends a GPU scroll: the page's window is drawn into the screen for real (it looks
-// the same) and the overlay goes. Caller holds drawMu.
+// gpuSettle ends a GPU scroll: a row slid on the GPU is painted into the page where it
+// stopped, the page's window is drawn into the screen for real (it looks the same) and the
+// overlay goes. Caller holds drawMu.
 func (c *console) gpuSettle() {
 	if !c.sc.gpuOn {
 		return
@@ -167,7 +256,15 @@ func (c *console) gpuSettle() {
 	c.sc.gpuOn = false
 	c.sc.fling++
 	if c.disp == nil || c.page == nil {
+		c.sc.stripOn = false
 		return
+	}
+	if c.sc.stripOn {
+		c.sc.stripOn = false
+		if r := c.rowByID(c.sc.strip); r != nil {
+			r.paint(c.page.img)
+			c.uploadStrip(r.r.Min.Y, r.r.Max.Y)
+		}
 	}
 	c.blitPage()
 	c.disp.overlayOff()
@@ -179,7 +276,7 @@ func (c *console) endGPUScroll() {
 	if !c.sc.gpuOn {
 		return
 	}
-	c.sc.gpuOn = false
+	c.sc.gpuOn, c.sc.stripOn = false, false
 	c.sc.fling++
 	if c.disp != nil {
 		c.disp.overlayOff()
@@ -209,21 +306,34 @@ func (c *console) speed() float64 {
 	return float64(b.y-a.y) / dt
 }
 
-// gpuRelease ends a vertical GPU drag: fling, or settle. Caller holds drawMu.
+// gpuRelease ends a GPU drag, up and down or sideways: fling, or settle. Caller holds drawMu.
 func (c *console) gpuRelease() {
 	v := c.speed()
-	if math.Abs(v) < flingMinSpeed {
+	if math.Abs(v) < flingMinSpeed || (!c.sc.vert && !c.sc.stripOn) {
 		c.gpuSettle()
 		return
 	}
 	c.sc.fling++
-	go c.fling(c.sc.fling, c.mode, c.page, float64(c.scrollY()), v)
+	gen, m, p := c.sc.fling, c.mode, c.page
+	if c.sc.vert {
+		bottom := float64(max(p.img.Rect.Dy()-c.viewH(), 0))
+		go c.fling(gen, m, p, float64(c.scrollY()), v, bottom, c.gpuScrollTo)
+		return
+	}
+	r := c.sc.row
+	id := r.id
+	end := float64(max(r.contentW-r.r.Dx(), 0))
+	go c.fling(gen, m, p, float64(c.rowOffset(id)), v, end, func(off int) bool {
+		c.sc.x[id] = off
+		c.disp.overlay(c.gpuOverlay(false))
+		return true
+	})
 }
 
-// fling keeps the page moving after the finger lifts, slowing down, one position per frame
-// (the GPU paces it: the overlay waits for the panel). A touch, a redraw or another screen
-// stops it.
-func (c *console) fling(gen int, m mode, p *page, y0, v float64) {
+// fling keeps the page (or a row) moving after the finger lifts, slowing down, from at
+// v pixels a second, between 0 and end; move shows each position (the GPU paces it: the
+// overlay waits for the panel). A touch, a redraw or another screen stops it.
+func (c *console) fling(gen int, m mode, p *page, at, v, end float64, move func(int) bool) {
 	start := time.Now()
 	for {
 		time.Sleep(8 * time.Millisecond)
@@ -233,14 +343,10 @@ func (c *console) fling(gen int, m mode, p *page, y0, v float64) {
 			return
 		}
 		t := time.Since(start).Seconds()
-		y := y0 + v*flingTau*(1-math.Exp(-t/flingTau))
-		top, bottom := 0.0, float64(max(p.img.Rect.Dy()-c.viewH(), 0))
-		done := math.Abs(v*math.Exp(-t/flingTau)) < flingStop || y <= top || y >= bottom
-		y = math.Min(math.Max(y, top), bottom)
-		if done {
-			c.sc.y[m] = int(y)
-			c.gpuSettle()
-		} else if !c.gpuScrollTo(int(y)) {
+		x := at + v*flingTau*(1-math.Exp(-t/flingTau))
+		done := math.Abs(v*math.Exp(-t/flingTau)) < flingStop || x <= 0 || x >= end
+		x = math.Min(math.Max(x, 0), end)
+		if !move(int(x)) || done {
 			c.gpuSettle()
 			done = true
 		}

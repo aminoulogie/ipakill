@@ -24,6 +24,8 @@ type softGPU struct {
 	slice     map[int]bool // the page's slices on the GPU
 	partial   int          // slices sent in part before being whole (a bug)
 	maxSlices int
+	strip     *image.RGBA // the row strip
+	strips    int         // row strips sent
 }
 
 func newSoftGPU(s *Screen) *softGPU {
@@ -74,6 +76,15 @@ func (g *softGPU) pageRows(img *image.RGBA, y0, y1 int) error {
 	return nil
 }
 
+func (g *softGPU) rowStrip(img *image.RGBA) error {
+	g.strips++
+	g.strip = image.NewRGBA(image.Rect(0, 0, img.Rect.Dx(), img.Rect.Dy()))
+	for y := 0; y < img.Rect.Dy(); y++ {
+		copy(g.strip.Pix[g.strip.PixOffset(0, y):g.strip.PixOffset(0, y+1)], img.Pix[img.PixOffset(img.Rect.Min.X, img.Rect.Min.Y+y):])
+	}
+	return nil
+}
+
 func (g *softGPU) pageFree(k int) error {
 	g.slice[k] = false
 	for y := k * pageSlice; y < min((k+1)*pageSlice, g.page.Rect.Dy()); y++ {
@@ -105,7 +116,7 @@ func (g *softGPU) frame(q []quad, last bool) error {
 
 func (g *softGPU) draw(k quad) {
 	s := g.s
-	if k.kind == gpuPage { // logical coordinates: each native pixel's centre, turned back
+	if k.kind == gpuPage || k.kind == gpuStrip { // logical coordinates: each native pixel's centre, turned back
 		for py := 0; py < s.fbH; py++ {
 			lx := float32(s.fbH) - (float32(py) + 0.5)
 			if lx < k.x0 || lx >= k.x1 {
@@ -118,10 +129,13 @@ func (g *softGPU) draw(k quad) {
 				}
 				u := int(k.u0 + (lx-k.x0)*(k.u1-k.u0)/(k.x1-k.x0))
 				v := int(k.v0 + (ly-k.y0)*(k.v1-k.v0)/(k.y1-k.y0))
-				if !g.slice[v/pageSlice] {
+				src := g.page
+				if k.kind == gpuStrip {
+					src = g.strip
+				} else if !g.slice[v/pageSlice] {
 					continue // not on the GPU: the screen shows through
 				}
-				p := g.page.Pix[g.page.PixOffset(u, v):]
+				p := src.Pix[src.PixOffset(u, v):]
 				d := g.screen[py*s.stride+4*px:]
 				d[0], d[1], d[2] = p[2], p[1], p[0]
 			}

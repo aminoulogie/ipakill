@@ -400,6 +400,15 @@ GitHub is often unreachable from this PC: pull with a retry loop, or use a git b
       rows holding it (hrow.covers, paintArrived), uploading their strips to the GPU. (4) the
       visible page slices are sent to the GPU 300 ms after a page is drawn (prefetchPage), so
       the first swipe moves at once. "slow page" in init.log = a page draw over 150 ms.
+      (5) sideways rows slide on the GPU too: on the first move a row is painted whole (every
+      cover, offset 0) into a strip (≤ 12288 x 512, sent in 1024-wide columns: ES 2 can't
+      upload part of a wider picture), then each move is only a quad (gpuStrip, kind 5); fling
+      sideways; at settle the row is painted into the page at its offset. Row paint closures
+      fill and draw the whole picture they're given (img.Rect), with a 40 px margin for
+      shadows. (6) covers.loaded is set by showPage/drawLock for whatever is on screen
+      (coverLoaded): Library, Words and the lock screen now redraw when covers arrive (before,
+      only Home and Store did). (7) EPUB covers: also an image named *cover*, else the first
+      non-SVG picture; WebP decodes (x/image/webp).
 - [ ] microSD bind into Alpine
 
 Update this checklist as things are done.

@@ -76,6 +76,7 @@ type gpuDisplay interface {
 	pageNew(h int) error                        // a new page of h rows (logical), none on the GPU yet
 	pageRows(img *image.RGBA, y0, y1 int) error // upload the page's rows y0..y1-1 (a new slice whole)
 	pageFree(k int) error                       // take slice k off the GPU
+	rowStrip(img *image.RGBA) error             // a sideways row drawn whole, to slide (gpuPage+1 quads)
 	overlay(q []quad)                           // drawn over the screen until overlayOff; latest wins
 	overlayOff() error
 	failed() error
@@ -88,7 +89,13 @@ const (
 	pageMaxRows  = 10000
 	pageSlice    = 1024
 	pageResident = 4
+	// A sideways row is drawn whole (every cover) once, as a strip, and slid on the GPU.
+	rowStripCols = 12288
+	rowStripRows = 512
 )
+
+// gpuStrip is a quad of the row strip: x y in logical screen pixels, u v in the strip's.
+const gpuStrip = 5
 
 // gpuPage is a quad of the page: x y in logical screen pixels, u v in the page's pixels.
 const gpuPage = 4

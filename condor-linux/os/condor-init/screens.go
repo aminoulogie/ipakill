@@ -67,6 +67,13 @@ func (c *console) showPage() {
 	}
 	c.endGPUScroll()
 	c.pageGen++
+	covers.mu.Lock()
+	covers.loaded = func(url string) { // whichever screen shows it now
+		drawMu.Lock()
+		c.coverLoaded(url)
+		drawMu.Unlock()
+	}
+	covers.mu.Unlock()
 	start := time.Now()
 	defer func() {
 		// Touches wait while a page is drawn: say when that's long enough to feel.

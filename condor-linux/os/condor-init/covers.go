@@ -19,6 +19,7 @@ import (
 	"time"
 
 	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp" // some books' covers
 
 	"condor-init/epub"
 	"condor-init/ui"

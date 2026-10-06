@@ -421,14 +421,14 @@ func (c *console) capsuleRow(p *page, id string, y int, ids, labels []string, on
 	}
 	contentW += 48 - 16
 	paint := func(img *image.RGBA) {
-		ui.Fill(img, band, apBG)
+		ui.Fill(img, image.Rect(img.Rect.Min.X, band.Min.Y, img.Rect.Max.X, band.Max.Y), apBG)
 		px := 48 - c.rowOffset(id)
 		var btns []button
 		for i, cid := range ids {
 			w := ui.TextWidth(f.captionBold, labels[i]) + 56
 			r := image.Rect(px, y, px+w, y+66)
 			px += w + 16
-			if r.Max.X < 0 || r.Min.X > img.Rect.Dx() {
+			if r.Max.X < img.Rect.Min.X || r.Min.X > img.Rect.Max.X {
 				continue
 			}
 			bg, fg := apCard2, apLabel
@@ -451,13 +451,6 @@ func (c *console) storePage() *page {
 	if st.dl == nil {
 		st.dl = map[string]string{}
 	}
-	covers.mu.Lock()
-	covers.loaded = func(string) {
-		drawMu.Lock()
-		c.storeRedraw()
-		drawMu.Unlock()
-	}
-	covers.mu.Unlock()
 	if !st.started {
 		c.storeLoad(false)
 	}

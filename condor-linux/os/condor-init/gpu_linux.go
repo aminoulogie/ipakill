@@ -77,7 +77,7 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 
 	size := s.stride * s.fbH
 	pageW := s.fbH // the logical (portrait) width
-	total := 3*size + pageW*pageMaxRows*4
+	total := 3*size + pageW*pageMaxRows*4 + rowStripCols*rowStripRows*4
 	f, err := os.OpenFile(glShmPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
@@ -98,7 +98,8 @@ func startGPU(s *Screen) (gpuDisplay, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(sfHelperPath, glShmPath, strconv.Itoa(s.fbW), strconv.Itoa(s.fbH), strconv.Itoa(pageMaxRows), strconv.Itoa(pageSlice))
+	cmd := exec.Command(sfHelperPath, glShmPath, strconv.Itoa(s.fbW), strconv.Itoa(s.fbH), strconv.Itoa(pageMaxRows), strconv.Itoa(pageSlice),
+		strconv.Itoa(rowStripCols), strconv.Itoa(rowStripRows))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, log.Writer()
 	cmd.Env = os.Environ() // Android's, from init: ANDROID_PROPERTY_WORKSPACE, LD_LIBRARY_PATH...
 	if err := cmd.Start(); err != nil {
@@ -271,6 +272,27 @@ func (g *sfGPU) pageRows(img *image.RGBA, y0, y1 int) error {
 	defer g.mu.Unlock()
 	g.copyRows(img, y0, y1)
 	return g.do(words32(6, uint32(y0), uint32(y1)), 2*time.Second)
+}
+
+// rowStrip sends a row drawn whole: laid out in columns pageSlice wide, one after the other
+// (OpenGL ES 2 can't upload part of a wider picture).
+func (g *sfGPU) rowStrip(img *image.RGBA) error {
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	if w > rowStripCols || h > rowStripRows {
+		return fmt.Errorf("row strip %dx%d too big", w, h)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	strip := g.mem[3*g.size+g.pageW*pageMaxRows*4:]
+	o := 0
+	for c0 := 0; c0 < w; c0 += pageSlice {
+		cw := min(pageSlice, w-c0)
+		for y := 0; y < h; y++ {
+			i := img.PixOffset(img.Rect.Min.X+c0, img.Rect.Min.Y+y)
+			o += copy(strip[o:o+4*cw], img.Pix[i:i+4*cw])
+		}
+	}
+	return g.do(words32(10, uint32(w), uint32(h)), 2*time.Second)
 }
 
 // pageFree takes slice k of the page off the GPU.

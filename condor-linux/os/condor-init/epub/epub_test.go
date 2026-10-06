@@ -116,3 +116,24 @@ func TestOpenAndChapterText(t *testing.T) {
 		t.Errorf("title %q", got)
 	}
 }
+
+// Books that don't mark their cover: an image named cover, else the first picture (not SVG).
+func TestCoverFallbacks(t *testing.T) {
+	opf := func(items string) string {
+		return `<package><metadata><dc:title>T</dc:title></metadata><manifest>` + items +
+			`<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>`
+	}
+	for _, tc := range []struct{ items, want string }{
+		{`<item id="logo" href="img/logo.png" media-type="image/png"/><item id="i9" href="img/Front_Cover.jpg" media-type="image/jpeg"/>`, "img/Front_Cover.jpg"},
+		{`<item id="a" href="img/art.svg" media-type="image/svg+xml"/><item id="b" href="img/first.jpg" media-type="image/jpeg"/>`, "img/first.jpg"},
+		{``, ""},
+	} {
+		b, err := ParseOPF([]byte(opf(tc.items)), "content.opf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.CoverPath != tc.want {
+			t.Errorf("cover %q, want %q", b.CoverPath, tc.want)
+		}
+	}
+}

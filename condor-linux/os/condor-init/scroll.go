@@ -42,8 +42,13 @@ type scrollState struct {
 	texGen   int   // c.pageGen of the page on the GPU (0: none)
 	texFail  int   // c.pageGen of a page the GPU couldn't take
 	resident []int // its slices on the GPU, least recently used first
-	fling    int   // bumped to stop a fling
-	samples  []scrollSample
+
+	strip     string // the row on the GPU drawn whole, to slide sideways
+	stripGen  int    // c.pageGen it was drawn at
+	stripOn   bool   // the overlay shows it (it's being slid)
+	stripFail string // row@pageGen the GPU couldn't take
+	fling     int    // bumped to stop a fling
+	samples   []scrollSample
 }
 
 const (
@@ -164,12 +169,10 @@ func (c *console) pageTouch(p TouchPoint) {
 					c.sample(c.scrollY())
 					return
 				}
-			case time.Since(sc.last) < scrollEvery:
-				return
 			default:
-				sc.last = time.Now()
 				r := sc.row
 				if c.gpuRowTo(r, min(max(sc.from-dx, 0), max(r.contentW-r.r.Dx(), 0))) {
+					c.sample(c.rowOffset(r.id))
 					return
 				}
 			}
@@ -188,7 +191,7 @@ func (c *console) pageTouch(p TouchPoint) {
 		moved := sc.moved
 		if sc.gpuOn {
 			sc.drag = false
-			if moved && sc.vert {
+			if moved {
 				c.gpuRelease()
 				return
 			}

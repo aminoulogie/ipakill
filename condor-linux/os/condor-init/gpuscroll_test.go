@@ -166,23 +166,61 @@ func TestGPUFlingCaught(t *testing.T) {
 	}
 }
 
-// A sideways row moves on the GPU too: its strip is repainted and uploaded, not the page.
+// A sideways row slides on the GPU from its strip (drawn once, whole): every move shows
+// exactly what the processor would paint at that offset, with no repainting; a quick lift
+// flings it on; it ends painted into the page.
 func TestGPURow(t *testing.T) {
 	drawMu.Lock()
-	defer drawMu.Unlock()
 	c, g := gpuScrollConsole(t)
 	y := c.barH + 600 + rowCH/2
+	r := c.rowByID("row")
+	expect := func(what string) {
+		t.Helper()
+		saved := append([]byte(nil), c.page.img.Pix...)
+		r.paint(c.page.img) // what the row looks like at its offset now
+		shows(t, c, g, what)
+		copy(c.page.img.Pix, saved)
+	}
 	c.pageTouch(TouchPoint{Down: true, X: 900, Y: y})
-	c.pageTouch(TouchPoint{Moved: true, X: 500, Y: y + 5})
-	if c.rowOffset("row") != 400 || !c.sc.gpuOn {
-		t.Fatalf("row at %d (GPU %v), want 400 on the GPU", c.rowOffset("row"), c.sc.gpuOn)
+	for _, x := range []int{870, 500, 433, 120} {
+		c.pageTouch(TouchPoint{Moved: true, X: x, Y: y + 5})
+		if c.rowOffset("row") != 900-x || !c.sc.stripOn {
+			t.Fatalf("finger at %d: row at %d (strip %v), want %d", x, c.rowOffset("row"), c.sc.stripOn, 900-x)
+		}
+		expect(fmt.Sprint("row slid to ", 900-x))
 	}
-	shows(t, c, g, "row moved")
-	c.pageTouch(TouchPoint{Up: true, X: 500, Y: y + 5})
-	if g.uploads > 3 || g.partial != 0 || g.over != nil {
-		t.Fatalf("%d slices sent (%d in part), overlay %v", g.uploads, g.partial, g.over != nil)
+	if g.strips != 1 {
+		t.Fatalf("the row went to the GPU %d times, want once", g.strips)
 	}
-	shows(t, c, g, "row settled")
+	lift(c, 3000, 120, y+5)
+	at := c.rowOffset("row")
+	drawMu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		drawMu.Lock()
+		on := c.sc.gpuOn
+		drawMu.Unlock()
+		if !on {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the row is still flinging")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	drawMu.Lock()
+	defer drawMu.Unlock()
+	end := r.contentW - r.r.Dx()
+	if c.rowOffset("row") <= at || c.rowOffset("row") > end {
+		t.Fatalf("flung from %d to %d (end %d)", at, c.rowOffset("row"), end)
+	}
+	if g.over != nil || c.sc.stripOn {
+		t.Fatal("the overlay is still up")
+	}
+	shows(t, c, g, "row settled") // painted into the page at its offset
+	if id := c.page.hit(48+10, 610); id == "b0" || id == "" {
+		t.Fatalf("after the fling the row's buttons are stale: %q", id)
+	}
 }
 
 // Anything else drawn ends the GPU scroll (no overlay left over another screen), and a page
