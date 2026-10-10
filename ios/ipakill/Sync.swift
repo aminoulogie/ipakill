@@ -55,6 +55,8 @@ final class Sync: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private var timer: Timer?
+    private var storeRefreshTask: Task<Void, Never>?
+    private var lastStoreRefresh: Date?
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -134,7 +136,9 @@ final class Sync: ObservableObject {
 
     // MARK: store
 
-    func refreshStore() async {
+    func refreshStore(force: Bool = false) async {
+        if loadingStore { return }
+        if !force, let lastStoreRefresh, Date().timeIntervalSince(lastStoreRefresh) < 60 { return }
         loadingStore = true
         defer { loadingStore = false }
         var all: [StoreApp] = []
@@ -159,6 +163,7 @@ final class Sync: ObservableObject {
         store = all
         storeErrors = errors
         sourceInfo = infos
+        lastStoreRefresh = Date()
     }
 
     /// The apps one source offers, in the order the source lists them.
