@@ -10,6 +10,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -369,6 +370,107 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+type terminalRequest struct {
+	Command string `json:"command"`
+	CWD     string `json:"cwd"`
+}
+
+type terminalResponse struct {
+	OK       bool   `json:"ok"`
+	Output   string `json:"output"`
+	CWD      string `json:"cwd"`
+	ExitCode int    `json:"exitCode"`
+	Error    string `json:"error,omitempty"`
+}
+
+func terminalCWD(cwd string) (string, error) {
+	if strings.TrimSpace(cwd) == "" {
+		h, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		cwd = h
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", abs)
+	}
+	return abs, nil
+}
+
+func runTerminal(req terminalRequest) terminalResponse {
+	cwd, err := terminalCWD(req.CWD)
+	if err != nil {
+		return terminalResponse{OK: false, CWD: req.CWD, ExitCode: 1, Error: err.Error()}
+	}
+
+	line := strings.TrimSpace(req.Command)
+	if line == "" {
+		return terminalResponse{OK: true, CWD: cwd, ExitCode: 0}
+	}
+
+	// Keep the working directory between commands. PowerShell runs themselves
+	// are intentionally short-lived, but "cd" behaves like a normal terminal.
+	lower := strings.ToLower(line)
+	if lower == "cd" || strings.HasPrefix(lower, "cd ") {
+		target := strings.TrimSpace(line[2:])
+		target = strings.Trim(target, "'\"")
+		if target == "" {
+			target, err = os.UserHomeDir()
+			if err != nil {
+				return terminalResponse{OK: false, CWD: cwd, ExitCode: 1, Error: err.Error()}
+			}
+		} else if !filepath.IsAbs(target) {
+			target = filepath.Join(cwd, target)
+		}
+		newCWD, err := terminalCWD(target)
+		if err != nil {
+			return terminalResponse{OK: false, CWD: cwd, ExitCode: 1, Error: err.Error()}
+		}
+		return terminalResponse{OK: true, CWD: newCWD, ExitCode: 0}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", line)
+	cmd.Dir = cwd
+	cmd.Env = os.Environ()
+	output, runErr := cmd.CombinedOutput()
+	resp := terminalResponse{OK: runErr == nil, Output: string(output), CWD: cwd, ExitCode: 0}
+	if ctx.Err() == context.DeadlineExceeded {
+		resp.OK = false
+		resp.ExitCode = 124
+		resp.Error = "command timed out after 60 seconds"
+		return resp
+	}
+	if runErr != nil {
+		resp.Error = runErr.Error()
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			resp.ExitCode = exitErr.ExitCode()
+		} else {
+			resp.ExitCode = 1
+		}
+	}
+	return resp
+}
+
+func isLANRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsPrivate() || ip.IsLoopback())
+}
+
 func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	var log bytes.Buffer
 	app, err := install(ipa, io.MultiWriter(os.Stdout, &log), meta)
@@ -415,6 +517,25 @@ func serve() error {
 			h(w, r)
 		}
 	}
+
+	http.HandleFunc("/terminal", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "POST only"})
+			return
+		}
+		if !isLANRemote(r.RemoteAddr) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "terminal access is limited to the local network"})
+			return
+		}
+
+		var req terminalRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		if err := dec.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid terminal request"})
+			return
+		}
+		writeJSON(w, http.StatusOK, runTerminal(req))
+	}))
 
 	http.HandleFunc("/status", auth(func(w http.ResponseWriter, r *http.Request) {
 		phone := ""
