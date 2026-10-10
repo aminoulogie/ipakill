@@ -518,6 +518,8 @@ func serve() error {
 		}
 	}
 
+	registerIPALabRoutes(auth)
+
 	http.HandleFunc("/terminal", auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "POST only"})
