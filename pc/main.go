@@ -10,7 +10,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
@@ -48,48 +47,7 @@ var (
 	versionRe = regexp.MustCompile(`(?i)[-_ ]v?\d[\w.\-() ]*$`)
 	semverRe  = regexp.MustCompile(`\d+(\.\d+)+(-[0-9A-Za-z.]+)?`)
 	installMu sync.Mutex
-	progressMu sync.RWMutex
-	progress   = InstallProgress{Phase: "Idle", Detail: "Waiting", Percent: 0}
 )
-
-type InstallProgress struct {
-	Active  bool   `json:"active"`
-	Phase   string `json:"phase"`
-	Detail  string `json:"detail"`
-	Percent int    `json:"percent"`
-}
-
-func setProgress(active bool, phase, detail string, percent int) {
-	if percent < 0 { percent = 0 }
-	if percent > 100 { percent = 100 }
-	progressMu.Lock()
-	progress = InstallProgress{Active: active, Phase: phase, Detail: detail, Percent: percent}
-	progressMu.Unlock()
-}
-
-func getProgress() InstallProgress {
-	progressMu.RLock()
-	defer progressMu.RUnlock()
-	return progress
-}
-
-func updateProgressFromLog(line string) {
-	l := strings.ToLower(line)
-	switch {
-	case strings.Contains(l, "profile") || strings.Contains(l, "provision"):
-		setProgress(true, "Provisioning", "Preparing signing profile", 30)
-	case strings.Contains(l, "certificate") || strings.Contains(l, "cert"):
-		setProgress(true, "Certificate", "Preparing signing certificate", 40)
-	case strings.Contains(l, "entitlement"):
-		setProgress(true, "Entitlements", "Applying app entitlements", 52)
-	case strings.Contains(l, "signing") || strings.Contains(l, "codesign") || strings.Contains(l, "sign "):
-		setProgress(true, "Signing", "Signing application bundle", 68)
-	case strings.Contains(l, "install") || strings.Contains(l, "instproxy"):
-		setProgress(true, "Installing", "Installing app on iPhone", 88)
-	case strings.Contains(l, "success") || strings.Contains(l, "complete") || strings.Contains(l, "finished"):
-		setProgress(true, "Finalizing", "Finishing installation", 96)
-	}
-}
 
 type App struct {
 	Name    string    `json:"name"`
@@ -246,6 +204,27 @@ func pickDevice() (Device, error) {
 	return devs[0], nil
 }
 
+// waitForDevice keeps looking for the iPhone for a while: over Wi-Fi it
+// drops out of sight when it sleeps and usually shows up again in seconds.
+func waitForDevice(limit time.Duration) (Device, error) {
+	deadline := time.Now().Add(limit)
+	announced := false
+	for {
+		dev, err := pickDevice()
+		if err == nil || time.Now().After(deadline) {
+			if err != nil {
+				err = fmt.Errorf("%v - unlock the iPhone and keep it on the same Wi-Fi, or plug it in by USB", err)
+			}
+			return dev, err
+		}
+		if !announced {
+			progLine("Looking for the iPhone (unlock it and keep ipakill open)…")
+			announced = true
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 // ---------------------------------------------------------------- install
 
 // install signs and installs ipa, streaming the useful log lines to out.
@@ -253,13 +232,6 @@ func pickDevice() (Device, error) {
 func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error) {
 	installMu.Lock()
 	defer installMu.Unlock()
-	setProgress(true, "Preparing", "Checking IPA and signing tools", 8)
-	defer func() {
-		p := getProgress()
-		if p.Active && p.Percent < 100 {
-			setProgress(false, "Stopped", p.Detail, p.Percent)
-		}
-	}()
 
 	ipa, _ = filepath.Abs(ipa)
 	if _, err := os.Stat(ipa); err != nil {
@@ -268,46 +240,38 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	if _, err := os.Stat(plumesign); err != nil {
 		return App{}, fmt.Errorf("plumesign missing - run 'ipakill login' first")
 	}
-	setProgress(true, "Device", "Finding iPhone connection", 16)
-	dev, err := pickDevice()
+	dev, err := waitForDevice(20 * time.Second)
 	if err != nil {
 		return App{}, err
 	}
 	conn := map[string]string{"USB": "USB", "Network": "Wi-Fi"}[dev.Conn]
 	fmt.Fprintf(out, "[ipakill] Installing to %s over %s\n", dev.UDID, conn)
+	progStage("sign")
+	progLine(fmt.Sprintf("Installing to %s over %s", dev.UDID, conn))
 
 	args := append([]string{"sign", "-p", ipa, "--apple-id", "--register-and-install",
 		"--udid", strconv.Itoa(dev.ID)}, extra...)
-	cmd := exec.Command(plumesign, args...)
-	cmd.Env = append(os.Environ(), "RUST_LOG=info")
-	pipe, _ := cmd.StdoutPipe()
-	cmd.Stderr = cmd.Stdout
-	setProgress(true, "Starting", "Launching signing engine", 22)
-	if err := cmd.Start(); err != nil {
-		return App{}, err
-	}
 
 	logf, _ := os.Create(logFile)
 	defer logf.Close()
-	bundle := ""
-	sc := bufio.NewScanner(pipe)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
-		fmt.Fprintln(logf, line)
-		updateProgressFromLog(line)
-		if m := bundleRe.FindStringSubmatch(line); m != nil {
-			bundle = m[1] // the main app is signed last, so the last match wins
+	var bundle string
+	// Network trouble (SideStore's anisette server answering garbage, Apple's
+	// or GitHub's servers not answering) is worth waiting out instead of failing.
+	for attempt := 1; ; attempt++ {
+		var why string
+		bundle, why, err = runPlumesign(args, out, logf)
+		if err == nil {
+			break
 		}
-		if strings.Contains(line, "plumesign::") || strings.Contains(line, "ERROR") || strings.HasPrefix(line, "Error") {
-			if i := strings.Index(line, "] "); i >= 0 && strings.HasPrefix(line, "[") {
-				line = line[i+2:]
-			}
-			fmt.Fprintln(out, "  "+line)
+		if why == "" || attempt == 5 {
+			return App{}, fmt.Errorf("install failed: %v (full log: %s)", err, logFile)
 		}
-	}
-	if err := cmd.Wait(); err != nil {
-		return App{}, fmt.Errorf("install failed - full log: %s", logFile)
+		// Connections here can drop for a minute or two; back off further each time.
+		wait := time.Duration(15*attempt) * time.Second
+		msg := fmt.Sprintf("%s - retrying in %ds (%d/5)", why, int(wait.Seconds()), attempt+1)
+		fmt.Fprintln(out, "  "+msg)
+		progLine(msg)
+		time.Sleep(wait)
 	}
 
 	base := strings.TrimSuffix(filepath.Base(ipa), filepath.Ext(ipa))
@@ -326,9 +290,57 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	apps := loadApps()
 	apps[keyFor(app)] = app
 	saveApps(apps)
-	setProgress(false, "Complete", "Signed and installed successfully", 100)
 	fmt.Fprintf(out, "[ipakill] Done! %s is signed until %s.\n", name, app.Expires.Format("Mon Jan 2 15:04"))
 	return app, nil
+}
+
+// runPlumesign runs one sign + install, streaming its output. why is set
+// when it failed on something temporary that a retry may get past.
+func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, why string, err error) {
+	var reason string
+	cmd := exec.Command(plumesign, args...)
+	cmd.Env = append(os.Environ(), "RUST_LOG=info")
+	pipe, _ := cmd.StdoutPipe()
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		return "", "", err
+	}
+	sc := bufio.NewScanner(pipe)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		line := sc.Text()
+		fmt.Fprintln(logf, line)
+		progLine(line)
+		switch {
+		case strings.Contains(line, "Anisette error"):
+			why = "Apple's login helper server didn't answer properly"
+		case strings.Contains(line, "tcp connect error"), strings.Contains(line, "os error 10060"),
+			strings.Contains(line, "timed out"), strings.Contains(line, "connection reset"),
+			strings.Contains(line, "error sending request"):
+			if why == "" {
+				why = "The PC lost its connection to Apple"
+			}
+		}
+		if strings.HasPrefix(line, "Error: ") && reason == "" {
+			reason = strings.TrimPrefix(line, "Error: ")
+		}
+		if m := bundleRe.FindStringSubmatch(line); m != nil {
+			bundle = m[1] // the main app is signed last, so the last match wins
+		}
+		if strings.Contains(line, "plumesign::") || strings.Contains(line, "ERROR") || strings.HasPrefix(line, "Error") {
+			if i := strings.Index(line, "] "); i >= 0 && strings.HasPrefix(line, "[") {
+				line = line[i+2:]
+			}
+			fmt.Fprintln(out, "  "+line)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		if reason != "" {
+			return bundle, why, fmt.Errorf("%s", reason)
+		}
+		return bundle, why, err
+	}
+	return bundle, why, nil
 }
 
 func keyFor(a App) string {
@@ -380,7 +392,8 @@ func printList() {
 // ---------------------------------------------------------------- Wi-Fi server
 
 type syncConfig struct {
-	Code string `json:"code"`
+	Code  string `json:"code"`
+	Shell bool   `json:"shell,omitempty"` // terminal allowed; set by 'serve --shell', cleared by --no-shell
 }
 
 func loadSyncConfig() syncConfig {
@@ -422,110 +435,37 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-type terminalRequest struct {
-	Command string `json:"command"`
-	CWD     string `json:"cwd"`
-}
-
-type terminalResponse struct {
-	OK       bool   `json:"ok"`
-	Output   string `json:"output"`
-	CWD      string `json:"cwd"`
-	ExitCode int    `json:"exitCode"`
-	Error    string `json:"error,omitempty"`
-}
-
-func terminalCWD(cwd string) (string, error) {
-	if strings.TrimSpace(cwd) == "" {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		cwd = h
-	}
-	abs, err := filepath.Abs(cwd)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", err
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("not a directory: %s", abs)
-	}
-	return abs, nil
-}
-
-func runTerminal(req terminalRequest) terminalResponse {
-	cwd, err := terminalCWD(req.CWD)
-	if err != nil {
-		return terminalResponse{OK: false, CWD: req.CWD, ExitCode: 1, Error: err.Error()}
-	}
-
-	line := strings.TrimSpace(req.Command)
-	if line == "" {
-		return terminalResponse{OK: true, CWD: cwd, ExitCode: 0}
-	}
-
-	// Keep the working directory between commands. PowerShell runs themselves
-	// are intentionally short-lived, but "cd" behaves like a normal terminal.
-	lower := strings.ToLower(line)
-	if lower == "cd" || strings.HasPrefix(lower, "cd ") {
-		target := strings.TrimSpace(line[2:])
-		target = strings.Trim(target, "'\"")
-		if target == "" {
-			target, err = os.UserHomeDir()
-			if err != nil {
-				return terminalResponse{OK: false, CWD: cwd, ExitCode: 1, Error: err.Error()}
+// installInBackground answers at once and signs + installs on its own; the
+// phone follows along through /progress, so a dropped Wi-Fi connection or a
+// locked screen on the phone can't cut the install short.
+func installInBackground(w http.ResponseWriter, prepare func() error, ipa string, meta Meta) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	go func() {
+		if prepare != nil {
+			if err := prepare(); err != nil {
+				progEnd(err)
+				return
 			}
-		} else if !filepath.IsAbs(target) {
-			target = filepath.Join(cwd, target)
 		}
-		newCWD, err := terminalCWD(target)
-		if err != nil {
-			return terminalResponse{OK: false, CWD: cwd, ExitCode: 1, Error: err.Error()}
-		}
-		return terminalResponse{OK: true, CWD: newCWD, ExitCode: 0}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", line)
-	cmd.Dir = cwd
-	cmd.Env = os.Environ()
-	output, runErr := cmd.CombinedOutput()
-	resp := terminalResponse{OK: runErr == nil, Output: string(output), CWD: cwd, ExitCode: 0}
-	if ctx.Err() == context.DeadlineExceeded {
-		resp.OK = false
-		resp.ExitCode = 124
-		resp.Error = "command timed out after 60 seconds"
-		return resp
-	}
-	if runErr != nil {
-		resp.Error = runErr.Error()
-		if exitErr, ok := runErr.(*exec.ExitError); ok {
-			resp.ExitCode = exitErr.ExitCode()
-		} else {
-			resp.ExitCode = 1
-		}
-	}
-	return resp
+		_, err := install(ipa, os.Stdout, meta)
+		progEnd(err)
+	}()
 }
 
-func isLANRemote(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
+func installBusy(w http.ResponseWriter) bool {
+	prog.mu.Lock()
+	busy := prog.Running
+	prog.mu.Unlock()
+	if busy {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "another install is still running on the PC"})
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && (ip.IsPrivate() || ip.IsLoopback())
+	return busy
 }
 
 func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	var log bytes.Buffer
 	app, err := install(ipa, io.MultiWriter(os.Stdout, &log), meta)
+	progEnd(err)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error(), "log": log.String()})
 		return
@@ -533,7 +473,41 @@ func installAndReply(w http.ResponseWriter, ipa string, meta Meta) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "app": app, "log": log.String()})
 }
 
+// download fetches src to dst, retrying network failures (a connection that
+// times out or drops) a few times before giving up.
 func download(src, dst string) error {
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		if err = downloadOnce(src, dst); err == nil {
+			return nil
+		}
+		if strings.HasPrefix(err.Error(), "server said 4") || attempt == 5 {
+			break // a missing file won't appear by retrying
+		}
+		msg := fmt.Sprintf("Download failed (%v) - retrying in %ds (%d/5)", shortNetErr(err), attempt*10, attempt+1)
+		fmt.Println("[ipakill] " + msg)
+		progLine(msg)
+		progBytes(0, 0)
+		time.Sleep(time.Duration(attempt*10) * time.Second)
+	}
+	return err
+}
+
+// shortNetErr turns Go's long dial errors into a few words.
+func shortNetErr(err error) string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "connectex") || strings.Contains(s, "timeout") || strings.Contains(s, "timed out"):
+		return "no answer from the server"
+	case strings.Contains(s, "no such host"):
+		return "no internet / DNS"
+	case strings.Contains(s, "reset"):
+		return "connection dropped"
+	}
+	return s
+}
+
+func downloadOnce(src, dst string) error {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Get(src)
 	if err != nil {
@@ -547,7 +521,7 @@ func download(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(f, io.LimitReader(resp.Body, 4<<30))
+	_, err = io.Copy(f, io.LimitReader(&countingReader{r: resp.Body, total: resp.ContentLength}, 4<<30))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -555,14 +529,47 @@ func download(src, dst string) error {
 }
 
 func serve() error {
+	// Already running (e.g. the window a phone 'update' opened)? Say so plainly.
+	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil && !restarted() {
+		c.Close()
+		return fmt.Errorf("ipakill serve is already running in another window - use that one, or stop it first with: Stop-Process -Name ipakill-core")
+	}
 	cfg := loadSyncConfig()
+	for _, a := range os.Args[2:] {
+		if a == "--shell" || a == "--no-shell" {
+			cfg.Shell = a == "--shell"
+			b, _ := json.MarshalIndent(cfg, "", "  ")
+			os.WriteFile(syncFile, b, 0o600)
+		}
+	}
+	terminalOn = cfg.Shell
 	os.MkdirAll(ipaDir, 0o755)
 	host, _ := os.Hostname()
 
+	// Wrong codes lock everyone out for a while, so a 6-digit code can't be
+	// guessed by someone else on the network (it guards the terminal too).
+	var (
+		failMu    sync.Mutex
+		failures  int
+		lockedTil time.Time
+	)
 	auth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
+			failMu.Lock()
+			locked := time.Now().Before(lockedTil)
+			failMu.Unlock()
+			if locked {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "too many wrong pairing codes - try again in a few minutes"})
+				return
+			}
 			// Images can't carry headers, so the code may also come as ?code=.
 			if r.Header.Get("X-Ipakill-Code") != cfg.Code && r.URL.Query().Get("code") != cfg.Code {
+				failMu.Lock()
+				if failures++; failures >= 10 {
+					failures, lockedTil = 0, time.Now().Add(5*time.Minute)
+					fmt.Println("[ipakill] 10 wrong pairing codes - locked for 5 minutes")
+				}
+				failMu.Unlock()
 				writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "wrong pairing code"})
 				return
 			}
@@ -570,30 +577,8 @@ func serve() error {
 		}
 	}
 
+	// Keep the newer IPA Lab routes while restoring yesterday's LiveContainer backend.
 	registerIPALabRoutes(auth)
-
-	http.HandleFunc("/progress", auth(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, getProgress())
-	}))
-
-	http.HandleFunc("/terminal", auth(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "POST only"})
-			return
-		}
-		if !isLANRemote(r.RemoteAddr) {
-			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "terminal access is limited to the local network"})
-			return
-		}
-
-		var req terminalRequest
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-		if err := dec.Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid terminal request"})
-			return
-		}
-		writeJSON(w, http.StatusOK, runTerminal(req))
-	}))
 
 	http.HandleFunc("/status", auth(func(w http.ResponseWriter, r *http.Request) {
 		phone := ""
@@ -618,17 +603,27 @@ func serve() error {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "not an .ipa file"})
 			return
 		}
+		async := r.URL.Query().Get("async") == "1"
+		if async && installBusy(w) {
+			return
+		}
 		dst := filepath.Join(ipaDir, name)
+		progStart(strings.TrimSuffix(name, filepath.Ext(name)), "upload")
 		f, err := os.Create(dst)
 		if err == nil {
-			_, err = io.Copy(f, http.MaxBytesReader(w, r.Body, 4<<30))
+			_, err = io.Copy(f, &countingReader{r: http.MaxBytesReader(w, r.Body, 4<<30), total: r.ContentLength})
 			f.Close()
 		}
 		if err != nil {
+			progEnd(err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "upload failed: " + err.Error()})
 			return
 		}
 		fmt.Printf("[ipakill] Received %s from iPhone\n", name)
+		if async {
+			installInBackground(w, nil, dst, Meta{})
+			return
+		}
 		installAndReply(w, dst, Meta{})
 	}))
 
@@ -664,20 +659,76 @@ func serve() error {
 		if !strings.HasSuffix(strings.ToLower(name), ".ipa") {
 			name = "download.ipa"
 		}
+		async := q.Get("async") == "1"
+		if async && installBusy(w) {
+			return
+		}
 		fmt.Printf("[ipakill] Downloading %s\n", src)
+		display := q.Get("name")
+		if display == "" {
+			display = strings.TrimSuffix(name, filepath.Ext(name))
+		}
+		progStart(display, "download")
+		progLine("Downloading " + src)
 		dst := filepath.Join(ipaDir, name)
+		meta := Meta{Name: q.Get("name"), Version: q.Get("version")}
+		if async {
+			installInBackground(w, func() error {
+				if err := download(src, dst); err != nil {
+					return fmt.Errorf("download failed: %v", err)
+				}
+				return nil
+			}, dst, meta)
+			return
+		}
 		if err := download(src, dst); err != nil {
+			progEnd(fmt.Errorf("download failed: %v", err))
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": "download failed: " + err.Error()})
 			return
 		}
-		installAndReply(w, dst, Meta{Name: q.Get("name"), Version: q.Get("version")})
+		installAndReply(w, dst, meta)
 	}))
+
+	// The signing certificate, for running apps inside ipakill (see cert.go).
+	http.HandleFunc("/cert", auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"ok": false, "error": "POST only"})
+			return
+		}
+		profile, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad upload"})
+			return
+		}
+		p12, pass, err := signingP12(profile)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		fmt.Println("[ipakill] Sent the signing certificate to the iPhone")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "p12": p12, "password": pass})
+	}))
+
+	http.HandleFunc("/exec", auth(shellHandler))
+	http.HandleFunc("/progress", auth(progressHandler))
+	http.HandleFunc("/appids", auth(appIDsHandler))
 
 	fmt.Println("[ipakill] Wi-Fi sync is running. In the ipakill iPhone app, enter:")
 	for _, ip := range localIPs() {
 		fmt.Printf("            PC address:   %s\n", ip)
 	}
 	fmt.Printf("            Pairing code: %s\n", cfg.Code)
+	if shellEnabled() {
+		fmt.Println("[ipakill] Terminal is ON: the iPhone app can run commands on this PC.")
+	}
 	fmt.Println("[ipakill] Keep this window open. Ctrl+C to stop.")
-	return http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+	// After a restart from the phone the old server may still hold the port briefly.
+	var err error
+	for i := 0; i < 20; i++ {
+		if err = http.ListenAndServe(fmt.Sprintf(":%d", port), nil); !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "Only one usage") {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return err
 }
