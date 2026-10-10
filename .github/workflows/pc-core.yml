@@ -25,7 +25,16 @@ jobs:
           cd pc
           go vet ./...
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/ipakill-core.exe" .
+      - name: Upload PC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipakill-core-windows
+          path: ${{ runner.temp }}/ipakill-core.exe
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Publish
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
