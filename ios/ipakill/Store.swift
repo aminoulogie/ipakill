@@ -49,32 +49,55 @@ enum SourceLoader {
         return s.replacingOccurrences(of: "https://", with: "")
     }
 
-    private struct GHRelease: Decodable {
+    private struct GHRelease: Codable {
         let tag_name: String
         let draft: Bool
         let assets: [GHAsset]
     }
-    private struct GHAsset: Decodable {
+    private struct GHAsset: Codable {
         let name: String
         let browser_download_url: String
     }
 
     private static func loadGitHub(_ repo: String, source: String) async throws -> [StoreApp] {
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases?per_page=10")!)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        if let h = resp as? HTTPURLResponse, h.statusCode != 200 {
-            throw SourceError.http(h.statusCode)
-        }
-        let releases = try JSONDecoder().decode([GHRelease].self, from: data)
-        for r in releases where !r.draft {
-            guard let ipa = r.assets.first(where: { $0.name.lowercased().hasSuffix(".ipa") }) else { continue }
+        let safeKey = repo.replacingOccurrences(of: "/", with: "_")
+        let cacheKey = "github.release.cache." + safeKey
+        let etagKey = "github.release.etag." + safeKey
+        let defaults = UserDefaults.standard
+        let decoder = JSONDecoder()
+
+        func apps(from release: GHRelease) -> [StoreApp] {
+            guard !release.draft,
+                  let ipa = release.assets.first(where: { $0.name.lowercased().hasSuffix(".ipa") }) else { return [] }
             let file = String(ipa.name.dropLast(4))
-            let version = Version.find(in: file) ?? Version.find(in: r.tag_name) ?? r.tag_name
+            let version = Version.find(in: file) ?? Version.find(in: release.tag_name) ?? release.tag_name
             return [StoreApp(name: Version.stripped(file), version: version,
                              url: ipa.browser_download_url, source: source)]
         }
-        return []
+
+        let cachedRelease: GHRelease? = defaults.data(forKey: cacheKey).flatMap { try? decoder.decode(GHRelease.self, from: $0) }
+        var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!,
+                             cachePolicy: .reloadRevalidatingCacheData, timeoutInterval: 15)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("ipakill-ios", forHTTPHeaderField: "User-Agent")
+        if let etag = defaults.string(forKey: etagKey) { req.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw SourceError.badLink }
+
+        if http.statusCode == 304, let cachedRelease { return apps(from: cachedRelease) }
+
+        if http.statusCode == 403 || http.statusCode == 429 {
+            if let cachedRelease { return apps(from: cachedRelease) }
+            let reset = http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap(TimeInterval.init)
+            throw SourceError.rateLimited(reset)
+        }
+
+        guard http.statusCode == 200 else { throw SourceError.http(http.statusCode) }
+        let release = try decoder.decode(GHRelease.self, from: data)
+        defaults.set(data, forKey: cacheKey)
+        if let etag = http.value(forHTTPHeaderField: "ETag") { defaults.set(etag, forKey: etagKey) }
+        return apps(from: release)
     }
 
     /// Reads AltStore-style JSON loosely: sources disagree on field names and
@@ -116,10 +139,12 @@ enum SourceLoader {
 }
 
 enum SourceError: LocalizedError {
-    case http(Int), badLink, notASource
+    case http(Int), rateLimited(TimeInterval?), badLink, notASource
     var errorDescription: String? {
         switch self {
-        case .http(403): return "GitHub rate limit hit, try again later"
+        case .rateLimited(let reset):
+            if let reset { return "GitHub limit reached · retry after \(Date(timeIntervalSince1970: reset).formatted(date: .omitted, time: .shortened))" }
+            return "GitHub limit reached · cached data unavailable"
         case .http(404): return "repo not found"
         case .http(let c): return "server said \(c)"
         case .badLink: return "not a valid link"
