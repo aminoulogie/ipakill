@@ -41,7 +41,7 @@ jobs:
       - name: Check out LiveContainer
         run: |
           set -eo pipefail
-          git clone --filter=blob:none https://github.com/LiveContainer/LiveContainer.git "$RUNNER_TEMP/lc"
+          git -c http.https://github.com/.extraheader= clone --filter=blob:none https://github.com/LiveContainer/LiveContainer.git "$RUNNER_TEMP/lc"
           cd "$RUNNER_TEMP/lc"
           git checkout --quiet "$LC_COMMIT"
           git submodule update --init --recursive --depth 1
