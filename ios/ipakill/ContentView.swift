@@ -494,10 +494,24 @@ struct ActivityView: View {
             ScrollViewReader { proxy in
                 List {
                     if sync.busy {
-                        HStack(spacing: 12) {
-                            ProgressView()
-                            Text("Signing on the PC…").foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text(sync.installPhase)
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(sync.installPercent)%")
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+
+                            ProgressView(value: Double(sync.installPercent), total: 100)
+                                .progressViewStyle(.linear)
+
+                            Text(sync.installDetail)
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
                         }
+                        .padding(.vertical, 6)
                     }
                     Section {
                         ForEach(Array(sync.log.enumerated()), id: \.offset) { i, line in
@@ -507,7 +521,11 @@ struct ActivityView: View {
                                 .id(i)
                         }
                     } header: {
-                        Text("Log")
+                        Text(sync.busy ? "Technical details" : "Log")
+                    } footer: {
+                        if sync.busy {
+                            Text("Detailed signer output is kept here for troubleshooting; the progress card above shows the useful signing status.")
+                        }
                     }
                 }
                 .listStyle(.insetGrouped)
