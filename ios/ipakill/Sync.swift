@@ -26,6 +26,13 @@ private struct InstallResponse: Decodable {
     let log: String?
 }
 
+private struct InstallProgressResponse: Decodable {
+    let active: Bool
+    let phase: String
+    let detail: String
+    let percent: Int
+}
+
 private struct TerminalRequest: Encodable {
     let command: String
     let cwd: String
@@ -48,6 +55,9 @@ final class Sync: ObservableObject {
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
+    @Published var installPhase = "Idle"
+    @Published var installDetail = "Waiting"
+    @Published var installPercent = 0
     @Published var terminalLines: [String] = ["Remote PowerShell ready."]
     @Published var terminalCWD = ""
     @Published var terminalBusy = false
@@ -350,7 +360,20 @@ final class Sync: ObservableObject {
 
     private func send(_ req: URLRequest, upload file: URL?) async {
         busy = true
-        defer { busy = false }
+        installPhase = "Preparing"
+        installDetail = "Starting install"
+        installPercent = 5
+
+        let progressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pollInstallProgress()
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        defer {
+            progressTask.cancel()
+            busy = false
+        }
         do {
             let data: Data
             let resp: URLResponse
@@ -371,7 +394,26 @@ final class Sync: ObservableObject {
         } catch {
             say("! \(error.localizedDescription)")
         }
+        if installPercent < 100 {
+            installPhase = "Complete"
+            installDetail = "Finished"
+            installPercent = 100
+        }
         await poll()
+    }
+
+    private func pollInstallProgress() async {
+        guard busy, let req = request("/progress", timeout: 3) else { return }
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+            let p = try Sync.decoder.decode(InstallProgressResponse.self, from: data)
+            installPhase = p.phase
+            installDetail = p.detail
+            installPercent = p.percent
+        } catch {
+            // Progress polling is best-effort; the install request remains authoritative.
+        }
     }
 
     private static func readOwnExpiry() -> Date? {
