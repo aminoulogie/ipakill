@@ -704,6 +704,7 @@ private struct AppDetailView: View {
 
 struct LibraryView: View {
     @EnvironmentObject var sync: Sync
+    @EnvironmentObject var sharedModel: SharedModel
     let onInstall: (StoreApp) -> Void
     let onImport: (URL) -> Void
     @State private var picking = false
@@ -742,6 +743,27 @@ struct LibraryView: View {
                     }
                 } header: {
                     Text("Signed Apps")
+                }
+
+                Section {
+                    if sharedModel.apps.isEmpty {
+                        Text("No apps installed in LiveContainer yet.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                    ForEach(sharedModel.apps, id: \.self) { app in
+                        LiveContainerLibraryRow(app: app)
+                    }
+                } header: {
+                    HStack {
+                        Text("LiveContainer Apps")
+                        Spacer()
+                        if !sharedModel.apps.isEmpty {
+                            Text("\(sharedModel.apps.count)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -793,6 +815,59 @@ private struct StatusCard: View {
         case "wifi": return "iPhone linked over Wi-Fi"
         case "usb": return "iPhone linked over USB"
         default: return "iPhone not seen by the PC"
+        }
+    }
+}
+
+private struct LiveContainerLibraryRow: View {
+    @ObservedObject var app: LCAppModel
+
+    var body: some View {
+        HStack(spacing: 14) {
+            icon
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.displayName)
+                    .font(.body.weight(.semibold))
+                    .lineLimit(1)
+
+                Text(app.version)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Text(app.bundleIdentifier)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Text("LIVE")
+                .font(.caption2.weight(.bold))
+                .foregroundColor(.accentColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.accentColor.opacity(0.13)))
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if let image = app.appInfo.iconIsDarkIcon(false) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 52, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
+        } else {
+            AppIcon(url: nil, name: app.displayName)
         }
     }
 }
