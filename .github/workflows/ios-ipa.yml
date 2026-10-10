@@ -39,22 +39,21 @@ jobs:
         run: echo "v=1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Check out LiveContainer
-        uses: actions/checkout@v4
-        with:
-          repository: LiveContainer/LiveContainer
-          ref: ${{ env.LC_COMMIT }}
-          path: LiveContainer-src
-          submodules: recursive
-          fetch-depth: 1
-          persist-credentials: false
+        run: |
+          set -eo pipefail
+          cd "$RUNNER_TEMP"
+          git clone --filter=blob:none https://github.com/LiveContainer/LiveContainer.git lc
+          cd lc
+          git checkout --quiet "$LC_COMMIT"
+          git submodule update --init --recursive --depth 1
 
       - name: Add ipakill
-        run: python3 ios/patch_lc.py "$GITHUB_WORKSPACE/LiveContainer-src" "${{ steps.ver.outputs.v }}"
+        run: python3 ios/patch_lc.py "$RUNNER_TEMP/lc" "${{ steps.ver.outputs.v }}"
 
       - name: Archive (unsigned)
         run: |
           set -eo pipefail
-          cd "$GITHUB_WORKSPACE/LiveContainer-src"
+          cd "$RUNNER_TEMP/lc"
           xcodebuild archive \
             -project LiveContainer.xcodeproj \
             -scheme LiveContainer \
