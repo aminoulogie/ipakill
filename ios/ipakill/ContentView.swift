@@ -4,7 +4,7 @@ import SwiftUI
 // rounded app icons and capsule GET buttons.
 
 private enum Tab: Hashable {
-    case sources, library, activity, settings
+    case sources, library, activity, terminal, settings
 }
 
 struct ContentView: View {
@@ -27,6 +27,9 @@ struct ContentView: View {
             ActivityView()
                 .tabItem { Label("Activity", systemImage: "arrow.down.circle.fill") }
                 .tag(Tab.activity)
+            TerminalView()
+                .tabItem { Label("Terminal", systemImage: "terminal.fill") }
+                .tag(Tab.terminal)
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(Tab.settings)
@@ -495,6 +498,102 @@ struct ActivityView: View {
             }
             .navigationTitle("Activity")
         }
+    }
+}
+
+// MARK: - Terminal
+
+struct TerminalView: View {
+    @EnvironmentObject var sync: Sync
+    @State private var command = ""
+    @FocusState private var commandFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(sync.online ? Color.green : Color.red)
+                        .frame(width: 8, height: 8)
+                    Text(sync.online ? (sync.pcName.isEmpty ? "PC connected over LAN" : sync.pcName) : "PC offline")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    if sync.terminalBusy { ProgressView().controlSize(.small) }
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+
+                Divider()
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 3) {
+                            ForEach(Array(sync.terminalLines.enumerated()), id: \.offset) { i, line in
+                                Text(line.isEmpty ? " " : line)
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                    .id(i)
+                            }
+                        }
+                        .padding(12)
+                    }
+                    .background(Color(.systemBackground))
+                    .onChange(of: sync.terminalLines.count) { count in
+                        guard count > 0 else { return }
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(count - 1, anchor: .bottom)
+                        }
+                    }
+                }
+
+                Divider()
+
+                if !sync.terminalCWD.isEmpty {
+                    Text(sync.terminalCWD)
+                        .font(.caption2.monospaced())
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 7)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("PowerShell command", text: $command)
+                        .font(.system(.body, design: .monospaced))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.send)
+                        .focused($commandFocused)
+                        .onSubmit(sendCommand)
+
+                    Button(action: sendCommand) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                    }
+                    .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || sync.terminalBusy || !sync.online)
+                }
+                .padding(12)
+            }
+            .navigationTitle("Terminal")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Clear") { sync.clearTerminal() }
+                }
+            }
+            .onAppear { commandFocused = true }
+        }
+    }
+
+    private func sendCommand() {
+        let line = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty, !sync.terminalBusy, sync.online else { return }
+        command = ""
+        Task { await sync.runTerminal(line) }
     }
 }
 
