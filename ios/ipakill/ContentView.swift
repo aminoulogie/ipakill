@@ -369,6 +369,25 @@ struct LibraryView: View {
                 Section { StatusCard() }
 
                 Section {
+                    NavigationLink {
+                        IPALabView()
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("IPA Lab").font(.body.weight(.semibold))
+                                Text("Inspect, extract, inject and modify Mach-O libraries")
+                                    .font(.footnote).foregroundColor(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: "shippingbox.and.arrow.backward")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                } header: {
+                    Text("Tools")
+                }
+
+                Section {
                     if sync.apps.isEmpty {
                         Text("No signed apps yet. Get one from Sources or import an .ipa with +.")
                             .font(.footnote).foregroundColor(.secondary)
