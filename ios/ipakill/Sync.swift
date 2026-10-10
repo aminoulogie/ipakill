@@ -1,7 +1,7 @@
 import Foundation
 
 /// An app the PC signed, as reported by `ipakill serve`.
-struct SignedApp: Codable, Identifiable, Equatable {
+struct SignedApp: Codable, Identifiable {
     let name: String
     let bundle: String
     let signed: Date
@@ -24,77 +24,26 @@ private struct InstallResponse: Decodable {
     let ok: Bool
     let error: String?
     let log: String?
-    let started: Bool?     // the PC is installing in the background
 }
 
-private struct ProgressResponse: Decodable {
-    let running: Bool
-    let name: String?
-    let stage: String?
-    let done: Int64?
-    let total: Int64?
-    let percent: Int?
-    let started: Int64?
-    let lines: [String]?
-    let next: Int?
+private struct InstallProgressResponse: Decodable {
+    let active: Bool
+    let phase: String
+    let detail: String
+    let percent: Int
 }
 
-/// What the PC is doing for the current install, for the progress bar.
-struct InstallProgress: Equatable {
-    var name = ""
-    var stage = ""          // download, upload, sign, install, done, failed
-    var done: Int64 = 0
-    var total: Int64 = 0
-    var percent = 0
-
-    /// 0...1 across the whole install: getting the file is the first 40%,
-    /// signing 40-60%, installing on the phone the rest.
-    var fraction: Double {
-        switch stage {
-        case "download", "upload": return total > 0 ? 0.4 * Double(done) / Double(total) : 0.05
-        case "sign": return 0.45
-        case "install": return 0.6 + 0.4 * Double(percent) / 100
-        case "done": return 1
-        default: return 0
-        }
-    }
-
-    var label: String {
-        let f = ByteCountFormatter()
-        switch stage {
-        case "download", "upload":
-            let verb = stage == "download" ? "Downloading" : "Uploading"
-            if done == 0 && total == 0 { return stage == "download" ? "Connecting…" : "Starting upload…" }
-            return total > 0 ? "\(verb) \(f.string(fromByteCount: done)) of \(f.string(fromByteCount: total))"
-                             : "\(verb) \(f.string(fromByteCount: done))"
-        case "sign": return "Signing with your Apple ID…"
-        case "install": return "Installing on iPhone \(percent)%"
-        case "done": return "Done"
-        case "failed": return "Failed"
-        default: return "Starting…"
-        }
-    }
+private struct TerminalRequest: Encodable {
+    let command: String
+    let cwd: String
 }
 
-struct AppIDInfo: Decodable, Identifiable {
-    let name: String
-    let identifier: String
-    var id: String { identifier }
-}
-
-private struct AppIDsResponse: Decodable {
+private struct TerminalResponse: Decodable {
     let ok: Bool
+    let output: String
+    let cwd: String
+    let exitCode: Int
     let error: String?
-    let ids: [AppIDInfo]?
-    let limit: Int?
-}
-
-private struct ExecResponse: Decodable {
-    let ok: Bool
-    let error: String?
-    let output: String?
-    let code: Int?
-    let cwd: String?
 }
 
 private struct CertResponse: Decodable {
@@ -113,37 +62,15 @@ final class Sync: ObservableObject {
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
-    @Published var progress: InstallProgress?
-
-    // The install sheet (ESign style): what is being installed and its log.
-    @Published var showInstall = false
-    @Published var installTitle = ""
-    @Published var installIcon: URL?
-    @Published var installLines: [String] = []
-    @Published var installResult: Bool?     // nil while running
-    private var capturing = false
-    private var progressLines = 0
-
-    @Published var appIDs: [AppIDInfo]?
-    @Published var appIDLimit = 10
-    @Published var appIDsError: String?
-    @Published var loadingAppIDs = false
-
-    // Terminal: commands run on the PC (needs 'ipakill-core serve --shell').
-    @Published var term: [String] = ["type 'help' - commands run on the PC"]
-    @Published var termCwd = ""
-    @Published var termBusy = false
+    @Published var installPhase = "Idle"
+    @Published var installDetail = "Waiting"
+    @Published var installPercent = 0
+    @Published var terminalLines: [String] = ["Remote PowerShell ready."]
+    @Published var terminalCWD = ""
+    @Published var terminalBusy = false
 
     @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
-    @Published var store: [StoreApp] = [] {
-        didSet {
-            storeSorted = store.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            storeBySource = Dictionary(grouping: store, by: \.source)
-        }
-    }
-    /// Kept ready so views don't sort or filter thousands of apps on every redraw.
-    private(set) var storeSorted: [StoreApp] = []
-    private var storeBySource: [String: [StoreApp]] = [:]
+    @Published var store: [StoreApp] = []
     @Published var storeErrors: [String: String] = [:]   // source -> error
     @Published var sourceInfo: [String: SourceInfo] = [:]
     @Published var loadingStore = false
@@ -161,6 +88,8 @@ final class Sync: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private var timer: Timer?
+    private var storeRefreshTask: Task<Void, Never>?
+    private var lastStoreRefresh: Date?
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -195,13 +124,12 @@ final class Sync: ObservableObject {
     }
 
     func say(_ line: String) {
-        if capturing { installLines.append(line) }
         log.append(line)
         if log.count > 200 { log.removeFirst(log.count - 200) }
     }
 
     private func url(_ path: String) -> URL? {
-        var h = host.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: ",", with: ".")
+        var h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         if h.hasPrefix("http://") { h.removeFirst(7) }
         if !h.contains(":") { h += ":7777" }
         return URL(string: "http://\(h)\(path)")
@@ -224,30 +152,26 @@ final class Sync: ObservableObject {
             let s = try Sync.decoder.decode(StatusResponse.self, from: data)
             guard s.ok else {
                 if online || log.last != "! \(s.error ?? "rejected")" { say("! \(s.error ?? "rejected")") }
-                if online { online = false }
+                online = false
                 return
             }
             if !online { say("synced with \(s.pc ?? "PC").") }
-            // Only assign what changed: every assignment redraws every screen.
-            if !online { online = true }
-            if pcName != (s.pc ?? "") { pcName = s.pc ?? "" }
-            if phoneLink != (s.phone ?? "") { phoneLink = s.phone ?? "" }
-            let newApps = s.apps ?? []
-            if apps != newApps {
-                apps = newApps
-                if let data = try? JSONEncoder.iso.encode(apps) { defaults.set(data, forKey: "apps") }
-            }
+            online = true
+            pcName = s.pc ?? ""
+            phoneLink = s.phone ?? ""
+            apps = s.apps ?? []
+            if let data = try? JSONEncoder.iso.encode(apps) { defaults.set(data, forKey: "apps") }
         } catch {
-            if online {
-                say("lost connection to PC.")
-                online = false
-            }
+            if online { say("lost connection to PC.") }
+            online = false
         }
     }
 
     // MARK: store
 
-    func refreshStore() async {
+    func refreshStore(force: Bool = false) async {
+        if loadingStore { return }
+        if !force, let lastStoreRefresh, Date().timeIntervalSince(lastStoreRefresh) < 60 { return }
         loadingStore = true
         defer { loadingStore = false }
         var all: [StoreApp] = []
@@ -272,11 +196,12 @@ final class Sync: ObservableObject {
         store = all
         storeErrors = errors
         sourceInfo = infos
+        lastStoreRefresh = Date()
     }
 
     /// The apps one source offers, in the order the source lists them.
     func apps(in source: String) -> [StoreApp] {
-        storeBySource[source] ?? []
+        store.filter { $0.source == source }
     }
 
     func sourceName(_ source: String) -> String {
@@ -328,6 +253,63 @@ final class Sync: ObservableObject {
         return Version.isNewer(s.version, than: v) ? s : nil
     }
 
+    // MARK: remote terminal
+
+    func runTerminal(_ command: String) async {
+        let line = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return }
+        guard online else {
+            terminalLines.append("! PC is offline")
+            return
+        }
+        guard var req = request("/terminal", timeout: 65) else { return }
+
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            req.httpBody = try JSONEncoder().encode(TerminalRequest(command: line, cwd: terminalCWD))
+        } catch {
+            terminalLines.append("! \(error.localizedDescription)")
+            return
+        }
+
+        let prompt = terminalCWD.isEmpty ? "PS>" : "PS \(terminalCWD)>"
+        terminalLines.append("\(prompt) \(line)")
+        terminalBusy = true
+        defer {
+            terminalBusy = false
+            if terminalLines.count > 500 {
+                terminalLines.removeFirst(terminalLines.count - 500)
+            }
+        }
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                terminalLines.append("! update/restart the PC companion to enable Terminal")
+                return
+            }
+            let result = try Sync.decoder.decode(TerminalResponse.self, from: data)
+            terminalCWD = result.cwd
+
+            let normalized = result.output.replacingOccurrences(of: "\r\n", with: "\n")
+            if !normalized.isEmpty {
+                let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+                terminalLines.append(contentsOf: lines.map(String.init))
+                if terminalLines.last == "" { terminalLines.removeLast() }
+            }
+            if !result.ok {
+                terminalLines.append("! \(result.error ?? "command exited with code \(result.exitCode)")")
+            }
+        } catch {
+            terminalLines.append("! \(error.localizedDescription)")
+        }
+    }
+
+    func clearTerminal() {
+        terminalLines = ["Remote PowerShell ready."]
+    }
+
     /// Asks the PC to download the .ipa from the source, sign it and install it.
     func install(_ app: StoreApp) async {
         guard online else {
@@ -340,9 +322,8 @@ final class Sync: ObservableObject {
             URLQueryItem(name: "name", value: app.name),
             URLQueryItem(name: "version", value: app.version),
         ]
-        guard var req = request("/install-url?async=1&" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
+        guard var req = request("/install-url?" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
         req.httpMethod = "POST"
-        beginInstall(app.name, icon: icon(for: app))
         say("$ ipakill get \(app.name) \(app.version)")
         say("pc is downloading + signing... ~1 min")
         await send(req, upload: nil)
@@ -376,47 +357,29 @@ final class Sync: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        guard var req = request("/install?async=1&name=\(encoded)", timeout: 600) else { return }
+        guard var req = request("/install?name=\(encoded)", timeout: 600) else { return }
         req.httpMethod = "POST"
 
-        beginInstall((name as NSString).deletingPathExtension, icon: nil)
         say("$ ipakill \(name)")
         say("uploading to \(pcName.isEmpty ? "PC" : pcName)... signing takes ~30s")
         await send(req, upload: tmp)
     }
 
-    private func beginInstall(_ title: String, icon: URL?) {
-        installTitle = title
-        installIcon = icon
-        installLines = []
-        installResult = nil
-        capturing = true
-        showInstall = true
-    }
-
     private func send(_ req: URLRequest, upload file: URL?) async {
         busy = true
-        progress = InstallProgress()
-        progressLines = 0
-        // Poll the PC for the progress bar and the full log while it works.
-        progressFrom = 0
-        progressStarted = nil
-        let poller = Task { @MainActor in
+        installPhase = "Preparing"
+        installDetail = "Starting install"
+        installPercent = 5
+
+        let progressTask = Task { [weak self] in
             while !Task.isCancelled {
+                await self?.pollInstallProgress()
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                if Task.isCancelled { break }
-                await pollProgress()
             }
         }
         defer {
-            poller.cancel()
+            progressTask.cancel()
             busy = false
-            capturing = false
-            if installResult == nil { installResult = false }
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if !self.busy { self.progress = nil }
-            }
         }
         do {
             let data: Data
@@ -430,146 +393,34 @@ final class Sync: ObservableObject {
                 say("! the pc is running an older ipakill - restart 'ipakill serve' on the pc")
                 return
             }
-            var r = try Sync.decoder.decode(InstallResponse.self, from: data)
-            if r.ok && r.started == true {
-                // The PC installs on its own; follow it. Losing the connection
-                // for a while (Wi-Fi blip, locked screen) only pauses this.
-                poller.cancel()
-                r = await followBackgroundInstall()
+            let r = try Sync.decoder.decode(InstallResponse.self, from: data)
+            for line in (r.log ?? "").split(separator: "\n") {
+                say(line.trimmingCharacters(in: .whitespaces))
             }
-            poller.cancel()
-            await drainProgress()
-            if progressLines == 0 {  // an older PC without /progress: show its summary
-                for line in (r.log ?? "").split(separator: "\n") {
-                    say(line.trimmingCharacters(in: .whitespaces))
-                }
-            }
-            progress?.stage = r.ok ? "done" : "failed"
-            // The PC's log already ends with its error; don't print it twice.
-            if !r.ok, !(log.last ?? "").contains(r.error ?? "install failed") {
-                say("! \(r.error ?? "install failed")")
-            }
-            installResult = r.ok
+            if !r.ok { say("! \(r.error ?? "install failed")") }
         } catch {
             say("! \(error.localizedDescription)")
+        }
+        if installPercent < 100 {
+            installPhase = "Complete"
+            installDetail = "Finished"
+            installPercent = 100
         }
         await poll()
     }
 
-    private var progressFrom = 0
-    private var progressStarted: Int64?
-    private var progressRunning = true
-
-    /// Polls /progress until the PC's background install finishes.
-    private func followBackgroundInstall() async -> InstallResponse {
-        let deadline = Date().addingTimeInterval(30 * 60)
-        progressRunning = true
-        while Date() < deadline {
-            await pollProgress()
-            if !progressRunning, let stage = progress?.stage, stage == "done" || stage == "failed" {
-                let error = log.last(where: { $0.contains("! ") })?
-                    .trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "! ", with: "")
-                return InstallResponse(ok: stage == "done", error: stage == "done" ? nil : error,
-                                       log: nil, started: true)
-            }
-            try? await Task.sleep(nanoseconds: 800_000_000)
-        }
-        return InstallResponse(ok: false, error: "lost track of the install on the PC", log: nil, started: true)
-    }
-
-    /// Takes the PC's new log lines and progress for the current install.
-    private func pollProgress() async {
-        guard let p = await fetchProgress(from: progressFrom) else { return }
-        if progressStarted == nil { progressStarted = p.started }
-        guard p.started == progressStarted else { return }  // an older install
-        for line in p.lines ?? [] {
-            say("  " + line)
-            progressLines += 1
-        }
-        progressFrom = p.next ?? progressFrom
-        progressRunning = p.running
-        progress = InstallProgress(name: p.name ?? "", stage: p.stage ?? "", done: p.done ?? 0,
-                                   total: p.total ?? 0, percent: p.percent ?? 0)
-    }
-
-    /// After the install answered: the last lines, which hold the error if any.
-    private func drainProgress() async {
-        guard progressStarted != nil else { return }
-        await pollProgress()
-    }
-
-    private func fetchProgress(from: Int) async -> ProgressResponse? {
-        guard let req = request("/progress?from=\(from)", timeout: 4),
-              let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200
-        else { return nil }
-        return try? JSONDecoder().decode(ProgressResponse.self, from: data)
-    }
-
-    // MARK: app IDs
-
-    /// The app IDs the Apple ID holds right now (a free one gets 10 per 7 days).
-    func loadAppIDs(fresh: Bool = false) async {
-        guard online, let req = request("/appids" + (fresh ? "?fresh=1" : ""), timeout: 60) else { return }
-        loadingAppIDs = true
-        defer { loadingAppIDs = false }
+    private func pollInstallProgress() async {
+        guard busy, let req = request("/progress", timeout: 3) else { return }
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
-            if (resp as? HTTPURLResponse)?.statusCode == 404 {
-                appIDsError = "Update the PC part to see this (Terminal: update)"
-                return
-            }
-            let r = try JSONDecoder().decode(AppIDsResponse.self, from: data)
-            if r.ok {
-                appIDs = r.ids ?? []
-                appIDLimit = r.limit ?? 10
-                appIDsError = nil
-            } else {
-                appIDsError = r.error ?? "could not list app IDs"
-            }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+            let p = try Sync.decoder.decode(InstallProgressResponse.self, from: data)
+            installPhase = p.phase
+            installDetail = p.detail
+            installPercent = p.percent
         } catch {
-            appIDsError = error.localizedDescription
+            // Progress polling is best-effort; the install request remains authoritative.
         }
-    }
-
-    // MARK: terminal
-
-    func run(_ command: String) async {
-        let line = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        if line == "clear" {
-            term = []
-            return
-        }
-        term.append("\(termCwd.isEmpty ? "" : termCwd)> \(line)")
-        guard online else {
-            term.append("! not connected to the PC")
-            return
-        }
-        guard var req = request("/exec", timeout: 900),
-              let body = try? JSONEncoder().encode(["cmd": line]) else { return }
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        termBusy = true
-        defer { termBusy = false }
-        do {
-            let (data, resp) = try await URLSession.shared.upload(for: req, from: body)
-            if (resp as? HTTPURLResponse)?.statusCode == 404 {
-                term.append("! the pc is running an older ipakill without the terminal - update it once from the PC")
-                return
-            }
-            let r = try JSONDecoder().decode(ExecResponse.self, from: data)
-            guard r.ok else {
-                term.append("! \(r.error ?? "failed")")
-                return
-            }
-            let out = (r.output ?? "").trimmingCharacters(in: .newlines)
-            if !out.isEmpty { term.append(out) }
-            if let c = r.code, c != 0 { term.append("! exit code \(c)") }
-            if let cwd = r.cwd { termCwd = cwd }
-        } catch {
-            term.append("! \(error.localizedDescription)")
-        }
-        if term.count > 500 { term.removeFirst(term.count - 500) }
     }
 
     // MARK: certificate for apps run inside ipakill
