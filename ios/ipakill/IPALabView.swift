@@ -340,7 +340,7 @@ struct IPALabView: View {
                     .padding()
                     .navigationTitle("Ready")
                     .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
+                        ToolbarItem(placement: .navigationBarTrailing) {
                             Button("Done") { self.sharedFile = nil }
                         }
                     }
