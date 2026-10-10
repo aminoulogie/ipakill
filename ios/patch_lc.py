@@ -27,7 +27,7 @@ def edit(rel, old, new):
 # call SharedModel/LCUtils directly without an external URL-scheme handoff.
 dst = lc / "LiveContainerSwiftUI" / "ipakill"
 dst.mkdir(exist_ok=True)
-for name in ["Store.swift", "Sync.swift", "ContentView.swift"]:
+for name in ["Store.swift", "Sync.swift", "ContentView.swift", "IPALabView.swift"]:
     shutil.copy(here / "ipakill" / name, dst / name)
 
 # Keep LiveContainer initialized exactly as upstream does, but make today's
@@ -55,6 +55,13 @@ edit(
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
 """,
 )
+
+# Today's UI uses NavigationStack/LabeledContent, so the embedded framework
+# must target iOS 16 instead of the older iOS 15 minimum.
+project = lc / "LiveContainer.xcodeproj" / "project.pbxproj"
+project_text = project.read_text()
+project_text = project_text.replace("IPHONEOS_DEPLOYMENT_TARGET = 15.0;", "IPHONEOS_DEPLOYMENT_TARGET = 16.0;")
+project.write_text(project_text)
 
 # Branding stays ipakill.
 edit(
