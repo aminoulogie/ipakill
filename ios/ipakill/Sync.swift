@@ -26,6 +26,19 @@ private struct InstallResponse: Decodable {
     let log: String?
 }
 
+private struct TerminalRequest: Encodable {
+    let command: String
+    let cwd: String
+}
+
+private struct TerminalResponse: Decodable {
+    let ok: Bool
+    let output: String
+    let cwd: String
+    let exitCode: Int
+    let error: String?
+}
+
 /// Talks to `ipakill serve` on the PC over Wi-Fi.
 @MainActor
 final class Sync: ObservableObject {
@@ -35,6 +48,9 @@ final class Sync: ObservableObject {
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
+    @Published var terminalLines: [String] = ["Remote PowerShell ready."]
+    @Published var terminalCWD = ""
+    @Published var terminalBusy = false
 
     @Published var sources: [String] { didSet { defaults.set(sources, forKey: "sources") } }
     @Published var store: [StoreApp] = []
@@ -218,6 +234,63 @@ final class Sync: ObservableObject {
     func update(for app: SignedApp) -> StoreApp? {
         guard let s = storeEntry(for: app), let v = app.version, !v.isEmpty else { return nil }
         return Version.isNewer(s.version, than: v) ? s : nil
+    }
+
+    // MARK: remote terminal
+
+    func runTerminal(_ command: String) async {
+        let line = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty else { return }
+        guard online else {
+            terminalLines.append("! PC is offline")
+            return
+        }
+        guard var req = request("/terminal", timeout: 65) else { return }
+
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            req.httpBody = try JSONEncoder().encode(TerminalRequest(command: line, cwd: terminalCWD))
+        } catch {
+            terminalLines.append("! \(error.localizedDescription)")
+            return
+        }
+
+        let prompt = terminalCWD.isEmpty ? "PS>" : "PS \(terminalCWD)>"
+        terminalLines.append("\(prompt) \(line)")
+        terminalBusy = true
+        defer {
+            terminalBusy = false
+            if terminalLines.count > 500 {
+                terminalLines.removeFirst(terminalLines.count - 500)
+            }
+        }
+
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                terminalLines.append("! update/restart the PC companion to enable Terminal")
+                return
+            }
+            let result = try Sync.decoder.decode(TerminalResponse.self, from: data)
+            terminalCWD = result.cwd
+
+            let normalized = result.output.replacingOccurrences(of: "\r\n", with: "\n")
+            if !normalized.isEmpty {
+                let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+                terminalLines.append(contentsOf: lines.map(String.init))
+                if terminalLines.last == "" { terminalLines.removeLast() }
+            }
+            if !result.ok {
+                terminalLines.append("! \(result.error ?? "command exited with code \(result.exitCode)")")
+            }
+        } catch {
+            terminalLines.append("! \(error.localizedDescription)")
+        }
+    }
+
+    func clearTerminal() {
+        terminalLines = ["Remote PowerShell ready."]
     }
 
     /// Asks the PC to download the .ipa from the source, sign it and install it.
