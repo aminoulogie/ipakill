@@ -78,6 +78,11 @@ func registerIPALabRoutes(auth func(http.HandlerFunc) http.HandlerFunc) {
 			writeJSON(w, 500, map[string]any{"ok": false, "error": "upload failed: " + err.Error()})
 			return
 		}
+		if err := copyFile(dst, filepath.Join(dir, "original.ipa")); err != nil {
+			_ = os.RemoveAll(dir)
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "snapshot failed: " + err.Error()})
+			return
+		}
 		rep, err := inspectIPA(dst)
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -145,7 +150,8 @@ func registerIPALabRoutes(auth func(http.HandlerFunc) http.HandlerFunc) {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": "dylib must be a thin arm64 Mach-O"})
 			return
 		}
-		if err := injectDylibIntoIPA(ipa, name, dylib); err != nil {
+		weak := r.URL.Query().Get("weak") == "1"
+		if err := injectDylibIntoIPA(ipa, name, dylib, weak); err != nil {
 			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -214,6 +220,41 @@ func registerIPALabRoutes(auth func(http.HandlerFunc) http.HandlerFunc) {
 		rep, _ = inspectIPA(ipa)
 		rep.OK, rep.Session, rep.Modified = true, id, true
 		writeJSON(w, 200, rep)
+	}))
+
+	http.HandleFunc("/lab/reset", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, 405, map[string]any{"ok": false, "error": "POST only"})
+			return
+		}
+		ipa, id, err := labSessionIPA(r)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		original := filepath.Join(ipaLabDir, id, "original.ipa")
+		if err := copyFile(original, ipa); err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": "reset failed: " + err.Error()})
+			return
+		}
+		rep, _ := inspectIPA(ipa)
+		rep.OK, rep.Session, rep.Modified = true, id, false
+		writeJSON(w, 200, rep)
+	}))
+
+	http.HandleFunc("/lab/diff", guard(func(w http.ResponseWriter, r *http.Request) {
+		ipa, id, err := labSessionIPA(r)
+		if err != nil {
+			writeJSON(w, 400, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		original := filepath.Join(ipaLabDir, id, "original.ipa")
+		added, removed, changed, err := diffIPA(original, ipa)
+		if err != nil {
+			writeJSON(w, 500, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "added": added, "removed": removed, "changed": changed})
 	}))
 
 	http.HandleFunc("/lab/export", guard(func(w http.ResponseWriter, r *http.Request) {
@@ -430,7 +471,7 @@ func cString(b []byte) string {
 	return string(b)
 }
 
-func injectDylibIntoIPA(ipa, name string, dylib []byte) error {
+func injectDylibIntoIPA(ipa, name string, dylib []byte, weak bool) error {
 	rep, err := inspectIPA(ipa)
 	if err != nil {
 		return err
@@ -443,7 +484,7 @@ func injectDylibIntoIPA(ipa, name string, dylib []byte) error {
 		return err
 	}
 	loadPath := "@rpath/" + name
-	patched, err := addDylibLoad(mainData, loadPath, false)
+	patched, err := addDylibLoad(mainData, loadPath, weak)
 	if err != nil {
 		return err
 	}
@@ -507,6 +548,73 @@ func addDylibLoad(data []byte, installName string, weak bool) ([]byte, error) {
 }
 
 func align8(n int) int { return (n + 7) &^ 7 }
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+type zipFingerprint struct {
+	size uint64
+	crc  uint32
+}
+
+func ipaFingerprints(path string) (map[string]zipFingerprint, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	out := map[string]zipFingerprint{}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		out[cleanArchivePath(f.Name)] = zipFingerprint{size: f.UncompressedSize64, crc: f.CRC32}
+	}
+	return out, nil
+}
+
+func diffIPA(original, working string) ([]string, []string, []string, error) {
+	a, err := ipaFingerprints(original)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	b, err := ipaFingerprints(working)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var added, removed, changed []string
+	for path, fp := range b {
+		old, ok := a[path]
+		if !ok {
+			added = append(added, path)
+		} else if old != fp {
+			changed = append(changed, path)
+		}
+	}
+	for path := range a {
+		if _, ok := b[path]; !ok {
+			removed = append(removed, path)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	sort.Strings(changed)
+	return added, removed, changed, nil
+}
 
 func rewriteZIP(path string, replace map[string][]byte, remove map[string]bool) error {
 	src, err := zip.OpenReader(path)
