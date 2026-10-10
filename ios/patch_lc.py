@@ -60,7 +60,7 @@ edit(tab,
 """,
      """            IpakillSourcesView()
                 .tabItem {
-                    Label("Store", systemImage: "bag.fill")
+                    Label("Sources", systemImage: "square.stack.3d.up")
                 }
                 .tag(LCTabIdentifier.sources)
 """)
