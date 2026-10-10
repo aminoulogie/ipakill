@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""Turns a LiveContainer checkout into ipakill.
+"""Build today's ipakill UI on top of yesterday's pinned LiveContainer engine.
 
-ipakill runs other apps inside itself the way LiveContainer does, by building
-on LiveContainer's engine (AGPL-3.0, https://github.com/LiveContainer/LiveContainer).
-This script, run by CI on a pinned LiveContainer commit:
-  - copies ipakill's Swift files into LiveContainer's UI framework,
-  - puts ipakill's tabs (Sources, Library, Activity) in its tab bar next to
-    LiveContainer's Apps and Settings tabs,
-  - renames the app to ipakill (bundle id, name, icon).
-
-Every edit asserts that the text it replaces is still there, so moving to a
-newer LiveContainer commit fails loudly instead of building something odd.
-
-usage: patch_lc.py <livecontainer checkout> <version>
+The visible root remains ipakill's current ContentView (Store, Library,
+Activity, Terminal, Settings). LiveContainer stays embedded and is opened only
+when the user chooses the LiveContainer install method.
 """
 import pathlib
 import plistlib
@@ -32,116 +23,52 @@ def edit(rel, old, new):
     p.write_text(s.replace(old, new, 1))
 
 
-# ipakill's code, compiled into the LiveContainerSwiftUI framework (its folder
-# is synced into the target, so new files are picked up without project edits).
+# Compile ipakill's current Swift files inside LiveContainerSwiftUI so they can
+# call SharedModel/LCUtils directly without an external URL-scheme handoff.
 dst = lc / "LiveContainerSwiftUI" / "ipakill"
 dst.mkdir(exist_ok=True)
-for name in ["Store.swift", "Sync.swift", "ContentView.swift"]:
+for name in ["Store.swift", "Sync.swift", "ContentView.swift", "IPALabView.swift"]:
     shutil.copy(here / "ipakill" / name, dst / name)
 
-edit("LiveContainerSwiftUI/Utilities/Shared.swift",
-     "    case settings\n}",
-     "    case settings\n    case ipakillLibrary\n    case ipakillActivity\n}")
-
-tab = "LiveContainerSwiftUI/Views/LCTabView.swift"
-edit(tab,
-     "    @StateObject var downloadHelper = DownloadHelper()\n",
-     "    @StateObject var downloadHelper = DownloadHelper()\n"
-     "    @StateObject var ipakillSync = Sync()\n")
-# ipakill's Sources replace LiveContainer's.
-edit(tab,
-     """            if DataManager.shared.model.multiLCStatus != 2 {
-                LCSourcesView()
-                    .tabItem {
-                        Label("lc.tabView.sources".loc, systemImage: "books.vertical")
-                    }
-                    .tag(LCTabIdentifier.sources)
-            }
+# Keep LiveContainer initialized exactly as upstream does, but make today's
+# ipakill ContentView the visible root. LCTabView is still compiled and is
+# presented internally when the user selects the LiveContainer install path.
+app = "LiveContainerSwiftUI/App/LiveContainerSwiftUIApp.swift"
+edit(
+    app,
+    "    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate\n",
+    "    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate\n"
+    "    @StateObject private var ipakillSync = Sync()\n",
+)
+edit(
+    app,
+    """            LCTabView()
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
+                .environmentObject(DataManager.shared.model)
+                .environmentObject(LCAppSortManager.shared)
 """,
-     """            IpakillSourcesView()
-                .tabItem {
-                    Label("Sources", systemImage: "square.stack.3d.up")
-                }
-                .tag(LCTabIdentifier.sources)
-""")
-# Library and Activity take the place of Tweaks.
-edit(tab,
-     """            if DataManager.shared.model.multiLCStatus != 2 {
-                LCTweaksView()
-                    .tabItem{
-                        Label("lc.tabView.tweaks".loc, systemImage: "wrench.and.screwdriver")
-                    }
-                    .tag(LCTabIdentifier.tweaks)
-            }
+    """            ContentView()
+                .environmentObject(ipakillSync)
+                .environmentObject(DataManager.shared.model)
+                .environmentObject(LCAppSortManager.shared)
+                .preferredColorScheme(.dark)
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
 """,
-     """            IpakillLibraryView()
-                .tabItem {
-                    Label("Library", systemImage: "square.grid.2x2.fill")
-                }
-                .badge(ipakillSync.updateCount)
-                .tag(LCTabIdentifier.ipakillLibrary)
-            IpakillActivityView()
-                .tabItem {
-                    Label("Activity", systemImage: "arrow.down.circle.fill")
-                }
-                .tag(LCTabIdentifier.ipakillActivity)
-""")
-edit(tab,
-     "        .environmentObject(downloadHelper)\n",
-     "        .environmentObject(downloadHelper)\n"
-     "        .modifier(IpakillLifecycle())\n"
-     "        .environmentObject(ipakillSync)\n")
+)
 
-# One-jump Home Screen launch (no extension, no app ID): a Shortcut saves
-# ipakill-launch.txt (an app's name) into ipakill's Documents and opens
-# ipakill; on a cold start we read it before anything loads and boot straight
-# into that app. A note older than 30 s is ignored, any note is deleted.
-edit("LiveContainer/LCBootstrap.m",
-     """    NSString *selectedContainer = [lcUserDefaults stringForKey:@"selectedContainer"];
-    NSString *launchUrl = nil;
-""",
-     """    NSString *selectedContainer = [lcUserDefaults stringForKey:@"selectedContainer"];
-    NSString *launchUrl = nil;
-    do {
-        NSFileManager *fm = NSFileManager.defaultManager;
-        NSString *docs = [NSString stringWithFormat:@"%s/Documents", getenv("LC_HOME_PATH")];
-        NSString *note = [docs stringByAppendingPathComponent:@"ipakill-launch.txt"];
-        NSDate *written = [fm attributesOfItemAtPath:note error:nil].fileModificationDate;
-        if(!written) break;
-        NSString *wanted = [[NSString stringWithContentsOfFile:note encoding:NSUTF8StringEncoding error:nil]
-                            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        [fm removeItemAtPath:note error:nil];
-        if(selectedApp || -written.timeIntervalSinceNow > 30 || wanted.length == 0) break;
-        // Accept the bundle folder name or the app's name, any case.
-        NSString *apps = [docs stringByAppendingPathComponent:@"Applications"];
-        for(NSString *folder in [fm contentsOfDirectoryAtPath:apps error:nil]) {
-            if(![folder hasSuffix:@".app"]) continue;
-            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/%@/Info.plist", apps, folder]];
-            for(NSString *name in @[folder, [folder stringByDeletingPathExtension], info[@"CFBundleDisplayName"] ?: @"", info[@"CFBundleName"] ?: @""]) {
-                if([name caseInsensitiveCompare:wanted] == NSOrderedSame) {
-                    selectedApp = folder;
-                    break;
-                }
-            }
-            if(selectedApp) break;
-        }
-    } while(0);
-""")
+# Today's UI uses NavigationStack/LabeledContent, so the embedded framework
+# must target iOS 16 instead of the older iOS 15 minimum.
+project = lc / "LiveContainer.xcodeproj" / "project.pbxproj"
+project_text = project.read_text()
+project_text = project_text.replace("IPHONEOS_DEPLOYMENT_TARGET = 15.0;", "IPHONEOS_DEPLOYMENT_TARGET = 16.0;")
+project.write_text(project_text)
 
-# Home Screen icons made by LiveContainer's "Add to Home Screen" profile
-# open ipakill with a launch link. On a cold start, restart straight into the
-# app before any screen is drawn (ipakillFastLaunch in ContentView.swift).
-edit("LiveContainerSwiftUI/App/AppDelegate.swift",
-     """        self.window = (scene as? UIWindowScene)?.keyWindow
-    }""",
-     """        self.window = (scene as? UIWindowScene)?.keyWindow
-        ipakillFastLaunch(connectionOptions)
-    }""")
-
-# Branding.
-edit("xcconfigs/Global.xcconfig",
-     "LIVECONTAINER_BUNDLE_IDENTIFIER = com.kdt.livecontainer$(DEVELOPMENT_TEAM_SUFFIX)",
-     "LIVECONTAINER_BUNDLE_IDENTIFIER = io.github.aminoulogie.ipakill")
+# Branding stays ipakill.
+edit(
+    "xcconfigs/Global.xcconfig",
+    "LIVECONTAINER_BUNDLE_IDENTIFIER = com.kdt.livecontainer$(DEVELOPMENT_TEAM_SUFFIX)",
+    "LIVECONTAINER_BUNDLE_IDENTIFIER = io.github.aminoulogie.ipakill",
+)
 
 info_path = lc / "LiveContainer" / "Info.plist"
 with open(info_path, "rb") as f:
@@ -151,12 +78,15 @@ info["CFBundleName"] = "ipakill"
 info["CFBundleShortVersionString"] = version
 info["CFBundleVersion"] = version
 info["NSLocalNetworkUsageDescription"] = (
-    "ipakill talks to your PC over Wi-Fi to sign apps. Apps running inside ipakill may also use the local network.")
+    "ipakill talks to your PC over Wi-Fi for physical sideloading and terminal access. "
+    "LiveContainer installs run locally after its signing certificate has been imported."
+)
 with open(info_path, "wb") as f:
     plistlib.dump(info, f)
 
 icons = lc / "Resources" / "Assets.xcassets" / "AppIcon.appiconset"
+source_icon = here / "ipakill" / "Assets.xcassets" / "AppIcon.appiconset" / "icon-1024.png"
 for png in icons.glob("*.png"):
-    shutil.copy(here / "ipakill" / "Assets.xcassets" / "AppIcon.appiconset" / "icon-1024.png", png)
+    shutil.copy(source_icon, png)
 
-print("patch_lc: ok")
+print("patch_lc: merged current ipakill UI with embedded LiveContainer")
