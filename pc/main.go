@@ -48,7 +48,48 @@ var (
 	versionRe = regexp.MustCompile(`(?i)[-_ ]v?\d[\w.\-() ]*$`)
 	semverRe  = regexp.MustCompile(`\d+(\.\d+)+(-[0-9A-Za-z.]+)?`)
 	installMu sync.Mutex
+	progressMu sync.RWMutex
+	progress   = InstallProgress{Phase: "Idle", Detail: "Waiting", Percent: 0}
 )
+
+type InstallProgress struct {
+	Active  bool   `json:"active"`
+	Phase   string `json:"phase"`
+	Detail  string `json:"detail"`
+	Percent int    `json:"percent"`
+}
+
+func setProgress(active bool, phase, detail string, percent int) {
+	if percent < 0 { percent = 0 }
+	if percent > 100 { percent = 100 }
+	progressMu.Lock()
+	progress = InstallProgress{Active: active, Phase: phase, Detail: detail, Percent: percent}
+	progressMu.Unlock()
+}
+
+func getProgress() InstallProgress {
+	progressMu.RLock()
+	defer progressMu.RUnlock()
+	return progress
+}
+
+func updateProgressFromLog(line string) {
+	l := strings.ToLower(line)
+	switch {
+	case strings.Contains(l, "profile") || strings.Contains(l, "provision"):
+		setProgress(true, "Provisioning", "Preparing signing profile", 30)
+	case strings.Contains(l, "certificate") || strings.Contains(l, "cert"):
+		setProgress(true, "Certificate", "Preparing signing certificate", 40)
+	case strings.Contains(l, "entitlement"):
+		setProgress(true, "Entitlements", "Applying app entitlements", 52)
+	case strings.Contains(l, "signing") || strings.Contains(l, "codesign") || strings.Contains(l, "sign "):
+		setProgress(true, "Signing", "Signing application bundle", 68)
+	case strings.Contains(l, "install") || strings.Contains(l, "instproxy"):
+		setProgress(true, "Installing", "Installing app on iPhone", 88)
+	case strings.Contains(l, "success") || strings.Contains(l, "complete") || strings.Contains(l, "finished"):
+		setProgress(true, "Finalizing", "Finishing installation", 96)
+	}
+}
 
 type App struct {
 	Name    string    `json:"name"`
@@ -212,6 +253,13 @@ func pickDevice() (Device, error) {
 func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error) {
 	installMu.Lock()
 	defer installMu.Unlock()
+	setProgress(true, "Preparing", "Checking IPA and signing tools", 8)
+	defer func() {
+		p := getProgress()
+		if p.Active && p.Percent < 100 {
+			setProgress(false, "Stopped", p.Detail, p.Percent)
+		}
+	}()
 
 	ipa, _ = filepath.Abs(ipa)
 	if _, err := os.Stat(ipa); err != nil {
@@ -220,6 +268,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	if _, err := os.Stat(plumesign); err != nil {
 		return App{}, fmt.Errorf("plumesign missing - run 'ipakill login' first")
 	}
+	setProgress(true, "Device", "Finding iPhone connection", 16)
 	dev, err := pickDevice()
 	if err != nil {
 		return App{}, err
@@ -233,6 +282,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
 	pipe, _ := cmd.StdoutPipe()
 	cmd.Stderr = cmd.Stdout
+	setProgress(true, "Starting", "Launching signing engine", 22)
 	if err := cmd.Start(); err != nil {
 		return App{}, err
 	}
@@ -245,6 +295,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	for sc.Scan() {
 		line := sc.Text()
 		fmt.Fprintln(logf, line)
+		updateProgressFromLog(line)
 		if m := bundleRe.FindStringSubmatch(line); m != nil {
 			bundle = m[1] // the main app is signed last, so the last match wins
 		}
@@ -275,6 +326,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 	apps := loadApps()
 	apps[keyFor(app)] = app
 	saveApps(apps)
+	setProgress(false, "Complete", "Signed and installed successfully", 100)
 	fmt.Fprintf(out, "[ipakill] Done! %s is signed until %s.\n", name, app.Expires.Format("Mon Jan 2 15:04"))
 	return app, nil
 }
@@ -519,6 +571,10 @@ func serve() error {
 	}
 
 	registerIPALabRoutes(auth)
+
+	http.HandleFunc("/progress", auth(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, getProgress())
+	}))
 
 	http.HandleFunc("/terminal", auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
