@@ -46,6 +46,8 @@ jobs:
           git clone --filter=blob:none https://github.com/hugeBlack/LiveContainer.git lc
           cd lc
           git checkout --quiet "$LC_COMMIT"
+          git config submodule.litehook.url https://github.com/LiveContainerMirror/litehook.git
+          git submodule sync --recursive
           git submodule update --init --recursive --depth 1
 
       - name: Add ipakill
