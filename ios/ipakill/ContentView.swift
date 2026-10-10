@@ -183,13 +183,22 @@ struct StoreView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.top, 70)
                     } else if sync.store.isEmpty {
-                        ContentUnavailableView("No Apps", systemImage: "bag",
-                                               description: Text("Add or refresh a source to populate the store."))
-                            .padding(.top, 50)
+                        VStack(spacing: 10) {
+                            Image(systemName: "bag")
+                                .font(.system(size: 38))
+                                .foregroundColor(.secondary)
+                            Text("No Apps")
+                                .font(.headline)
+                            Text("Add or refresh a source to populate the store.")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 50)
                     } else if !query.isEmpty {
                         StoreSearchResults(apps: searchResults, onInstall: onInstall)
                     } else {
-                        StoreHero(apps: featured)
+                        StoreHero(apps: featured, onInstall: onInstall)
 
                         StoreShelf(title: "Recently Added",
                                    subtitle: "Fresh apps and updates",
@@ -246,7 +255,7 @@ struct StoreView: View {
                 }
             }
             .sheet(isPresented: $showingSources) {
-                SourcesManagerView()
+                SourcesManagerView(onInstall: onInstall)
             }
         }
     }
@@ -283,11 +292,12 @@ struct StoreView: View {
 
 private struct StoreHero: View {
     let apps: [StoreApp]
+    let onInstall: (StoreApp) -> Void
 
     var body: some View {
         if let app = apps.first {
             NavigationLink {
-                AppDetailView(app: app)
+                AppDetailView(app: app, onInstall: onInstall)
             } label: {
                 ZStack(alignment: .bottomLeading) {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -378,8 +388,14 @@ private struct StoreSearchResults: View {
     var body: some View {
         LazyVStack(spacing: 0) {
             if apps.isEmpty {
-                ContentUnavailableView.search
-                    .padding(.top, 50)
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title2)
+                        .foregroundColor(.secondary)
+                    Text("No Results").font(.headline)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 50)
             }
             ForEach(apps) { app in
                 NavigationLink {
@@ -397,6 +413,7 @@ private struct StoreSearchResults: View {
 
 private struct SourcesManagerView: View {
     @EnvironmentObject var sync: Sync
+    let onInstall: (StoreApp) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var adding = false
     @State private var newSource = ""
@@ -406,7 +423,7 @@ private struct SourcesManagerView: View {
             List {
                 ForEach(sync.sources, id: \.self) { src in
                     NavigationLink {
-                        StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), onInstall: { _ in })
+                        StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), onInstall: onInstall)
                     } label: {
                         SourceRow(source: src)
                     }
