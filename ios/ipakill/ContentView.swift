@@ -73,17 +73,33 @@ struct ContentView: View {
 
     private func installWithLiveContainer(_ s: StoreApp) {
         pendingInstall = nil
+
+        guard let ipaURL = URL(string: s.url),
+              ipaURL.scheme?.lowercased() == "https" else {
+            sync.say("! LiveContainer needs a valid HTTPS IPA link")
+            tab = .activity
+            return
+        }
+
         var components = URLComponents()
         components.scheme = "livecontainer"
         components.host = "install"
-        components.queryItems = [URLQueryItem(name: "url", value: s.url)]
+        components.queryItems = [URLQueryItem(name: "url", value: ipaURL.absoluteString)]
 
-        guard let url = components.url else {
+        guard let deepLink = components.url else {
             sync.say("! could not build LiveContainer install link")
             tab = .activity
             return
         }
-        openURL(url)
+
+        openURL(deepLink) { accepted in
+            if accepted {
+                sync.say("sent \(s.name) to LiveContainer")
+            } else {
+                sync.say("! LiveContainer did not accept the install link. Open LiveContainer once, then try again.")
+                tab = .activity
+            }
+        }
     }
 
     private func importFile(_ url: URL) {
