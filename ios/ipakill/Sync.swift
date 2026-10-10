@@ -46,6 +46,13 @@ private struct TerminalResponse: Decodable {
     let error: String?
 }
 
+private struct CertResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let p12: Data?
+    let password: String?
+}
+
 /// Talks to `ipakill serve` on the PC over Wi-Fi.
 @MainActor
 final class Sync: ObservableObject {
@@ -413,6 +420,58 @@ final class Sync: ObservableObject {
             installPercent = p.percent
         } catch {
             // Progress polling is best-effort; the install request remains authoritative.
+        }
+    }
+
+    // MARK: LiveContainer certificate
+
+    var hasCertificate: Bool {
+        LCSharedUtils.certificatePassword() != nil
+    }
+
+    @discardableResult
+    func importCertificate() async -> Bool {
+        guard online else {
+            say("! connect to the PC once to import the LiveContainer signing certificate")
+            return false
+        }
+        guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+              let profile = FileManager.default.contents(atPath: path) else {
+            say("! this copy of ipakill has no provisioning profile")
+            return false
+        }
+        guard var req = request("/cert", timeout: 30) else { return false }
+        req.httpMethod = "POST"
+        say("$ ipakill cert")
+        busy = true
+        defer { busy = false }
+
+        do {
+            let (data, resp) = try await URLSession.shared.upload(for: req, from: profile)
+            if (resp as? HTTPURLResponse)?.statusCode == 404 {
+                say("! PC companion is too old for LiveContainer certificate import")
+                return false
+            }
+            let result = try Sync.decoder.decode(CertResponse.self, from: data)
+            guard result.ok, let p12 = result.p12, let password = result.password else {
+                say("! \(result.error ?? "the PC sent no certificate")")
+                return false
+            }
+            guard let team = LCUtils.getCertTeamId(withKeyData: p12, password: password) else {
+                say("! the LiveContainer certificate could not be opened")
+                return false
+            }
+
+            LCUtils.appGroupUserDefault.set(p12, forKey: "LCCertificateData")
+            LCUtils.appGroupUserDefault.set(password, forKey: "LCCertificatePassword")
+            LCUtils.appGroupUserDefault.set(NSDate.now, forKey: "LCCertificateUpdateDate")
+            UserDefaults.standard.set(LCSharedUtils.appGroupID(), forKey: "LCAppGroupID")
+            objectWillChange.send()
+            say("LiveContainer certificate imported (team \(team)).")
+            return true
+        } catch {
+            say("! \(error.localizedDescription)")
+            return false
         }
     }
 
