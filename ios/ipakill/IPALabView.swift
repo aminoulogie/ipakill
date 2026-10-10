@@ -24,6 +24,14 @@ struct IPALabReport: Codable {
     let modified: Bool
 }
 
+private struct IPALabDiff: Codable {
+    let ok: Bool
+    let added: [String]
+    let removed: [String]
+    let changed: [String]
+    let error: String?
+}
+
 @MainActor
 private final class IPALabClient {
     let host: String
@@ -69,11 +77,11 @@ private final class IPALabClient {
         return try decode(data)
     }
 
-    func inject(session: String, dylib source: URL) async throws -> IPALabReport {
+    func inject(session: String, dylib source: URL, weak: Bool) async throws -> IPALabReport {
         let tmp = try localCopy(source)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let name = source.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? source.lastPathComponent
-        var req = try request("/lab/inject?session=\(session)&name=\(name)", method: "POST")
+        var req = try request("/lab/inject?session=\(session)&name=\(name)&weak=\(weak ? 1 : 0)", method: "POST")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (data, _) = try await URLSession.shared.upload(for: req, fromFile: tmp)
         return try decode(data)
@@ -94,6 +102,20 @@ private final class IPALabClient {
         let req = try request("/lab/remove?session=\(session)&path=\(p)", method: "POST")
         let (data, _) = try await URLSession.shared.data(for: req)
         return try decode(data)
+    }
+
+    func reset(session: String) async throws -> IPALabReport {
+        let req = try request("/lab/reset?session=\(session)", method: "POST")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        return try decode(data)
+    }
+
+    func diff(session: String) async throws -> IPALabDiff {
+        let req = try request("/lab/diff?session=\(session)")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        let d = try JSONDecoder().decode(IPALabDiff.self, from: data)
+        if !d.ok { throw LabError.message(d.error ?? "Diff failed") }
+        return d
     }
 
     func extract(session: String, item: IPALabItem) async throws -> URL {
@@ -143,6 +165,8 @@ struct IPALabView: View {
     @State private var busy = false
     @State private var sharedFile: URL?
     @State private var errorText: String?
+    @State private var weakInjection = false
+    @State private var diff: IPALabDiff?
 
     private var session: String? { report?.session }
 
@@ -164,10 +188,27 @@ struct IPALabView: View {
                     }
                     .disabled(busy)
 
+                    Toggle("Weak-load injection", isOn: $weakInjection)
+                        .disabled(busy)
+
                     Button {
                         Task { await export(session) }
                     } label: {
                         Label("Export Modified IPA", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(busy)
+
+                    Button {
+                        Task { await signAndInstall(session) }
+                    } label: {
+                        Label("Sign & Install Modified IPA", systemImage: "iphone.and.arrow.forward")
+                    }
+                    .disabled(busy || !sync.online)
+
+                    Button(role: .destructive) {
+                        Task { await reset(session) }
+                    } label: {
+                        Label("Reset to Original IPA", systemImage: "arrow.uturn.backward")
                     }
                     .disabled(busy)
                 }
@@ -190,6 +231,23 @@ struct IPALabView: View {
                     LabeledContent("Root", value: report.appRoot ?? "Unknown")
                     LabeledContent("Main Binary", value: report.mainBinary.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Unknown")
                     LabeledContent("State", value: report.modified ? "Modified" : "Original")
+                }
+
+                if let diff {
+                    Section("Before / After Diff") {
+                        ForEach(diff.added, id: \.self) { path in
+                            Label(path, systemImage: "plus.circle.fill").foregroundStyle(.green)
+                        }
+                        ForEach(diff.changed, id: \.self) { path in
+                            Label(path, systemImage: "pencil.circle.fill").foregroundStyle(.orange)
+                        }
+                        ForEach(diff.removed, id: \.self) { path in
+                            Label(path, systemImage: "minus.circle.fill").foregroundStyle(.red)
+                        }
+                        if diff.added.isEmpty && diff.changed.isEmpty && diff.removed.isEmpty {
+                            Text("No changes from the original IPA.").foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Section("Mach-O / Dylibs") {
@@ -309,16 +367,19 @@ struct IPALabView: View {
             case .ipa:
                 status = "Uploading and analyzing \(url.lastPathComponent)…"
                 report = try await client.open(url)
+                if let session = report?.session { diff = try? await client.diff(session: session) }
                 status = "Analysis complete."
             case .inject:
                 guard let session else { return }
                 status = "Injecting \(url.lastPathComponent)…"
-                report = try await client.inject(session: session, dylib: url)
-                status = "Dylib injected. Re-sign before installing."
+                report = try await client.inject(session: session, dylib: url, weak: weakInjection)
+                diff = try? await client.diff(session: session)
+                status = weakInjection ? "Weak dylib load injected. Re-sign before installing." : "Dylib injected. Re-sign before installing."
             case .replace(let path):
                 guard let session else { return }
                 status = "Replacing \(URL(fileURLWithPath: path).lastPathComponent)…"
                 report = try await client.replace(session: session, path: path, with: url)
+                diff = try? await client.diff(session: session)
                 status = "File replaced. Re-sign before installing."
             }
         } catch {
@@ -344,9 +405,37 @@ struct IPALabView: View {
         busy = true
         defer { busy = false }
         do {
-            report = try await IPALabClient(sync: sync).remove(session: session, path: item.path)
+            let client = IPALabClient(sync: sync)
+            report = try await client.remove(session: session, path: item.path)
+            diff = try? await client.diff(session: session)
             status = "Removed \(item.displayName)."
         } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func reset(_ session: String) async {
+        busy = true
+        defer { busy = false }
+        do {
+            let client = IPALabClient(sync: sync)
+            report = try await client.reset(session: session)
+            diff = try? await client.diff(session: session)
+            status = "Restored the original IPA snapshot."
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    private func signAndInstall(_ session: String) async {
+        busy = true
+        do {
+            let url = try await IPALabClient(sync: sync).exportIPA(session: session)
+            busy = false
+            await sync.install(url)
+            status = "Modified IPA sent to the existing signing/install pipeline."
+        } catch {
+            busy = false
             errorText = error.localizedDescription
         }
     }
