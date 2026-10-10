@@ -10,10 +10,12 @@ private enum Tab: Hashable {
 struct ContentView: View {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
-    @Environment(\.openURL) private var openURL
+    @EnvironmentObject var sharedModel: SharedModel
+    @StateObject private var lcDownloadHelper = DownloadHelper()
     @State private var tab: Tab = .store
     @State private var pendingInstall: StoreApp?
     @State private var showingInstallMethod = false
+    @State private var showingLiveContainer = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -58,6 +60,23 @@ struct ContentView: View {
         } message: {
             Text("LiveContainer runs the app inside LiveContainer. Full Sideload signs it on the PC and installs it as a normal app on this iPhone.")
         }
+        .fullScreenCover(isPresented: $showingLiveContainer) {
+            ZStack(alignment: .topTrailing) {
+                LCAppListView()
+                    .environmentObject(lcDownloadHelper)
+                    .environmentObject(sharedModel)
+                    .environmentObject(LCAppSortManager.shared)
+
+                Button {
+                    showingLiveContainer = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
+                        .padding()
+                }
+            }
+        }
     }
 
     private func install(_ s: StoreApp) {
@@ -74,31 +93,19 @@ struct ContentView: View {
     private func installWithLiveContainer(_ s: StoreApp) {
         pendingInstall = nil
 
-        guard let ipaURL = URL(string: s.url),
-              ipaURL.scheme?.lowercased() == "https" else {
-            sync.say("! LiveContainer needs a valid HTTPS IPA link")
-            tab = .activity
-            return
-        }
-
-        var components = URLComponents()
-        components.scheme = "livecontainer"
-        components.host = "install"
-        components.queryItems = [URLQueryItem(name: "url", value: ipaURL.absoluteString)]
-
-        guard let deepLink = components.url else {
-            sync.say("! could not build LiveContainer install link")
-            tab = .activity
-            return
-        }
-
-        openURL(deepLink) { accepted in
-            if accepted {
-                sync.say("sent \(s.name) to LiveContainer")
-            } else {
-                sync.say("! LiveContainer did not accept the install link. Open LiveContainer once, then try again.")
-                tab = .activity
+        Task {
+            if !sync.hasCertificate {
+                guard await sync.importCertificate() else {
+                    tab = .activity
+                    return
+                }
             }
+
+            var components = URLComponents(string: "livecontainer://install")!
+            components.queryItems = [URLQueryItem(name: "url", value: s.url)]
+            sharedModel.selectedTab = .apps
+            sharedModel.deepLink = components.url
+            showingLiveContainer = true
         }
     }
 
