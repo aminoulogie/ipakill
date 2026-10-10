@@ -1,0 +1,35 @@
+name: Build PC part
+
+# Publishes a prebuilt Windows ipakill-core.exe as the "pc-core" release,
+# which pc/update.ps1 downloads (so the PC needs no Go to update).
+
+on:
+  push:
+    branches: [main, livecontainer]
+    paths: ['pc/**', '.github/workflows/pc-core.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pc/go.mod
+      - name: Build
+        run: |
+          cd pc
+          go vet ./...
+          GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/ipakill-core.exe" .
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete pc-core --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create pc-core "$RUNNER_TEMP/ipakill-core.exe" --repo "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" --title "ipakill PC part" \
+            --notes "Prebuilt ipakill-core.exe for Windows from ${GITHUB_SHA::7} (${GITHUB_REF_NAME}). Used by pc/update.ps1."
