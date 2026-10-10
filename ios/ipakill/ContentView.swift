@@ -10,7 +10,10 @@ private enum Tab: Hashable {
 struct ContentView: View {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
+    @Environment(\.openURL) private var openURL
     @State private var tab: Tab = .sources
+    @State private var pendingInstall: StoreApp?
+    @State private var showingInstallMethod = false
 
     var body: some View {
         TabView(selection: $tab) {
@@ -35,11 +38,49 @@ struct ContentView: View {
         .onChange(of: phase) { p in
             p == .active ? sync.start() : sync.stop()
         }
+        .confirmationDialog(
+            "Choose Installation Method",
+            isPresented: $showingInstallMethod,
+            titleVisibility: .visible
+        ) {
+            Button("LiveContainer") {
+                guard let app = pendingInstall else { return }
+                installWithLiveContainer(app)
+            }
+            Button("Full Sideload to iPhone") {
+                guard let app = pendingInstall else { return }
+                installPhysical(app)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("LiveContainer runs the app inside LiveContainer. Full Sideload signs it on the PC and installs it as a normal app on this iPhone.")
+        }
     }
 
     private func install(_ s: StoreApp) {
+        pendingInstall = s
+        showingInstallMethod = true
+    }
+
+    private func installPhysical(_ s: StoreApp) {
+        pendingInstall = nil
         tab = .activity
         Task { await sync.install(s) }
+    }
+
+    private func installWithLiveContainer(_ s: StoreApp) {
+        pendingInstall = nil
+        var components = URLComponents()
+        components.scheme = "livecontainer"
+        components.host = "install"
+        components.queryItems = [URLQueryItem(name: "url", value: s.url)]
+
+        guard let url = components.url else {
+            sync.say("! could not build LiveContainer install link")
+            tab = .activity
+            return
+        }
+        openURL(url)
     }
 
     private func importFile(_ url: URL) {
