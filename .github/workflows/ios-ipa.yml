@@ -18,6 +18,7 @@ permissions:
   contents: write   # to publish the release
 
 env:
+  # Upstream is hugeBlack/LiveContainer; this pinned build has the iOS 27 launch fix.
   # LiveContainer nightly with the iOS 27 launch fix. Bump deliberately:
   # patch_lc.py fails if the code it edits has moved.
   LC_COMMIT: 4dbe0f9a626de801184a42c0be8d2cb105058e3d
