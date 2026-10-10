@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,23 +17,23 @@ import (
 var ipaLabDir = filepath.Join(home, "lab")
 
 type labItem struct {
-	Path         string   \`json:"path"\`
-	Kind         string   \`json:"kind"\`
-	Size         uint64   \`json:"size"\`
-	Architecture string   \`json:"architecture,omitempty"\`
-	LoadCommands []string \`json:"loadCommands,omitempty"\`
-	RPaths       []string \`json:"rpaths,omitempty"\`
+	Path         string   `json:"path"`
+	Kind         string   `json:"kind"`
+	Size         uint64   `json:"size"`
+	Architecture string   `json:"architecture,omitempty"`
+	LoadCommands []string `json:"loadCommands,omitempty"`
+	RPaths       []string `json:"rpaths,omitempty"`
 }
 
 type labReport struct {
-	OK           bool      \`json:"ok"\`
-	Session      string    \`json:"session,omitempty"\`
-	AppRoot      string    \`json:"appRoot,omitempty"\`
-	MainBinary   string    \`json:"mainBinary,omitempty"\`
-	Items        []labItem \`json:"items,omitempty"\`
-	Warnings     []string  \`json:"warnings,omitempty"\`
-	Error        string    \`json:"error,omitempty"\`
-	Modified     bool      \`json:"modified"\`
+	OK           bool      `json:"ok"`
+	Session      string    `json:"session,omitempty"`
+	AppRoot      string    `json:"appRoot,omitempty"`
+	MainBinary   string    `json:"mainBinary,omitempty"`
+	Items        []labItem `json:"items,omitempty"`
+	Warnings     []string  `json:"warnings,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Modified     bool      `json:"modified"`
 }
 
 type machoInfo struct {
@@ -117,7 +116,7 @@ func registerIPALabRoutes(auth func(http.HandlerFunc) http.HandlerFunc) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", \`attachment; filename="\`+filepath.Base(want)+\`"\`)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(want)+`"`)
 		w.Write(data)
 	}))
 
@@ -230,7 +229,7 @@ func registerIPALabRoutes(auth func(http.HandlerFunc) http.HandlerFunc) {
 		}
 		defer f.Close()
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", \`attachment; filename="ipakill-modified.ipa"\`)
+		w.Header().Set("Content-Disposition", `attachment; filename="ipakill-modified.ipa"`)
 		io.Copy(w, f)
 	}))
 }
