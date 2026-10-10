@@ -4,22 +4,22 @@ import SwiftUI
 // rounded app icons and capsule GET buttons.
 
 private enum Tab: Hashable {
-    case sources, library, activity, terminal, settings
+    case store, library, activity, terminal, settings
 }
 
 struct ContentView: View {
     @EnvironmentObject var sync: Sync
     @Environment(\.scenePhase) private var phase
     @Environment(\.openURL) private var openURL
-    @State private var tab: Tab = .sources
+    @State private var tab: Tab = .store
     @State private var pendingInstall: StoreApp?
     @State private var showingInstallMethod = false
 
     var body: some View {
         TabView(selection: $tab) {
-            SourcesView(onInstall: install)
-                .tabItem { Label("Sources", systemImage: "square.stack.3d.up.fill") }
-                .tag(Tab.sources)
+            StoreView(onInstall: install)
+                .tabItem { Label("Store", systemImage: "bag.fill") }
+                .tag(Tab.store)
             LibraryView(onInstall: install, onImport: importFile)
                 .tabItem { Label("Library", systemImage: "square.grid.2x2.fill") }
                 .badge(sync.updateCount)
@@ -159,72 +159,271 @@ private func expiryText(_ date: Date) -> String {
     return f.string(from: date)
 }
 
-// MARK: - Sources
+// MARK: - Store
 
-struct SourcesView: View {
+private enum StoreSort: String, CaseIterable, Identifiable {
+    case name = "Name"
+    case newest = "Newest"
+    case oldest = "Oldest"
+    var id: String { rawValue }
+}
+
+struct StoreView: View {
     @EnvironmentObject var sync: Sync
     let onInstall: (StoreApp) -> Void
+    @State private var query = ""
+    @State private var showingSources = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 26) {
+                    if sync.loadingStore && sync.store.isEmpty {
+                        ProgressView("Loading store…")
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 70)
+                    } else if sync.store.isEmpty {
+                        ContentUnavailableView("No Apps", systemImage: "bag",
+                                               description: Text("Add or refresh a source to populate the store."))
+                            .padding(.top, 50)
+                    } else if !query.isEmpty {
+                        StoreSearchResults(apps: searchResults, onInstall: onInstall)
+                    } else {
+                        StoreHero(apps: featured)
+
+                        StoreShelf(title: "Recently Added",
+                                   subtitle: "Fresh apps and updates",
+                                   apps: recentlyAdded,
+                                   onInstall: onInstall)
+
+                        ForEach(storeCategories, id: \.self) { category in
+                            let apps = sync.store.filter { $0.displayCategory == category }
+                            if !apps.isEmpty {
+                                StoreShelf(title: category,
+                                           subtitle: "\(apps.count) app\(apps.count == 1 ? "" : "s")",
+                                           apps: Array(apps.prefix(12)),
+                                           onInstall: onInstall)
+                            }
+                        }
+
+                        NavigationLink {
+                            StoreAppsView(title: "All Apps", apps: sync.store, onInstall: onInstall)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("Browse All Apps")
+                                        .font(.headline)
+                                    Text("\(sync.store.count) apps · filter by category or date")
+                                        .font(.footnote)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding()
+                            .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(Color(.secondarySystemGroupedBackground)))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Store")
+            .searchable(text: $query, prompt: "Search apps")
+            .refreshable { await sync.refreshStore(force: true) }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if sync.loadingStore { ProgressView() }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showingSources = true } label: {
+                        Label("Sources", systemImage: "tray.full")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingSources) {
+                SourcesManagerView()
+            }
+        }
+    }
+
+    private var searchResults: [StoreApp] {
+        sync.store.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+            || ($0.developer ?? "").localizedCaseInsensitiveContains(query)
+            || ($0.subtitle ?? "").localizedCaseInsensitiveContains(query)
+            || $0.displayCategory.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var featured: [StoreApp] {
+        let dated = sync.store.sorted {
+            ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast)
+        }
+        return Array((dated.isEmpty ? sync.store : dated).prefix(5))
+    }
+
+    private var recentlyAdded: [StoreApp] {
+        Array(sync.store.sorted {
+            ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast)
+        }.prefix(12))
+    }
+
+    private var storeCategories: [String] {
+        let found = Set(sync.store.map(\.displayCategory))
+        let preferred = StoreCategory.preferred.filter { found.contains($0) && $0 != "Other" }
+        let extras = found.filter { !preferred.contains($0) && $0 != "Other" }.sorted()
+        return preferred + extras + (found.contains("Other") ? ["Other"] : [])
+    }
+}
+
+private struct StoreHero: View {
+    let apps: [StoreApp]
+
+    var body: some View {
+        if let app = apps.first {
+            NavigationLink {
+                AppDetailView(app: app)
+            } label: {
+                ZStack(alignment: .bottomLeading) {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.accentColor.opacity(0.75), Color(.systemIndigo).opacity(0.85)],
+                                             startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(height: 210)
+                    HStack(alignment: .bottom, spacing: 18) {
+                        AppIcon(url: URL(string: app.icon ?? ""), name: app.name, size: 82)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("FEATURED")
+                                .font(.caption2.weight(.bold))
+                                .tracking(1.4)
+                                .foregroundColor(.white.opacity(0.75))
+                            Text(app.name)
+                                .font(.title2.bold())
+                                .foregroundColor(.white)
+                                .lineLimit(2)
+                            Text(app.subtitle ?? app.developer ?? app.displayCategory)
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.85))
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                    }
+                    .padding(20)
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+        }
+    }
+}
+
+private struct StoreShelf: View {
+    let title: String
+    let subtitle: String
+    let apps: [StoreApp]
+    let onInstall: (StoreApp) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.title3.bold())
+                Text(subtitle).font(.footnote).foregroundColor(.secondary)
+            }
+            .padding(.horizontal)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 14) {
+                    ForEach(apps) { app in
+                        NavigationLink {
+                            AppDetailView(app: app, onInstall: onInstall)
+                        } label: {
+                            ShelfAppCard(app: app)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+}
+
+private struct ShelfAppCard: View {
+    @EnvironmentObject var sync: Sync
+    let app: StoreApp
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            AppIcon(url: sync.icon(for: app), name: app.name, size: 76)
+            Text(app.name)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Text(app.developer ?? app.displayCategory)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+        .frame(width: 112, alignment: .leading)
+    }
+}
+
+private struct StoreSearchResults: View {
+    let apps: [StoreApp]
+    let onInstall: (StoreApp) -> Void
+
+    var body: some View {
+        LazyVStack(spacing: 0) {
+            if apps.isEmpty {
+                ContentUnavailableView.search
+                    .padding(.top, 50)
+            }
+            ForEach(apps) { app in
+                NavigationLink {
+                    AppDetailView(app: app, onInstall: onInstall)
+                } label: {
+                    StoreAppRow(app: app, onInstall: onInstall)
+                        .padding(.horizontal)
+                }
+                .buttonStyle(.plain)
+                Divider().padding(.leading, 84)
+            }
+        }
+    }
+}
+
+private struct SourcesManagerView: View {
+    @EnvironmentObject var sync: Sync
+    @Environment(\.dismiss) private var dismiss
     @State private var adding = false
     @State private var newSource = ""
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
+                ForEach(sync.sources, id: \.self) { src in
                     NavigationLink {
-                        StoreAppsView(title: "All Apps", apps: allApps, onInstall: onInstall)
+                        StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), onInstall: { _ in })
                     } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: "square.grid.3x3.fill")
-                                .font(.title3)
-                                .foregroundColor(.white)
-                                .frame(width: 40, height: 40)
-                                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.accentColor))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("All Apps").font(.body.weight(.semibold))
-                                Text("\(sync.store.count) apps from \(sync.sources.count) sources")
-                                    .font(.footnote).foregroundColor(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 2)
+                        SourceRow(source: src)
                     }
-                }
-
-                Section {
-                    ForEach(sync.sources, id: \.self) { src in
-                        NavigationLink {
-                            StoreAppsView(title: sync.sourceName(src), apps: sync.apps(in: src), onInstall: onInstall)
-                        } label: {
-                            SourceRow(source: src)
-                        }
-                        .swipeActions {
-                            Button(role: .destructive) { sync.removeSource(src) } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                        .contextMenu {
-                            Button { UIPasteboard.general.string = src } label: {
-                                Label("Copy Source URL", systemImage: "doc.on.doc")
-                            }
-                            Button(role: .destructive) { sync.removeSource(src) } label: {
-                                Label("Remove Source", systemImage: "trash")
-                            }
+                    .swipeActions {
+                        Button(role: .destructive) { sync.removeSource(src) } label: {
+                            Label("Remove", systemImage: "trash")
                         }
                     }
-                } header: {
-                    Text("Sources")
-                } footer: {
-                    Text("GitHub repos (newest release .ipa) and AltStore, SideStore or ESign source links.")
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Sources")
-            .refreshable { await sync.refreshStore() }
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    if sync.loadingStore { ProgressView() }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .primaryAction) {
                     Button { adding = true } label: { Image(systemName: "plus") }
                 }
             }
@@ -239,13 +438,9 @@ struct SourcesView: View {
                     newSource = ""
                 }
             } message: {
-                Text("Paste a GitHub repo or a source URL.")
+                Text("Paste a GitHub repo or AltStore/SideStore/ESign source URL.")
             }
         }
-    }
-
-    private var allApps: [StoreApp] {
-        sync.store.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }
 
@@ -254,39 +449,30 @@ private struct SourceRow: View {
     let source: String
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             AppIcon(url: sync.sourceInfo[source]?.icon.flatMap { URL(string: $0) },
-                    name: sync.sourceName(source), size: 40)
+                    name: sync.sourceName(source), size: 38)
             VStack(alignment: .leading, spacing: 2) {
                 Text(sync.sourceName(source)).font(.body.weight(.semibold)).lineLimit(1)
                 if let err = sync.storeErrors[source] {
-                    Label(err, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote).foregroundColor(.red).lineLimit(1)
+                    Text(err).font(.caption).foregroundColor(.red).lineLimit(1)
                 } else {
-                    Text(SourceLoader.label(source)).font(.footnote).foregroundColor(.secondary).lineLimit(1)
+                    Text("\(sync.apps(in: source).count) apps")
+                        .font(.caption).foregroundColor(.secondary)
                 }
             }
-            Spacer()
-            let n = sync.apps(in: source).count
-            if n > 0 {
-                Text("\(n)")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(Capsule().fill(Color(.tertiarySystemFill)))
-            }
         }
-        .padding(.vertical, 2)
     }
 }
 
-/// The apps of one source (or of all sources), searchable.
 struct StoreAppsView: View {
     @EnvironmentObject var sync: Sync
     let title: String
     let apps: [StoreApp]
     let onInstall: (StoreApp) -> Void
     @State private var query = ""
+    @State private var category = "All"
+    @State private var sort: StoreSort = .name
 
     var body: some View {
         List {
@@ -294,23 +480,64 @@ struct StoreAppsView: View {
                 Text(sync.loadingStore ? "Loading…" : "No apps")
                     .foregroundColor(.secondary)
             }
-            ForEach(shown) { s in
-                StoreAppRow(app: s, onInstall: onInstall)
+            ForEach(shown) { app in
+                NavigationLink {
+                    AppDetailView(app: app, onInstall: onInstall)
+                } label: {
+                    StoreAppRow(app: app, onInstall: onInstall)
+                }
             }
         }
         .listStyle(.plain)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $query, prompt: "Search apps")
-        .refreshable { await sync.refreshStore() }
+        .refreshable { await sync.refreshStore(force: true) }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Menu {
+                    Picker("Category", selection: $category) {
+                        Text("All Categories").tag("All")
+                        ForEach(categories, id: \.self) { Text($0).tag($0) }
+                    }
+                    Picker("Sort", selection: $sort) {
+                        ForEach(StoreSort.allCases) { value in
+                            Text(value.rawValue).tag(value)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+            }
+        }
+    }
+
+    private var categories: [String] {
+        Array(Set(apps.map(\.displayCategory))).sorted()
     }
 
     private var shown: [StoreApp] {
-        guard !query.isEmpty else { return apps }
-        return apps.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || ($0.developer ?? "").localizedCaseInsensitiveContains(query)
+        var result = apps
+        if category != "All" {
+            result = result.filter { $0.displayCategory == category }
         }
+        if !query.isEmpty {
+            result = result.filter {
+                $0.name.localizedCaseInsensitiveContains(query)
+                || ($0.developer ?? "").localizedCaseInsensitiveContains(query)
+                || ($0.subtitle ?? "").localizedCaseInsensitiveContains(query)
+                || $0.displayCategory.localizedCaseInsensitiveContains(query)
+            }
+        }
+        switch sort {
+        case .name:
+            result.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .newest:
+            result.sort { ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast) }
+        case .oldest:
+            result.sort { ($0.addedDate ?? .distantFuture) < ($1.addedDate ?? .distantFuture) }
+        }
+        return result
     }
 }
 
@@ -324,9 +551,12 @@ private struct StoreAppRow: View {
             AppIcon(url: sync.icon(for: app), name: app.name)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(.body.weight(.semibold)).lineLimit(1)
-                Text([app.version, app.developer].compactMap { $0 }.joined(separator: " · "))
+                Text([app.version, app.developer, app.displayCategory].compactMap { $0 }.joined(separator: " · "))
                     .font(.footnote).foregroundColor(.secondary).lineLimit(1)
-                if let sub = app.subtitle {
+                if let date = app.addedDate {
+                    Text("Added " + date.formatted(date: .abbreviated, time: .omitted))
+                        .font(.caption2).foregroundColor(.secondary)
+                } else if let sub = app.subtitle {
                     Text(sub).font(.footnote).foregroundColor(.secondary).lineLimit(1)
                 }
             }
@@ -352,6 +582,78 @@ private struct StoreAppRow: View {
         } else {
             CapsuleButton(title: "GET") { onInstall(app) }
         }
+    }
+}
+
+private struct AppDetailView: View {
+    @EnvironmentObject var sync: Sync
+    let app: StoreApp
+    var onInstall: (StoreApp) -> Void = { _ in }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 16) {
+                    AppIcon(url: sync.icon(for: app), name: app.name, size: 92)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(app.name).font(.title2.bold())
+                        Text(app.developer ?? app.displayCategory)
+                            .font(.subheadline).foregroundColor(.secondary)
+                        Text("Version \(app.version)")
+                            .font(.caption).foregroundColor(.secondary)
+                        CapsuleButton(title: sync.installed(app) == nil ? "GET" : "SIGN", filled: true) {
+                            onInstall(app)
+                        }
+                        .disabled(sync.busy || !sync.online)
+                    }
+                }
+
+                if let subtitle = app.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.body)
+                }
+
+                if !app.screenshots.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Screenshots").font(.title3.bold())
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(spacing: 12) {
+                                ForEach(app.screenshots, id: \.self) { shot in
+                                    AsyncImage(url: URL(string: shot)) { phase in
+                                        if case .success(let image) = phase {
+                                            image.resizable().scaledToFill()
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 18)
+                                                .fill(Color(.secondarySystemBackground))
+                                                .overlay(ProgressView())
+                                        }
+                                    }
+                                    .frame(width: 220, height: 390)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HStack {
+                    Label(app.displayCategory, systemImage: "square.grid.2x2")
+                    Spacer()
+                    if let date = app.addedDate {
+                        Label(date.formatted(date: .abbreviated, time: .omitted), systemImage: "calendar")
+                    }
+                }
+                .font(.footnote)
+                .foregroundColor(.secondary)
+
+                Text(SourceLoader.label(app.source))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding()
+        }
+        .navigationTitle(app.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
