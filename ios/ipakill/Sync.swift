@@ -24,13 +24,21 @@ private struct InstallResponse: Decodable {
     let ok: Bool
     let error: String?
     let log: String?
+    let started: Bool?
 }
 
 private struct InstallProgressResponse: Decodable {
-    let active: Bool
-    let phase: String
-    let detail: String
-    let percent: Int
+    let ok: Bool
+    let running: Bool
+    let name: String
+    let stage: String
+    let done: Int64
+    let total: Int64
+    let percent: Double
+    let started: Int64
+    let bytesPerSecond: Double?
+    let lines: [String]
+    let next: Int
 }
 
 private struct TerminalRequest: Encodable {
@@ -64,7 +72,11 @@ final class Sync: ObservableObject {
     @Published var busy = false
     @Published var installPhase = "Idle"
     @Published var installDetail = "Waiting"
-    @Published var installPercent = 0
+    @Published var installPercent: Double = 0
+    @Published var installConsoleLines: [String] = []
+    @Published var installBytesDone: Int64 = 0
+    @Published var installBytesTotal: Int64 = 0
+    @Published var installBytesPerSecond: Double = 0
     @Published var terminalLines: [String] = ["Remote PowerShell ready."]
     @Published var terminalCWD = ""
     @Published var terminalBusy = false
@@ -90,6 +102,11 @@ final class Sync: ObservableObject {
     private var timer: Timer?
     private var storeRefreshTask: Task<Void, Never>?
     private var lastStoreRefresh: Date?
+    private var installProgressCursor = 0
+    private var installProgressStarted: Int64 = 0
+    private var installRequestStarted: Int64 = 0
+    private var installProgressFinished = false
+    private var installDisplayTarget: Double = 0
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -321,12 +338,13 @@ final class Sync: ObservableObject {
             URLQueryItem(name: "url", value: app.url),
             URLQueryItem(name: "name", value: app.name),
             URLQueryItem(name: "version", value: app.version),
+            URLQueryItem(name: "async", value: "1"),
         ]
         guard var req = request("/install-url?" + (q.percentEncodedQuery ?? ""), timeout: 900) else { return }
         req.httpMethod = "POST"
-        say("$ ipakill get \(app.name) \(app.version)")
-        say("pc is downloading + signing... ~1 min")
-        await send(req, upload: nil)
+        let command = "$ ipakill get \(app.name) \(app.version)"
+        say(command)
+        await send(req, upload: nil, seed: command)
     }
 
     // MARK: install from Files
@@ -357,30 +375,100 @@ final class Sync: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tmp) }
 
         let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        guard var req = request("/install?name=\(encoded)", timeout: 600) else { return }
+        guard var req = request("/install?name=\(encoded)&async=1", timeout: 600) else { return }
         req.httpMethod = "POST"
 
-        say("$ ipakill \(name)")
-        say("uploading to \(pcName.isEmpty ? "PC" : pcName)... signing takes ~30s")
-        await send(req, upload: tmp)
+        let command = "$ ipakill \(name)"
+        say(command)
+        await send(req, upload: tmp, seed: command)
     }
 
-    private func send(_ req: URLRequest, upload file: URL?) async {
+    func clearInstallConsole() {
+        installConsoleLines = []
+    }
+
+    private func beginInstallProgress(seed: String) {
         busy = true
         installPhase = "Preparing"
-        installDetail = "Starting install"
-        installPercent = 5
+        installDetail = "Waiting for PC…"
+        installPercent = 1
+        installDisplayTarget = 1
+        installBytesDone = 0
+        installBytesTotal = 0
+        installBytesPerSecond = 0
+        installConsoleLines = [seed]
+        installProgressCursor = 0
+        installProgressStarted = 0
+        installProgressFinished = false
+        installRequestStarted = Int64(Date().timeIntervalSince1970 * 1000) - 2_000
+    }
+
+    private func phaseTitle(_ stage: String) -> String {
+        switch stage {
+        case "download": return "Downloading"
+        case "upload": return "Uploading"
+        case "sign": return "Signing"
+        case "install": return "Installing"
+        case "done": return "Complete"
+        case "failed": return "Failed"
+        default: return stage.isEmpty ? "Preparing" : stage.capitalized
+        }
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func updateInstallDetail(stage: String) {
+        if stage == "download" || stage == "upload" {
+            var parts: [String] = []
+            if installBytesTotal > 0 {
+                parts.append("\(formatBytes(installBytesDone)) / \(formatBytes(installBytesTotal))")
+            } else if installBytesDone > 0 {
+                parts.append(formatBytes(installBytesDone))
+            }
+            if installBytesPerSecond > 0 {
+                parts.append("\(formatBytes(Int64(installBytesPerSecond)))/s")
+            }
+            installDetail = parts.isEmpty ? phaseTitle(stage) : parts.joined(separator: " · ")
+        } else {
+            installDetail = phaseTitle(stage)
+        }
+    }
+
+    private func animateInstallPercent() async {
+        while busy && !Task.isCancelled {
+            let delta = installDisplayTarget - installPercent
+            if abs(delta) < 0.005 {
+                installPercent = installDisplayTarget
+            } else {
+                installPercent += delta * 0.35
+            }
+            if installPercent < 1 && busy { installPercent = 1 }
+            if installPercent > 100 { installPercent = 100 }
+            try? await Task.sleep(nanoseconds: 16_000_000)
+        }
+    }
+
+    private func send(_ req: URLRequest, upload file: URL?, seed: String) async {
+        beginInstallProgress(seed: seed)
 
         let progressTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollInstallProgress()
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 50_000_000)
             }
         }
+        let animationTask = Task { [weak self] in
+            await self?.animateInstallPercent()
+        }
+
         defer {
             progressTask.cancel()
+            animationTask.cancel()
             busy = false
         }
+
         do {
             let data: Data
             let resp: URLResponse
@@ -389,37 +477,114 @@ final class Sync: ObservableObject {
             } else {
                 (data, resp) = try await URLSession.shared.data(for: req)
             }
+
             if (resp as? HTTPURLResponse)?.statusCode == 404 {
-                say("! the pc is running an older ipakill - restart 'ipakill serve' on the pc")
+                installConsoleLines.append("! the PC is running an older ipakill")
+                installPhase = "Failed"
+                installDetail = "Update/restart the PC companion"
+                installProgressFinished = true
                 return
             }
+
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
-            for line in (r.log ?? "").split(separator: "\n") {
-                say(line.trimmingCharacters(in: .whitespaces))
+            if !r.ok {
+                installConsoleLines.append("! \(r.error ?? "install failed")")
+                installPhase = "Failed"
+                installDetail = r.error ?? "Install failed"
+                installProgressFinished = true
+                return
             }
-            if !r.ok { say("! \(r.error ?? "install failed")") }
+
+            // New PC versions return immediately and continue signing in the
+            // background. Stay on the live /progress stream until it finishes.
+            if r.started == true {
+                let deadline = Date().addingTimeInterval(15 * 60)
+                while !installProgressFinished && Date() < deadline {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                if !installProgressFinished {
+                    installConsoleLines.append("! timed out waiting for install completion")
+                    installPhase = "Failed"
+                    installDetail = "Timed out"
+                }
+            } else {
+                // Compatibility with an older synchronous PC response.
+                for line in (r.log ?? "").split(separator: "\n") {
+                    installConsoleLines.append(String(line))
+                }
+                installPhase = "Complete"
+                installDetail = "Finished"
+                installDisplayTarget = 100
+                installPercent = 100
+            }
         } catch {
-            say("! \(error.localizedDescription)")
+            installConsoleLines.append("! \(error.localizedDescription)")
+            installPhase = "Failed"
+            installDetail = error.localizedDescription
+            installProgressFinished = true
         }
-        if installPercent < 100 {
-            installPhase = "Complete"
-            installDetail = "Finished"
-            installPercent = 100
-        }
+
+        await pollInstallProgress()
         await poll()
     }
 
     private func pollInstallProgress() async {
-        guard busy, let req = request("/progress", timeout: 3) else { return }
+        guard busy else { return }
+        var path = "/progress?from=\(installProgressCursor)"
+        guard let req = request(path, timeout: 3) else { return }
+
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
             let p = try Sync.decoder.decode(InstallProgressResponse.self, from: data)
-            installPhase = p.phase
-            installDetail = p.detail
-            installPercent = p.percent
+            guard p.ok else { return }
+
+            // Older servers used seconds; normalize to milliseconds.
+            let normalizedStarted = p.started > 0 && p.started < 100_000_000_000 ? p.started * 1000 : p.started
+            if normalizedStarted > 0 && normalizedStarted < installRequestStarted && !p.running {
+                return
+            }
+
+            if normalizedStarted != 0 && installProgressStarted != normalizedStarted {
+                installProgressStarted = normalizedStarted
+                installProgressCursor = 0
+                path = "/progress?from=0"
+            }
+
+            installProgressCursor = p.next
+            if !p.lines.isEmpty {
+                installConsoleLines.append(contentsOf: p.lines)
+                if installConsoleLines.count > 5000 {
+                    installConsoleLines.removeFirst(installConsoleLines.count - 5000)
+                }
+            }
+
+            let newPhase = phaseTitle(p.stage)
+            if installPhase != newPhase {
+                installPhase = newPhase
+                installPercent = max(1, min(100, p.percent))
+            }
+
+            installDisplayTarget = max(1, min(100, p.percent))
+            installBytesDone = p.done
+            installBytesTotal = p.total
+            installBytesPerSecond = p.bytesPerSecond ?? 0
+            updateInstallDetail(stage: p.stage)
+
+            if p.stage == "done" {
+                installDisplayTarget = 100
+                installPercent = 100
+                installPhase = "Complete"
+                installDetail = "Finished"
+                installProgressFinished = true
+            } else if p.stage == "failed" {
+                installPhase = "Failed"
+                installProgressFinished = true
+            } else if !p.running && normalizedStarted >= installRequestStarted {
+                installProgressFinished = true
+            }
         } catch {
-            // Progress polling is best-effort; the install request remains authoritative.
+            // Best-effort. A transient missed poll must not kill the install.
         }
     }
 
