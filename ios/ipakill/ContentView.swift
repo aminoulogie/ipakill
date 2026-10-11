@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 // Native iOS look in the style of ESign: tab bar at the bottom, grouped lists,
 // rounded app icons and capsule GET buttons.
@@ -880,52 +881,107 @@ private struct LibraryRow: View {
 struct ActivityView: View {
     @EnvironmentObject var sync: Sync
 
+    private var consoleLines: [String] {
+        sync.installConsoleLines.isEmpty ? sync.log : sync.installConsoleLines
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollViewReader { proxy in
-                List {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(sync.busy ? Color.orange : (sync.online ? Color.green : Color.gray))
+                        .frame(width: 8, height: 8)
+
+                    Text(sync.busy ? "Live install stream" : "Activity console")
+                        .font(.caption.weight(.semibold))
+
+                    Spacer()
+
                     if sync.busy {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text(sync.installPhase)
-                                    .font(.headline)
-                                Spacer()
-                                Text("\(sync.installPercent)%")
-                                    .font(.subheadline.monospacedDigit())
-                                    .foregroundColor(.secondary)
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider()
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(consoleLines.enumerated()), id: \.offset) { index, line in
+                                Text(line.isEmpty ? " " : line)
+                                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+                                    .foregroundColor(consoleColor(line))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+                                    .id(index)
                             }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                    }
+                    .background(Color(.systemBackground))
+                    .onChange(of: consoleLines.count) { count in
+                        guard count > 0 else { return }
+                        // No animation here: signer output can arrive very quickly.
+                        proxy.scrollTo(count - 1, anchor: .bottom)
+                    }
+                }
 
-                            ProgressView(value: Double(sync.installPercent), total: 100)
-                                .progressViewStyle(.linear)
+                Divider()
 
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(sync.installPhase)
+                                .font(.headline)
                             Text(sync.installDetail)
-                                .font(.footnote)
+                                .font(.caption)
                                 .foregroundColor(.secondary)
+                                .lineLimit(1)
                         }
-                        .padding(.vertical, 6)
+
+                        Spacer()
+
+                        Text(String(format: "%.2f%%", sync.installPercent))
+                            .font(.system(.title3, design: .monospaced).weight(.semibold))
                     }
-                    Section {
-                        ForEach(Array(sync.log.enumerated()), id: \.offset) { i, line in
-                            Text(line)
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundColor(line.hasPrefix("!") ? .red : .primary)
-                                .id(i)
-                        }
-                    } header: {
-                        Text(sync.busy ? "Technical details" : "Log")
-                    } footer: {
-                        if sync.busy {
-                            Text("Detailed signer output is kept here for troubleshooting; the progress card above shows the useful signing status.")
-                        }
-                    }
+
+                    ProgressView(value: min(max(sync.installPercent, 0), 100), total: 100)
+                        .progressViewStyle(.linear)
+                        .animation(.linear(duration: 0.05), value: sync.installPercent)
                 }
-                .listStyle(.insetGrouped)
-                .onChange(of: sync.log.count) { n in
-                    withAnimation { proxy.scrollTo(n - 1, anchor: .bottom) }
-                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
             }
             .navigationTitle("Activity")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Clear") {
+                        sync.clearInstallConsole()
+                    }
+                    .disabled(sync.busy)
+                }
+            }
         }
+    }
+
+    private func consoleColor(_ line: String) -> Color {
+        if line.hasPrefix("!") || line.localizedCaseInsensitiveContains("error") {
+            return .red
+        }
+        if line.hasPrefix("[phase]") {
+            return .secondary
+        }
+        if line.hasPrefix("$") {
+            return .primary
+        }
+        return .primary.opacity(0.9)
     }
 }
 
