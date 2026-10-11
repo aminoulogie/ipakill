@@ -187,33 +187,73 @@ final class Sync: ObservableObject {
     // MARK: store
 
     func refreshStore(force: Bool = false) async {
-        if loadingStore { return }
-        if !force, let lastStoreRefresh, Date().timeIntervalSince(lastStoreRefresh) < 60 { return }
-        loadingStore = true
-        defer { loadingStore = false }
-        var all: [StoreApp] = []
-        var errors: [String: String] = [:]
-        var infos: [String: SourceInfo] = [:]
-        await withTaskGroup(of: (String, Result<(SourceInfo, [StoreApp]), Error>).self) { group in
-            for src in sources {
-                group.addTask {
-                    do { return (src, .success(try await SourceLoader.load(src))) }
-                    catch { return (src, .failure(error)) }
-                }
-            }
-            for await (src, result) in group {
-                switch result {
-                case .success(let (info, apps)):
-                    infos[src] = info
-                    all += apps
-                case .failure(let e): errors[src] = e.localizedDescription
-                }
-            }
+        // A store refresh must outlive the SwiftUI view/task that happened to
+        // start it. Otherwise closing a sheet or replacing a .task cancels all
+        // URLSession children and we end up showing "cancelled" as a source error.
+        if let running = storeRefreshTask {
+            await running.value
+            return
         }
-        store = all
-        storeErrors = errors
-        sourceInfo = infos
-        lastStoreRefresh = Date()
+        if !force, let lastStoreRefresh, Date().timeIntervalSince(lastStoreRefresh) < 60 { return }
+
+        let sourceSnapshot = sources
+        let previousStore = store
+        let previousInfo = sourceInfo
+        loadingStore = true
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+
+            var all: [StoreApp] = []
+            var errors: [String: String] = [:]
+            var infos: [String: SourceInfo] = [:]
+
+            await withTaskGroup(of: (String, SourceInfo?, [StoreApp]?, Error?).self) { group in
+                for src in sourceSnapshot {
+                    group.addTask {
+                        do {
+                            let loaded = try await SourceLoader.load(src)
+                            return (src, loaded.0, loaded.1, nil)
+                        } catch is CancellationError {
+                            return (src, nil, nil, nil)
+                        } catch let e as URLError where e.code == .cancelled {
+                            return (src, nil, nil, nil)
+                        } catch {
+                            return (src, nil, nil, error)
+                        }
+                    }
+                }
+
+                for await (src, info, apps, error) in group {
+                    if let info, let apps {
+                        infos[src] = info
+                        all += apps
+                        continue
+                    }
+
+                    // Keep the last good data if a request was cancelled or hit a
+                    // temporary error. A cancelled refresh is not a broken source.
+                    if let oldInfo = previousInfo[src] {
+                        infos[src] = oldInfo
+                    }
+                    all += previousStore.filter { $0.source == src }
+
+                    if let error {
+                        errors[src] = error.localizedDescription
+                    }
+                }
+            }
+
+            self.store = all
+            self.storeErrors = errors
+            self.sourceInfo = infos
+            self.lastStoreRefresh = Date()
+            self.loadingStore = false
+            self.storeRefreshTask = nil
+        }
+
+        storeRefreshTask = task
+        await task.value
     }
 
     /// The apps one source offers, in the order the source lists them.
