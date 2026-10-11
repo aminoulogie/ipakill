@@ -298,6 +298,7 @@ func install(ipa string, out io.Writer, meta Meta, extra ...string) (App, error)
 // when it failed on something temporary that a retry may get past.
 func runPlumesign(args []string, out io.Writer, logf io.Writer) (bundle string, why string, err error) {
 	var reason string
+	progLine("$ " + plumesign + " " + strings.Join(args, " "))
 	cmd := exec.Command(plumesign, args...)
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
 	pipe, _ := cmd.StdoutPipe()
