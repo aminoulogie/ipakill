@@ -10,7 +10,7 @@ name: Build iOS ipa
 
 on:
   push:
-    branches: [main, livecontainer]   # livecontainer: test builds, published as pre-releases
+    branches: [main, livecontainer, live-progress-console-test]   # livecontainer: test builds, published as pre-releases
     paths: ['ios/**', '.github/workflows/ios-ipa.yml']
   workflow_dispatch:
 
@@ -94,6 +94,7 @@ jobs:
       # Test builds (livecontainer branch) are pre-releases: still offered by the
       # ipakill store, so they can be installed from the phone.
       - name: Publish release
+        if: github.ref != 'refs/heads/live-progress-console-test'
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.ver.outputs.v }}
