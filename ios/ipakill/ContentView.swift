@@ -746,24 +746,36 @@ struct LibraryView: View {
                 }
 
                 Section {
-                    if sharedModel.apps.isEmpty {
-                        Text("No apps installed in LiveContainer yet.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
-                    ForEach(sharedModel.apps, id: \.self) { app in
-                        LiveContainerLibraryRow(app: app)
+                    NavigationLink {
+                        LiveContainerManagerView()
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.accentColor.opacity(0.14))
+                                    .frame(width: 52, height: 52)
+                                Image(systemName: "square.stack.3d.up.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.accentColor)
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("LiveContainer Apps")
+                                    .font(.body.weight(.semibold))
+                                Text(sharedModel.apps.isEmpty
+                                     ? "Open LiveContainer to install and manage apps"
+                                     : "\(sharedModel.apps.count) installed · RUN and long-press options")
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
                 } header: {
-                    HStack {
-                        Text("LiveContainer Apps")
-                        Spacer()
-                        if !sharedModel.apps.isEmpty {
-                            Text("\(sharedModel.apps.count)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                    Text("LiveContainer")
+                } footer: {
+                    Text("Opens LiveContainer's original app manager with its RUN buttons, containers, settings, multitask controls, Add to Home Screen actions and uninstall menu.")
                 }
             }
             .listStyle(.insetGrouped)
@@ -819,56 +831,15 @@ private struct StatusCard: View {
     }
 }
 
-private struct LiveContainerLibraryRow: View {
-    @ObservedObject var app: LCAppModel
+private struct LiveContainerManagerView: View {
+    @StateObject private var downloadHelper = DownloadHelper()
 
     var body: some View {
-        HStack(spacing: 14) {
-            icon
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.displayName)
-                    .font(.body.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(app.version)
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-
-                Text(app.bundleIdentifier)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Text("LIVE")
-                .font(.caption2.weight(.bold))
-                .foregroundColor(.accentColor)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(Color.accentColor.opacity(0.13)))
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private var icon: some View {
-        if let image = app.appInfo.iconIsDarkIcon(false) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-                )
-        } else {
-            AppIcon(url: nil, name: app.displayName)
-        }
+        LCAppListView()
+            .environmentObject(downloadHelper)
+            .environmentObject(LCAppSortManager.shared)
+            .downloadAlert(helper: downloadHelper)
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 
