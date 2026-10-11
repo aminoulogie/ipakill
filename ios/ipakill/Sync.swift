@@ -18,6 +18,7 @@ private struct StatusResponse: Decodable {
     let phone: String?
     let apps: [SignedApp]?
     let error: String?
+    let progressProtocol: Int?
 }
 
 private struct InstallResponse: Decodable {
@@ -25,20 +26,32 @@ private struct InstallResponse: Decodable {
     let error: String?
     let log: String?
     let started: Bool?
+    let progressProtocol: Int?
 }
 
+/// Decodes both the current progress feed and older PC companion formats.
+/// All progress fields are optional so a protocol mismatch can be reported
+/// instead of silently leaving the UI frozen at 1%.
 private struct InstallProgressResponse: Decodable {
-    let ok: Bool
-    let running: Bool
-    let name: String
-    let stage: String
-    let done: Int64
-    let total: Int64
-    let percent: Double
-    let started: Int64
+    let ok: Bool?
+    let progressProtocol: Int?
+
+    // Current + previous raw-console protocol.
+    let running: Bool?
+    let name: String?
+    let stage: String?
+    let done: Int64?
+    let total: Int64?
+    let percent: Double?
+    let started: Int64?
     let bytesPerSecond: Double?
-    let lines: [String]
-    let next: Int
+    let lines: [String]?
+    let next: Int?
+
+    // Very old progress protocol.
+    let active: Bool?
+    let phase: String?
+    let detail: String?
 }
 
 private struct TerminalRequest: Encodable {
@@ -67,6 +80,7 @@ final class Sync: ObservableObject {
     @Published var online = false
     @Published var pcName = ""
     @Published var phoneLink = ""          // "wifi", "usb" or "" as seen by the PC
+    @Published var pcProgressProtocol = 0
     @Published var apps: [SignedApp] = []
     @Published var log: [String] = ["ipakill ready."]
     @Published var busy = false
@@ -107,6 +121,7 @@ final class Sync: ObservableObject {
     private var installRequestStarted: Int64 = 0
     private var installProgressFinished = false
     private var installDisplayTarget: Double = 0
+    private var legacyProgressWarningShown = false
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -176,6 +191,7 @@ final class Sync: ObservableObject {
             online = true
             pcName = s.pc ?? ""
             phoneLink = s.phone ?? ""
+            pcProgressProtocol = s.progressProtocol ?? 0
             apps = s.apps ?? []
             if let data = try? JSONEncoder.iso.encode(apps) { defaults.set(data, forKey: "apps") }
         } catch {
@@ -440,6 +456,7 @@ final class Sync: ObservableObject {
         installProgressCursor = 0
         installProgressStarted = 0
         installProgressFinished = false
+        legacyProgressWarningShown = false
         installRequestStarted = Int64(Date().timeIntervalSince1970 * 1000) - 2_000
     }
 
@@ -527,6 +544,9 @@ final class Sync: ObservableObject {
             }
 
             let r = try Sync.decoder.decode(InstallResponse.self, from: data)
+            if let protocolVersion = r.progressProtocol {
+                pcProgressProtocol = protocolVersion
+            }
             if !r.ok {
                 installConsoleLines.append("! \(r.error ?? "install failed")")
                 installPhase = "Failed"
@@ -570,61 +590,118 @@ final class Sync: ObservableObject {
 
     private func pollInstallProgress() async {
         guard busy else { return }
-        var path = "/progress?from=\(installProgressCursor)"
+        let path = "/progress?from=\(installProgressCursor)"
         guard let req = request(path, timeout: 3) else { return }
 
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
             let p = try Sync.decoder.decode(InstallProgressResponse.self, from: data)
-            guard p.ok else { return }
+            if p.ok == false { return }
 
-            // Older servers used seconds; normalize to milliseconds.
-            let normalizedStarted = p.started > 0 && p.started < 100_000_000_000 ? p.started * 1000 : p.started
-            if normalizedStarted > 0 && normalizedStarted < installRequestStarted && !p.running {
+            if let protocolVersion = p.progressProtocol {
+                pcProgressProtocol = protocolVersion
+            }
+
+            // Current and previous raw-console protocol.
+            if let stage = p.stage {
+                let running = p.running ?? false
+                let started = p.started ?? 0
+                let normalizedStarted = started > 0 && started < 100_000_000_000 ? started * 1000 : started
+
+                if normalizedStarted > 0 && normalizedStarted < installRequestStarted && !running {
+                    return
+                }
+
+                if normalizedStarted != 0 && installProgressStarted != normalizedStarted {
+                    installProgressStarted = normalizedStarted
+                    installProgressCursor = 0
+                }
+
+                if let next = p.next {
+                    installProgressCursor = next
+                }
+
+                let newLines = p.lines ?? []
+                if !newLines.isEmpty {
+                    installConsoleLines.append(contentsOf: newLines)
+                    if installConsoleLines.count > 5000 {
+                        installConsoleLines.removeFirst(installConsoleLines.count - 5000)
+                    }
+                }
+
+                let value = max(1, min(100, p.percent ?? installPercent))
+                let newPhase = phaseTitle(stage)
+                if installPhase != newPhase {
+                    installPhase = newPhase
+                    installPercent = value
+                }
+
+                installDisplayTarget = value
+                installBytesDone = p.done ?? 0
+                installBytesTotal = p.total ?? 0
+                installBytesPerSecond = p.bytesPerSecond ?? 0
+                updateInstallDetail(stage: stage)
+
+                // Protocol 1 has raw lines, but not the new high-frequency speed/
+                // phase semantics. Tell the user once rather than silently stalling.
+                if (p.progressProtocol ?? pcProgressProtocol) < 2 && !legacyProgressWarningShown {
+                    legacyProgressWarningShown = true
+                    installConsoleLines.append("! PC companion is older. Restart/update ipakill-core for the full live console.")
+                }
+
+                if stage == "done" {
+                    installDisplayTarget = 100
+                    installPercent = 100
+                    installPhase = "Complete"
+                    installDetail = "Finished"
+                    installProgressFinished = true
+                } else if stage == "failed" {
+                    installPhase = "Failed"
+                    installProgressFinished = true
+                } else if !running && normalizedStarted >= installRequestStarted {
+                    installProgressFinished = true
+                }
                 return
             }
 
-            if normalizedStarted != 0 && installProgressStarted != normalizedStarted {
-                installProgressStarted = normalizedStarted
-                installProgressCursor = 0
-                path = "/progress?from=0"
-            }
-
-            installProgressCursor = p.next
-            if !p.lines.isEmpty {
-                installConsoleLines.append(contentsOf: p.lines)
-                if installConsoleLines.count > 5000 {
-                    installConsoleLines.removeFirst(installConsoleLines.count - 5000)
+            // Legacy active/phase/detail protocol. It cannot provide raw signer
+            // lines, but it should still move the bar instead of freezing at 1%.
+            if let phase = p.phase {
+                if !legacyProgressWarningShown {
+                    legacyProgressWarningShown = true
+                    installConsoleLines.append("! PC companion is outdated. Progress fallback active; restart/update ipakill-core for full command streaming.")
                 }
+
+                installPhase = phase
+                installDetail = p.detail ?? phase
+                let value = max(1, min(100, p.percent ?? installPercent))
+                installDisplayTarget = value
+                installPercent = value
+
+                if phase.lowercased().contains("complete") || value >= 100 {
+                    installProgressFinished = true
+                } else if phase.lowercased().contains("fail") {
+                    installProgressFinished = true
+                } else if p.active == false {
+                    installProgressFinished = true
+                }
+                return
             }
 
-            let newPhase = phaseTitle(p.stage)
-            if installPhase != newPhase {
-                installPhase = newPhase
-                installPercent = max(1, min(100, p.percent))
-            }
-
-            installDisplayTarget = max(1, min(100, p.percent))
-            installBytesDone = p.done
-            installBytesTotal = p.total
-            installBytesPerSecond = p.bytesPerSecond ?? 0
-            updateInstallDetail(stage: p.stage)
-
-            if p.stage == "done" {
-                installDisplayTarget = 100
-                installPercent = 100
-                installPhase = "Complete"
-                installDetail = "Finished"
-                installProgressFinished = true
-            } else if p.stage == "failed" {
-                installPhase = "Failed"
-                installProgressFinished = true
-            } else if !p.running && normalizedStarted >= installRequestStarted {
-                installProgressFinished = true
+            if !legacyProgressWarningShown {
+                legacyProgressWarningShown = true
+                installConsoleLines.append("! PC progress response is incompatible. Update/restart ipakill-core.")
+                installPhase = "Waiting for PC update"
+                installDetail = "Restart the current PC companion"
             }
         } catch {
-            // Best-effort. A transient missed poll must not kill the install.
+            if !legacyProgressWarningShown {
+                legacyProgressWarningShown = true
+                installConsoleLines.append("! Could not decode PC progress. The running PC companion is probably older; update/restart ipakill-core.")
+                installPhase = "PC companion outdated"
+                installDetail = "Progress protocol mismatch"
+            }
         }
     }
 

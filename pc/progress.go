@@ -257,7 +257,8 @@ func progressHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "running": prog.Running, "name": prog.Name, "stage": prog.Stage,
+		"ok": true, "progressProtocol": 2,
+		"running": prog.Running, "name": prog.Name, "stage": prog.Stage,
 		"done": prog.Done, "total": prog.Total, "percent": percent, "started": prog.Started,
 		"bytesPerSecond": speed,
 		"lines": append([]string{}, prog.Log[from:]...), "next": len(prog.Log),

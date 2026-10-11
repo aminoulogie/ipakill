@@ -449,7 +449,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // phone follows along through /progress, so a dropped Wi-Fi connection or a
 // locked screen on the phone can't cut the install short.
 func installInBackground(w http.ResponseWriter, prepare func() error, ipa string, meta Meta) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true, "progressProtocol": 2})
 	go func() {
 		if prepare != nil {
 			if err := prepare(); err != nil {
@@ -600,7 +600,7 @@ func serve() error {
 		if apps == nil {
 			apps = []App{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pc": host, "phone": phone, "apps": apps})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pc": host, "phone": phone, "apps": apps, "progressProtocol": 2})
 	}))
 
 	http.HandleFunc("/install", auth(func(w http.ResponseWriter, r *http.Request) {
