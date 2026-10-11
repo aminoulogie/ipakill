@@ -948,7 +948,6 @@ struct ActivityView: View {
 
                         Text(String(format: "%.2f%%", sync.installPercent))
                             .font(.system(.title3, design: .monospaced).weight(.semibold))
-                            .contentTransition(.numericText())
                     }
 
                     ProgressView(value: min(max(sync.installPercent, 0), 100), total: 100)
