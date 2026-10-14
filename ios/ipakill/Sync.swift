@@ -446,7 +446,7 @@ final class Sync: ObservableObject {
     private func beginInstallProgress(seed: String) {
         busy = true
         installPhase = "Preparing"
-        installDetail = "Waiting for PC…"
+        installDetail = "Waiting for PC\u{2026}"
         installPercent = 1
         installDisplayTarget = 1
         installBytesDone = 0
@@ -487,7 +487,7 @@ final class Sync: ObservableObject {
             if installBytesPerSecond > 0 {
                 parts.append("\(formatBytes(Int64(installBytesPerSecond)))/s")
             }
-            installDetail = parts.isEmpty ? phaseTitle(stage) : parts.joined(separator: " · ")
+            installDetail = parts.isEmpty ? phaseTitle(stage) : parts.joined(separator: " \u{00b7} ")
         } else {
             installDetail = phaseTitle(stage)
         }
@@ -593,9 +593,18 @@ final class Sync: ObservableObject {
         let path = "/progress?from=\(installProgressCursor)"
         guard let req = request(path, timeout: 3) else { return }
 
+        // Separate the network fetch from the decode so a transient Wi-Fi
+        // drop (URLError) doesn't masquerade as a PC-companion version error.
+        let data: Data
+        let resp: URLResponse
         do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            return  // Transient network error – the 50 ms poll loop will retry
+        }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+
+        do {
             let p = try Sync.decoder.decode(InstallProgressResponse.self, from: data)
             if p.ok == false { return }
 
