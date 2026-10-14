@@ -206,7 +206,7 @@ struct StoreView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 26) {
                     if sync.loadingStore && sync.store.isEmpty {
-                        ProgressView("Loading store…")
+                        ProgressView("Loading store\u{2026}")
                             .frame(maxWidth: .infinity)
                             .padding(.top, 70)
                     } else if sync.store.isEmpty {
@@ -249,7 +249,7 @@ struct StoreView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Browse All Apps")
                                         .font(.headline)
-                                    Text("\(sync.store.count) apps · filter by category or date")
+                                    Text("\(sync.store.count) apps \u{00b7} filter by category or date")
                                         .font(.footnote)
                                         .foregroundColor(.secondary)
                                 }
@@ -472,7 +472,7 @@ private struct SourcesManagerView: View {
                 }
             }
             .alert("Add Source", isPresented: $adding) {
-                TextField("https://…", text: $newSource)
+                TextField("https://\u{2026}", text: $newSource)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -521,7 +521,7 @@ struct StoreAppsView: View {
     var body: some View {
         List {
             if shown.isEmpty {
-                Text(sync.loadingStore ? "Loading…" : "No apps")
+                Text(sync.loadingStore ? "Loading\u{2026}" : "No apps")
                     .foregroundColor(.secondary)
             }
             ForEach(shown) { app in
@@ -595,7 +595,7 @@ private struct StoreAppRow: View {
             AppIcon(url: sync.icon(for: app), name: app.name)
             VStack(alignment: .leading, spacing: 2) {
                 Text(app.name).font(.body.weight(.semibold)).lineLimit(1)
-                Text([app.version, app.developer, app.displayCategory].compactMap { $0 }.joined(separator: " · "))
+                Text([app.version, app.developer, app.displayCategory].compactMap { $0 }.joined(separator: " \u{00b7} "))
                     .font(.footnote).foregroundColor(.secondary).lineLimit(1)
                 if let date = app.addedDate {
                     Text("Added " + date.formatted(date: .abbreviated, time: .omitted))
@@ -765,7 +765,7 @@ struct LibraryView: View {
                                     .font(.body.weight(.semibold))
                                 Text(sharedModel.apps.isEmpty
                                      ? "Open LiveContainer to install and manage apps"
-                                     : "\(sharedModel.apps.count) installed · RUN and long-press options")
+                                     : "\(sharedModel.apps.count) installed \u{00b7} RUN and long-press options")
                                     .font(.footnote)
                                     .foregroundColor(.secondary)
                                     .lineLimit(2)
@@ -858,7 +858,7 @@ private struct LibraryRow: View {
                 HStack(spacing: 4) {
                     Circle().fill(daysColor(app.daysLeft)).frame(width: 7, height: 7)
                     Text(daysText(app.daysLeft)).foregroundColor(daysColor(app.daysLeft))
-                    Text("· \(expiryText(app.expires))").foregroundColor(.secondary)
+                    Text("\u{00b7} \(expiryText(app.expires))").foregroundColor(.secondary)
                 }
                 .font(.caption)
             }
@@ -910,23 +910,18 @@ struct ActivityView: View {
 
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(consoleLines.enumerated()), id: \.offset) { index, line in
-                                Text(line.isEmpty ? " " : line)
-                                    .font(.system(size: 11.5, weight: .regular, design: .monospaced))
-                                    .foregroundColor(consoleColor(line))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .textSelection(.enabled)
+                                DroppingLineView(line: line, color: consoleColor(line))
                                     .id(index)
                             }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                     }
-                    .background(Color(.systemBackground))
+                    .background(Color.black)
                     .onChange(of: consoleLines.count) { count in
                         guard count > 0 else { return }
-                        // No animation here: signer output can arrive very quickly.
                         proxy.scrollTo(count - 1, anchor: .bottom)
                     }
                 }
@@ -976,12 +971,34 @@ struct ActivityView: View {
             return .red
         }
         if line.hasPrefix("[phase]") {
-            return .secondary
+            return Color(white: 0.45)
         }
         if line.hasPrefix("$") {
-            return .primary
+            return .white
         }
-        return .primary.opacity(0.9)
+        return Color(white: 0.85)
+    }
+}
+
+// Each console line slides in from above when it first appears.
+private struct DroppingLineView: View {
+    let line: String
+    let color: Color
+    @State private var appeared = false
+
+    var body: some View {
+        Text(line.isEmpty ? " " : line)
+            .font(.system(size: 11.5, weight: .regular, design: .monospaced))
+            .foregroundColor(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .offset(y: appeared ? 0 : -24)
+            .opacity(appeared ? 1 : 0)
+            .onAppear {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.62)) {
+                    appeared = true
+                }
+            }
     }
 }
 
